@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "SimpleTrans",
+  "version": "0.2.0",
+  "description": "网页双语对照翻译（DeepSeek），支持整页、当前段落与右键菜单。",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "SimpleTrans",
+    "default_popup": "popup/index.html"
+  },
+  "options_page": "options/index.html",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "commands": {
+    "translate-page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+A",
+        "mac": "Command+Shift+A"
+      },
+      "description": "翻译整页"
+    },
+    "translate-paragraph": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "翻译当前段落"
+    }
+  },
+  "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
+  "host_permissions": ["https://api.deepseek.com/*"]
+}

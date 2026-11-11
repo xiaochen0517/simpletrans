@@ -1,0 +1,26 @@
+{
+  "name": "simpletrans",
+  "version": "0.2.0",
+  "private": true,
+  "description": "SimpleTrans Chrome extension built with React",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/build.mjs --watch",
+    "build": "node scripts/build.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "icons": "node scripts/gen-icons.js"
+  },
+  "dependencies": {
+    "@ai-sdk/deepseek": "^3.0.54",
+    "ai": "^7.0.116",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^5.0.0",
+    "daisyui": "^5.7.46",
+    "tailwindcss": "^4.3.3",
+    "vite": "^7.0.0"
+  }
+}
