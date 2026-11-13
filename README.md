@@ -1,39 +1,61 @@
 # SimpleTrans
 
-基于 React + Vite 的 Chrome 插件（Manifest V3），用于网页双语对照翻译（DeepSeek）。
+基于 React + Vite 的 Chrome 扩展（Manifest V3），把网页内容翻译成目标语言，并以双语对照方式显示。目标支持传统 MT 与 AI LLM 多引擎。
+
+> **当前状态：P0 已完成（0.1.0 空骨架）**。代码里只有目录、文件头与静态占位页，没有任何翻译、存储或监听行为。功能从 P1 起按 `docs/PLAN.md` 逐阶段实现，P0–P9 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
 
 ## 目录结构
 
 ```
 public/
-  manifest.json        插件清单（权限、入口、commands、content script + CSS）
-  icons/               插件图标（可运行 npm run icons 重新生成占位图标）
+  manifest.json        扩展清单（入口、注入、权限、commands）
+  icons/               扩展图标（可运行 npm run icons 重新生成占位图标）
 src/
-  popup/               点击工具栏图标弹出的页面（React）
-  options/             设置页（React，含密钥保存位置选择与翻译测试）
-  background/          Service Worker
-    index.js           事件注册入口
-    router.js          控制面路由 + content 注入兜底
-    gateway.js         数据面流式网关（P0 仅连通性，流式在 P3 接入）
-    commands.js        快捷键
-    context-menu.js    右键菜单「翻译此段」
-  content/             注入网页的 content script（P0 仅握手）
-    index.js           入口
-    content.css        译文样式（manifest 静态注入）
-  shared/
-    protocol.js        消息协议与载荷上限（唯一协议源）
-    constants.js       超时、并发、心跳等常量
-    storage.js         chrome.storage 分区读写
-    settings.js        设置与密钥存放位置
-    translate/         provider 契约 + DeepSeek 实现（只允许 background 引用）
-    global.css         全局样式
+  background/          后台服务（A）
+    index.js           入口：监听器注册（P2）
+    router.js          A1 消息路由
+    commands.js        A1 快捷键入口
+    context-menu.js    A1 右键菜单入口
+    gateway.js         A2 请求网关
+  popup/               工具栏弹窗（B，静态占位）
+    index.html
+    main.jsx
+    Popup.jsx
+    popup.css
+  options/             设置页（C，静态占位）
+    index.html
+    main.jsx
+    Options.jsx
+  content/             页面注入（D）
+    index.js           入口（只引用 content.css）
+    bridge.js          D4 与后台通信
+    hover.js           D2 悬停检测
+    task.js            D5 状态上报与任务调度
+    dom/scanner.js     D1 段落提取
+    dom/renderer.js    D3 译文渲染
+    content.css        译文样式（P3 前只有注释）
+  shared/              公共模块（E）与引擎/缓存目录
+    protocol.js        E1 消息协议
+    constants.js       超时、并发、心跳等数值
+    storage.js         E2 存储读写
+    settings.js        E2 设置与密钥
+    config/            E3 引擎类型目录与实例（registry / instances）
+    translate/         A3 适配器契约与批量编码（adapter / batch）
+    cache/             A4 缓存 key 与存取（key / store）
+    global.css         弹窗与设置页的全局样式
 scripts/
   build.mjs            三模式构建编排（web / background / content）
-  smoke.mjs            无浏览器冒烟测试（基于 dist 产物）
+  smoke.mjs            无浏览器冒烟门禁（基于 dist 产物）
   gen-icons.js         生成占位图标
+tests/
+  unit/structure.test.js        骨架结构与空壳约定
+  unit/architecture.test.js     架构 3.1 目录树与仓库一致性
+vitest.config.js       单元测试配置
 vite.config.js         构建配置（按模式切换产物格式）
 dist/                  构建产物（加载到 Chrome 的目录，已在 .gitignore 中忽略）
 ```
+
+新增或删除 `src/` 文件前先改架构 3.1 目录树；`tests/unit/architecture.test.js` 会强制两者一致。
 
 ## 构建为什么分三次
 
@@ -53,12 +75,12 @@ Content Script **不是 ES Module**，产物必须是自包含单文件（IIFE�
 
 ```bash
 npm install
+npm test        # 单元测试（结构 + 架构一致性）
 npm run dev     # 并行监听构建三个产物到 dist/
-npm run build   # 生产构建
-npm run smoke   # 无浏览器冒烟测试（先 build）
+npm run build   # 生产构建（先清空 dist）
+npm run smoke   # 无浏览器冒烟检查（先 build）
+npm run gate    # 单元测试 → 构建 → 冒烟，一条命令跑完
 ```
-
-> 当前环境的文件系统策略禁止删除文件，构建会退化为“覆盖同名产物”，`dist/` 里可能残留旧哈希资源，不影响加载。
 
 ## 在 Chrome 中加载
 

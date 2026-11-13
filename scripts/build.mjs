@@ -61,12 +61,18 @@ if (watch) {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 } else {
-  await cleanDist();
-  for (const mode of modes) {
-    console.info(`[SimpleTrans] 构建 ${mode} …`);
-    await build(mode);
+  try {
+    await cleanDist();
+    for (const mode of modes) {
+      console.info(`[SimpleTrans] 构建 ${mode} …`);
+      await build(mode);
+    }
+    console.info('[SimpleTrans] 构建完成 → dist/');
+  } catch (error) {
+    console.error(`[SimpleTrans] 构建失败：${error?.message ?? error}`);
+    console.error('[SimpleTrans] dist 可能不完整，请修复后重新运行 npm run build。');
+    process.exit(1);
   }
-  console.info('[SimpleTrans] 构建完成 → dist/');
 }
 
 /**

@@ -1,0 +1,61 @@
+/**
+ * P0 骨架结构测试
+ *
+ * 锁定的是结构不变量，不是行为：
+ * 1. src/ 下每个文件都有模块头（职责 + 实现阶段）；
+ * 2. src/ 不引用 tests/；
+ * 3. 页面注入不引用配置、引擎与缓存模块。
+ *
+ * 行为测试从 P1 起按模块补在 tests/unit/ 下。
+ */
+
+import { readFile, readdir } from 'node:fs/promises';
+import { join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const SRC = join(ROOT, 'src');
+
+/** @param {string} dir @param {string} base */
+async function listFiles(dir, base = dir) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...(await listFiles(full, base)));
+    else out.push(relative(base, full).split(sep).join('/'));
+  }
+  return out;
+}
+
+const files = await listFiles(SRC);
+
+describe('骨架结构', () => {
+  it('src/ 下有源码文件', () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
+
+  it('每个文件都有模块头与实现阶段', async () => {
+    for (const file of files) {
+      const text = await readFile(join(SRC, file), 'utf8');
+      expect(text, `${file} 缺少「职责：」`).toContain('职责：');
+      expect(text, `${file} 缺少「实现阶段：P<n>」`).toMatch(/实现阶段：P\d/);
+    }
+  });
+
+  it('src/ 不引用 tests/', async () => {
+    for (const file of files) {
+      const text = await readFile(join(SRC, file), 'utf8');
+      expect(text, `${file} 引用了 tests/`).not.toMatch(/from\s+['"][^'"]*tests\//);
+    }
+  });
+
+  it('页面注入不引用配置、引擎与缓存模块', async () => {
+    const contentFiles = files.filter((file) => file.startsWith('content/'));
+    expect(contentFiles.length).toBeGreaterThan(0);
+    for (const file of contentFiles) {
+      const text = await readFile(join(SRC, file), 'utf8');
+      expect(text, `${file} 引用了受限模块`).not.toMatch(/from\s+['"][^'"]*shared\/(config|translate|cache)\//);
+    }
+  });
+});

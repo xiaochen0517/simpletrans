@@ -1,30 +1,10 @@
 /**
- * 右键菜单入口：「翻译此段」
+ * A1 右键菜单入口
  *
- * 与段落快捷键共用 `SCOPE.PARAGRAPH`。注意 `contextMenus.onClicked` 不提供
- * 点击坐标，Content 侧只能使用右键前最后一次 `lastPointer`。
+ * 模块：后台服务（A）/ A1
+ * 职责：注册「翻译此段」菜单项，并把点击事件交给消息路由。
+ * 依赖：A1 消息路由、E1 消息协议（P2 起）。
+ * 实现阶段：P2（后台网关与页面通道）
+ *
+ * 说明：右键菜单是否作为首版入口待 PLAN Q3 确认；P0 先保留结构与文件。
  */
-
-import { SCOPE, SOURCE } from '../shared/protocol.js';
-import { startOnTab } from './router.js';
-
-const MENU_ID = 'st-translate-paragraph';
-
-/** 创建（或重建）菜单项。 */
-export function setupContextMenu() {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: MENU_ID,
-      title: '翻译此段',
-      contexts: ['page', 'selection'],
-    });
-  });
-}
-
-/** 注册菜单点击监听。必须在 Service Worker 顶层同步调用。 */
-export function registerContextMenu() {
-  chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId !== MENU_ID || !tab?.id) return;
-    void startOnTab(tab.id, { scope: SCOPE.PARAGRAPH, source: SOURCE.CONTEXT_MENU });
-  });
-}
