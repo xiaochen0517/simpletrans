@@ -36,5 +36,6 @@
       "description": "翻译当前段落"
     }
   },
-  "permissions": ["storage", "activeTab", "scripting", "contextMenus"]
+  "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
+  "host_permissions": ["https://api.deepseek.com/*"]
 }
