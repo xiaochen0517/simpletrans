@@ -49,7 +49,7 @@ export default defineConfig(() => {
           input: r('src/content/index.js'),
           output: {
             format: 'iife',
-            inlineDynamicImports: true,
+            codeSplitting: false,
             entryFileNames: 'content.js',
             assetFileNames: contentAssetFileNames,
           },
@@ -69,7 +69,7 @@ export default defineConfig(() => {
           input: r('src/background/index.js'),
           output: {
             format: 'es',
-            inlineDynamicImports: true,
+            codeSplitting: false,
             entryFileNames: 'background.js',
             chunkFileNames: 'assets/[name]-[hash].js',
           },
