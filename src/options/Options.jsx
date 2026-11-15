@@ -1,24 +1,42 @@
 /**
- * C1–C5 设置页（P1 最小测试表单）
+ * C1–C5 设置页（P2 最小测试表单，经后台执行）
  *
  * 模块：插件独立页面（C）
- * 职责：P1 只提供「密钥配置 + 单段测试翻译」最小表单；完整设置页由 P7 落地。
- * 依赖：E2（settings）、E3（instances）、A3（adapter，P1 临时直连，P2 移除）。
- * 实现阶段：P1（引擎层与密钥配置）
+ * 职责：P2 提供「密钥配置 + 单段测试翻译」最小表单；测试翻译经 ST_TEST_ENGINE 交给后台。
+ * 依赖：E1（protocol）、E3（instances.writeKey）、constants.js。
+ * 实现阶段：P2（后台网关与页面通道）
  *
- * P1 为做演示测试，设置页临时直接调用 A3 适配器（需求文档 P1-5 已确认的临时偏离）；
- * P2 改为经后台执行后，移除本页对 A3 与 `@ai-sdk/deepseek` 的依赖。
+ * 与 P1 的差异：不再直接调用 A3、不再读取密钥明文；hasKey 由 ST_LIST_ENGINES 返回。
+ * 完整设置页由 P7 落地。
  */
 
 import { useEffect, useState } from 'react';
-import { getSettings } from '../shared/settings.js';
-import { getOrCreateDefaultInstance, getKey, hasKey, writeKey } from '../shared/config/instances.js';
-import { translate, TranslateError } from '../shared/translate/adapter.js';
+import { MESSAGE_TYPES } from '../shared/protocol.js';
+import { writeKey } from '../shared/config/instances.js';
 import { MAX_SEGMENT_CHARS } from '../shared/constants.js';
+
+/**
+ * 发一条一次性消息；后台不可用时归一为 NETWORK。
+ * @param {string} type
+ * @param {object} [payload]
+ */
+async function sendToBackground(type, payload) {
+  try {
+    const response = await chrome.runtime.sendMessage({ type, payload });
+    return response ?? { ok: false, error: { code: 'OTHER', message: '后台没有返回结果' } };
+  } catch {
+    return {
+      ok: false,
+      error: { code: 'NETWORK', message: '无法连接后台，请稍后重试' },
+    };
+  }
+}
 
 export default function Options() {
   const [instance, setInstance] = useState(null);
   const [configured, setConfigured] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [keyInput, setKeyInput] = useState('');
   const [text, setText] = useState('Hello world');
   const [result, setResult] = useState(null);
@@ -28,10 +46,17 @@ export default function Options() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const inst = await getOrCreateDefaultInstance();
+      const response = await sendToBackground(MESSAGE_TYPES.LIST_ENGINES);
       if (cancelled) return;
-      setInstance(inst);
-      setConfigured(await hasKey(inst.id));
+      if (response.ok) {
+        const first = response.data?.instances?.[0] ?? null;
+        setInstance(first);
+        setConfigured(Boolean(first?.hasKey));
+        setLoadError(first ? null : '没有可用的引擎实例，请稍后重试');
+      } else {
+        setLoadError(response.error?.message ?? '无法读取引擎配置');
+      }
+      setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -46,6 +71,9 @@ export default function Options() {
       await writeKey(instance.id, key);
       setKeyInput('');
       setConfigured(true);
+      setLoadError(null);
+    } catch {
+      setResult({ status: 'error', message: '保存密钥失败，请重试' });
     } finally {
       setSaving(false);
     }
@@ -65,45 +93,44 @@ export default function Options() {
 
     setBusy(true);
     setResult(null);
-    const started = performance.now();
-    try {
-      const key = await getKey(instance.id);
-      if (!key) {
-        setResult({ status: 'error', code: 'CONFIG', message: '缺少密钥，请先保存密钥' });
-        return;
-      }
-      const settings = await getSettings();
-      const r = await translate({
-        text: t,
-        targetLang: settings.targetLang,
-        instance: { ...instance, apiKey: key },
-      });
+    const response = await sendToBackground(MESSAGE_TYPES.TEST_ENGINE, { text: t });
+    if (response.ok) {
       setResult({
         status: 'success',
-        text: r.text,
-        elapsedMs: Math.round(performance.now() - started),
-        usage: r.usage,
+        text: response.data?.text ?? '',
+        elapsedMs: response.data?.elapsedMs ?? 0,
+        usage: response.data?.usage ?? null,
       });
-    } catch (error) {
-      if (error instanceof TranslateError) {
-        setResult({ status: 'error', code: error.code, message: error.message });
-      } else {
-        setResult({ status: 'error', code: 'OTHER', message: error?.message ?? '未知错误' });
-      }
-    } finally {
-      setBusy(false);
+    } else {
+      setResult({
+        status: 'error',
+        code: response.error?.code,
+        message: response.error?.message ?? '翻译失败',
+      });
     }
+    setBusy(false);
   }
 
   return (
     <main className="max-w-xl mx-auto my-10 px-4 space-y-6">
       <header>
         <h1 className="text-2xl font-bold mb-1">SimpleTrans 设置</h1>
-        <p className="text-sm text-base-content/70">P1 最小测试表单，完整设置页待接入（P7）。</p>
+        <p className="text-sm text-base-content/70">
+          测试翻译经后台执行；完整设置页待接入（P7）。
+        </p>
       </header>
 
+      {loading && <p className="text-sm text-base-content/70">正在读取引擎配置…</p>}
+
+      {loadError && (
+        <div className="rounded-box bg-error/10 text-error p-3 text-sm">{loadError}</div>
+      )}
+
       <section className="space-y-2">
-        <h2 className="text-base font-semibold">DeepSeek 密钥</h2>
+        <h2 className="text-base font-semibold">
+          DeepSeek 密钥
+          {instance?.name ? <span className="text-base-content/60"> · {instance.name}</span> : null}
+        </h2>
         <div className="flex gap-2 items-center">
           <input
             type="password"
@@ -112,8 +139,13 @@ export default function Options() {
             placeholder="sk-..."
             className="input input-bordered flex-1"
             autoComplete="off"
+            disabled={!instance || saving}
           />
-          <button className="btn btn-primary" onClick={onSaveKey} disabled={saving || !keyInput.trim()}>
+          <button
+            className="btn btn-primary"
+            onClick={onSaveKey}
+            disabled={saving || !instance || !keyInput.trim()}
+          >
             保存密钥
           </button>
         </div>
@@ -153,7 +185,10 @@ export default function Options() {
             </div>
           )}
           {result.status === 'error' && (
-            <div className="rounded-box bg-error/10 text-error p-3">{result.message}</div>
+            <div className="rounded-box bg-error/10 text-error p-3">
+              {result.message}
+              {result.code && <span className="text-base-content/50">（{result.code}）</span>}
+            </div>
           )}
         </section>
       )}

@@ -4,9 +4,9 @@
  * 模块：后台服务（A）/ A3
  * 职责：定义每个服务商适配器的统一契约（地址、鉴权、语言码、错误映射与用量），并落地 DeepSeek 实现。
  * 依赖：E1 消息协议（错误分类）、公共数值（超时）、`ai` + `@ai-sdk/deepseek`（P1 起）。
- * 实现阶段：P1（引擎层与密钥配置）
+ * 实现阶段：P1–P2（P1 单段 + 流式；P2 增加可选 signal、取消/超时区分与语言判定）
  *
- * P1 只做单段翻译 + 流式能力；批量编码与解析（batch.js）留 P2/P3。
+ * 批量编码与解析（batch.js）留 P5。
  */
 
 import { streamText } from 'ai';
@@ -14,8 +14,20 @@ import { createDeepSeek } from '@ai-sdk/deepseek';
 import { ERROR_CODES } from '../protocol.js';
 import { AI_TIMEOUT_MS } from '../constants.js';
 
-/** 目标语言显示名（P1 仅中文；多语言映射后续补充）。 */
+/** 目标语言显示名（P2 仅中文；多语言映射后续补充）。 */
 const LANG_NAMES = Object.freeze({ zh: '中文' });
+
+/** 当前支持的目标语言（网关与控制面共用，避免两处各写一份）。 */
+export const SUPPORTED_TARGET_LANGS = Object.freeze(Object.keys(LANG_NAMES));
+
+/**
+ * 判断目标语言是否受支持。
+ * @param {unknown} lang
+ * @returns {boolean}
+ */
+export function isSupportedTargetLang(lang) {
+  return typeof lang === 'string' && Object.hasOwn(LANG_NAMES, lang);
+}
 
 /** 携带统一错误码的可抛出错误。 */
 export class TranslateError extends Error {
@@ -113,10 +125,16 @@ export function buildModel(instance) {
 
 /**
  * 单段翻译。成功返回 `{ text, usage }`；失败抛 `TranslateError`。
- * @param {{ text: string, targetLang: string, instance: Record<string, unknown>, onDelta?: (delta: string) => void }} params
+ * @param {{
+ *   text: string,
+ *   targetLang: string,
+ *   instance: Record<string, unknown>,
+ *   onDelta?: (delta: string) => void,
+ *   signal?: AbortSignal,
+ * }} params
  * @returns {Promise<{ text: string, usage: Record<string, unknown> | null }>}
  */
-export async function translate({ text, targetLang, instance, onDelta }) {
+export async function translate({ text, targetLang, instance, onDelta, signal }) {
   // 空文本短路，不发上游请求。
   if (text == null || String(text).trim() === '') {
     return { text: '', usage: null };
@@ -127,12 +145,21 @@ export async function translate({ text, targetLang, instance, onDelta }) {
     throw new TranslateError(ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥');
   }
 
+  // 调用前已被取消：直接中断，不发上游请求。
+  if (signal?.aborted) {
+    throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
+  }
+
+  // 外部取消与总超时合并：任一触发都中断上游。
+  const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS.total);
+  const abortSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+
   try {
     const result = streamText({
       model: buildModel(instance),
       system: buildSystemPrompt(targetLang),
       prompt: String(text),
-      abortSignal: AbortSignal.timeout(AI_TIMEOUT_MS.total),
+      abortSignal,
     });
 
     let out = '';
@@ -153,6 +180,7 @@ export async function translate({ text, targetLang, instance, onDelta }) {
         : null,
     };
   } catch (error) {
+    if (signal?.aborted) throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
     if (error instanceof TranslateError) throw error;
     const mapped = mapError(error);
     throw new TranslateError(mapped.code, mapped.message);

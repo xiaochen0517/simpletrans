@@ -14,7 +14,14 @@ vi.mock('@ai-sdk/deepseek', () => ({
 import { streamText } from 'ai';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import { ERROR_CODES } from '../../src/shared/protocol.js';
-import { buildSystemPrompt, mapError, normalizeOutput, TranslateError, translate } from '../../src/shared/translate/adapter.js';
+import {
+  buildSystemPrompt,
+  isSupportedTargetLang,
+  mapError,
+  normalizeOutput,
+  TranslateError,
+  translate,
+} from '../../src/shared/translate/adapter.js';
 
 describe('A3 DeepSeek 适配器', () => {
   beforeEach(() => {
@@ -39,6 +46,12 @@ describe('A3 DeepSeek 适配器', () => {
     expect(mapError({ statusCode: 429 }).code).toBe(ERROR_CODES.RATE_LIMIT);
     expect(mapError(new Error('fetch failed')).code).toBe(ERROR_CODES.NETWORK);
     expect(mapError(new Error('something else')).code).toBe(ERROR_CODES.OTHER);
+  });
+
+  it('isSupportedTargetLang 只认当前语言表', () => {
+    expect(isSupportedTargetLang('zh')).toBe(true);
+    expect(isSupportedTargetLang('ja')).toBe(false);
+    expect(isSupportedTargetLang(undefined)).toBe(false);
   });
 
   it('空文本短路，不调上游', async () => {
@@ -84,5 +97,46 @@ describe('A3 DeepSeek 适配器', () => {
     await expect(translate({ text: 'hi', targetLang: 'zh', instance: { apiKey: 'sk-x', model: 'm' } })).rejects.toMatchObject({
       code: ERROR_CODES.AUTH,
     });
+  });
+
+  it('已取消的 signal 短路，不调用上游', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      translate({
+        text: 'hi',
+        targetLang: 'zh',
+        instance: { apiKey: 'sk-x', model: 'm' },
+        signal: controller.signal,
+      })
+    ).rejects.toMatchObject({ code: ERROR_CODES.CANCELLED });
+    expect(streamText).not.toHaveBeenCalled();
+  });
+
+  it('外部取消映射 CANCELLED，而非 NETWORK', async () => {
+    const controller = new AbortController();
+    streamText.mockImplementation(() => {
+      controller.abort();
+      throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+    });
+
+    await expect(
+      translate({
+        text: 'hi',
+        targetLang: 'zh',
+        instance: { apiKey: 'sk-x', model: 'm' },
+        signal: controller.signal,
+      })
+    ).rejects.toMatchObject({ code: ERROR_CODES.CANCELLED });
+  });
+
+  it('超时映射 NETWORK', async () => {
+    streamText.mockImplementation(() => {
+      throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+    });
+
+    await expect(
+      translate({ text: 'hi', targetLang: 'zh', instance: { apiKey: 'sk-x', model: 'm' } })
+    ).rejects.toMatchObject({ code: ERROR_CODES.NETWORK });
   });
 });

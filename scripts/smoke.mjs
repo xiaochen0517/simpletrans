@@ -10,11 +10,11 @@
  *   S5  content 产物不含密钥、引擎与签名相关词
  *   S6  content 产物不出现 storage.sync / storage.local
  *   S7  清单文案中性（不写死引擎名）
- *   S8  骨架约束：background / content 不注册监听器（P0 专用，P2 起放宽）
+ *   S8  入口注册契约：background 注册 onMessage/onConnect，content 连接 st-gateway（P2 起）
  *   S9  产物新鲜度：dist 不早于 src / public / scripts
  *   S10 dist 缺失或不完整时给出单条可操作提示
  *   S11 popup / options 页面骨架含 #root 与 module script
- *   S12 关键产物存在且为文件（骨架阶段允许为空）
+ *   S12 关键产物存在、非空（P2 起；content.css 仍允许为空）
  *
  * 运行：node scripts/smoke.mjs（需先 npm run build）。只读，不构建。
  */
@@ -152,13 +152,17 @@ await test('S3 清单与 package.json 版本一致', () => {
 // ---------------------------------------------------------------- S4 产物格式
 await test('S4 产物格式正确（content 为 IIFE，background 可 import）', async () => {
   const contentCode = await readFile(join(distDir, 'content.js'), 'utf8');
-  // 骨架阶段 content 无代码，vite 8（rolldown）产物为 0 字节空文件，无需校验 IIFE；
-  // 一旦有代码，content.js 必须是 IIFE 单文件（无 ESM 语句）。
+  // content 必须是 IIFE 单文件（无 ESM 语句）。
   if (contentCode.trim() !== '') {
     assert.match(contentCode.trimStart(), /^\(function/, 'content.js 不是 IIFE');
     assert.equal(/^\s*(import|export)\s/m.test(contentCode), false, 'content.js 含 ESM 语句，页面会无法执行');
   }
 
+  // 后台顶层会注册监听器，导入前必须先装 chrome stub。
+  const { installChrome } = await import(
+    pathToFileURL(join(projectRoot, 'tests', 'helpers', 'chrome.js')).href
+  );
+  installChrome();
   await import(pathToFileURL(join(distDir, 'background.js')).href);
 });
 
@@ -188,16 +192,21 @@ await test('S7 清单描述不写死引擎', () => {
   }
 });
 
-// ------------------------------------------------------------ S8 骨架零行为
-// P0 专用断言：P2 接入监听器时，按需求文档同步放宽或替换本项。
-await test('S8 骨架阶段 background / content 未注册监听器', async () => {
+// ------------------------------------------------------------ S8 入口注册
+await test('S8 入口注册：background 注册 onMessage/onConnect，content 连接 st-gateway', async () => {
   const background = await readFile(join(distDir, 'background.js'), 'utf8');
   const content = await readFile(join(distDir, 'content.js'), 'utf8');
-  for (const token of ['chrome.runtime.onMessage', 'chrome.runtime.onConnect', 'chrome.commands.onCommand', 'chrome.contextMenus']) {
-    assert.equal(background.includes(token), false, `background.js 已注册 ${token}，与 P0 骨架不符`);
+
+  for (const token of [
+    'chrome.runtime.onMessage',
+    'chrome.runtime.onConnect',
+    'st-gateway',
+    'ST_TRANSLATE_BATCH',
+  ]) {
+    assert.equal(background.includes(token), true, `background.js 缺少入口注册 ${token}`);
   }
-  for (const token of ['chrome.runtime.onMessage', 'chrome.runtime.onConnect']) {
-    assert.equal(content.includes(token), false, `content.js 已注册 ${token}，与 P0 骨架不符`);
+  for (const token of ['st-gateway', 'ST_PING', 'ST_TRANSLATE_BATCH']) {
+    assert.equal(content.includes(token), true, `content.js 缺少页面通道 ${token}`);
   }
 });
 
@@ -243,14 +252,13 @@ await test('S11 popup / options 页面骨架完整', async () => {
 });
 
 // ---------------------------------------------------------------- S12 非空
-await test('S12 入口产物存在且为文件（骨架阶段允许为空）', async () => {
-  // P0 骨架阶段 background/content 入口只有注释、无代码，vite 8（rolldown）构建后为
-  // 0 字节空文件，属预期；接入实际代码（P2 起）后应恢复「非空」断言。
-  // content.css 在 P3 之前也只有注释，构建后为 0 字节。
+await test('S12 入口产物存在且非空（content.css 仍可为空）', async () => {
   for (const file of ['background.js', 'content.js']) {
     const info = await stat(join(distDir, file));
     assert.ok(info.isFile(), `${file} 不是文件`);
+    assert.ok(info.size > 0, `${file} 为空，P2 起入口必须有代码`);
   }
+  // content.css 在 P3 之前仍允许为空。
 });
 
 // ------------------------------------------------------------------------ 汇总

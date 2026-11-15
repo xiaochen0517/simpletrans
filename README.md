@@ -2,7 +2,7 @@
 
 基于 React + Vite 的 Chrome 扩展（Manifest V3），把网页内容翻译成目标语言，并以双语对照方式显示。目标支持传统 MT 与 AI LLM 多引擎。
 
-> **当前状态：P0 已完成（0.1.0 空骨架）**。代码里只有目录、文件头与静态占位页，没有任何翻译、存储或监听行为。功能从 P1 起按 `docs/PLAN.md` 逐阶段实现，P0–P9 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
+> **当前状态：P0–P2 已完成**。后台已统一翻译出口，页面注入通过 `st-gateway` 长连接发批与收帧；设置页测试翻译经后台执行。P3 起按 `docs/PLAN.md` 实现段落提取与译文渲染。P0–P9 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
 
 ## 目录结构
 
@@ -13,29 +13,29 @@ public/
 src/
   background/          后台服务（A）
     index.js           入口：监听器注册（P2）
-    router.js          A1 消息路由
-    commands.js        A1 快捷键入口
-    context-menu.js    A1 右键菜单入口
-    gateway.js         A2 请求网关
+    router.js          A1 控制面：引擎列表与测试翻译（P2）
+    commands.js        A1 快捷键入口（P3/P6）
+    context-menu.js    A1 右键菜单入口（P6）
+    gateway.js         A2 请求网关：校验、并发、取消、断线（P2）
   popup/               工具栏弹窗（B，静态占位）
     index.html
     main.jsx
     Popup.jsx
     popup.css
-  options/             设置页（C，静态占位）
+  options/             设置页（C，P2 最小测试表单经后台）
     index.html
     main.jsx
     Options.jsx
   content/             页面注入（D）
-    index.js           入口（只引用 content.css）
-    bridge.js          D4 与后台通信
-    hover.js           D2 悬停检测
-    task.js            D5 状态上报与任务调度
-    dom/scanner.js     D1 段落提取
-    dom/renderer.js    D3 译文渲染
+    index.js           入口：建立桥单例（P2）
+    bridge.js          D4 与后台通信：连接、心跳、重连（P2）
+    hover.js           D2 悬停检测（P3）
+    task.js            D5 状态上报与任务调度（P5）
+    dom/scanner.js     D1 段落提取（P3）
+    dom/renderer.js    D3 译文渲染（P3）
     content.css        译文样式（P3 前只有注释）
   shared/              公共模块（E）与引擎/缓存目录
-    protocol.js        E1 消息协议
+    protocol.js        E1 消息协议：错误码、消息名、失败原因
     constants.js       超时、并发、心跳等数值
     storage.js         E2 存储读写
     settings.js        E2 设置与密钥
@@ -48,8 +48,11 @@ scripts/
   smoke.mjs            无浏览器冒烟门禁（基于 dist 产物）
   gen-icons.js         生成占位图标
 tests/
-  unit/structure.test.js        骨架结构与空壳约定
+  unit/structure.test.js        结构、依赖边界与空壳约定
   unit/architecture.test.js     架构 3.1 目录树与仓库一致性
+  unit/*.test.js                P1/P2 行为测试（协议、存储、设置、实例、适配器、网关、路由、桥、入口）
+  helpers/chrome.js             chrome API stub（storage / runtime / Port）
+  helpers/load.js               安装 stub 与动态导入
 vitest.config.js       单元测试配置
 vite.config.js         构建配置（按模式切换产物格式）
 dist/                  构建产物（加载到 Chrome 的目录，已在 .gitignore 中忽略）
@@ -75,7 +78,7 @@ Content Script **不是 ES Module**，产物必须是自包含单文件（IIFE�
 
 ```bash
 npm install
-npm test        # 单元测试（结构 + 架构一致性）
+npm test        # 单元测试（结构 + 架构一致性 + 行为）
 npm run dev     # 并行监听构建三个产物到 dist/
 npm run build   # 生产构建（先清空 dist）
 npm run smoke   # 无浏览器冒烟检查（先 build）

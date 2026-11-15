@@ -58,4 +58,18 @@ describe('骨架结构', () => {
       expect(text, `${file} 引用了受限模块`).not.toMatch(/from\s+['"][^'"]*shared\/(config|translate|cache)\//);
     }
   });
+
+  it('设置页与弹窗不引用引擎、缓存模块或 SDK', async () => {
+    const pageFiles = files.filter(
+      (file) => file.startsWith('options/') || file.startsWith('popup/')
+    );
+    expect(pageFiles.length).toBeGreaterThan(0);
+    for (const file of pageFiles) {
+      const text = await readFile(join(SRC, file), 'utf8');
+      expect(text, `${file} 引用了 A3/A4`).not.toMatch(
+        /from\s+['"][^'"]*shared\/(translate|cache)\//
+      );
+      expect(text, `${file} 直接引用了 SDK`).not.toMatch(/from\s+['"](ai|@ai-sdk\/)/);
+    }
+  });
 });
