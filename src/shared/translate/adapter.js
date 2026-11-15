@@ -6,13 +6,17 @@
  * 依赖：E1 消息协议（错误分类）、公共数值（超时）、`ai` + `@ai-sdk/deepseek`（P1 起）。
  * 实现阶段：P1–P2（P1 单段 + 流式；P2 增加可选 signal、取消/超时区分与语言判定）
  *
- * 批量编码与解析（batch.js）留 P5。
+ * 批量编码与解析（batch.js）留 P6。
  */
 
 import { streamText } from 'ai';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import { ERROR_CODES } from '../protocol.js';
 import { AI_TIMEOUT_MS } from '../constants.js';
+import { createLogger } from '../log/logger.js';
+
+/** A3 日志入口；只记录引擎类型、模型、耗时与错误码，不含原文/提示词/密钥。 */
+const log = createLogger('A3');
 
 /** 目标语言显示名（P2 仅中文；多语言映射后续补充）。 */
 const LANG_NAMES = Object.freeze({ zh: '中文' });
@@ -150,6 +154,11 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
     throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
   }
 
+  const engine = String(instance.type ?? '');
+  const model = String(instance.model ?? '');
+  const startedAt = Date.now();
+  log.debug('engine.request', '调用翻译引擎', { engine, model });
+
   // 外部取消与总超时合并：任一触发都中断上游。
   const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS.total);
   const abortSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -169,8 +178,15 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
     }
 
     const usage = await result.usage;
+    const normalized = normalizeOutput(out);
+    log.debug('engine.done', '引擎返回', {
+      engine,
+      model,
+      elapsedMs: Date.now() - startedAt,
+      totalTokens: usage?.totalTokens ?? null,
+    });
     return {
-      text: normalizeOutput(out),
+      text: normalized,
       usage: usage
         ? {
             promptTokens: usage.promptTokens ?? null,
@@ -180,9 +196,31 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
         : null,
     };
   } catch (error) {
-    if (signal?.aborted) throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
-    if (error instanceof TranslateError) throw error;
+    if (signal?.aborted) {
+      log.warn('engine.error', '引擎调用失败', {
+        engine,
+        model,
+        code: ERROR_CODES.CANCELLED,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
+    }
+    if (error instanceof TranslateError) {
+      log.warn('engine.error', '引擎调用失败', {
+        engine,
+        model,
+        code: error.code,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
     const mapped = mapError(error);
+    log.warn('engine.error', '引擎调用失败', {
+      engine,
+      model,
+      code: mapped.code,
+      elapsedMs: Date.now() - startedAt,
+    });
     throw new TranslateError(mapped.code, mapped.message);
   }
 }

@@ -21,7 +21,7 @@ export const ENGINE_TYPE_IDS = Object.freeze({
  * - label：显示名；
  * - baseUrl：接口地址（默认值）；
  * - defaultModel：默认模型；
- * - fields：实例可配置字段（P7 表单据此生成）。
+ * - fields：实例可配置字段（P8 表单据此生成）。
  */
 export const ENGINE_TYPES = Object.freeze({
   [ENGINE_TYPE_IDS.DEEPSEEK]: Object.freeze({

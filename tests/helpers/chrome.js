@@ -3,10 +3,10 @@
  *
  * 模块：测试基建（tests/helpers）
  * 职责：在 Node 环境里用内存实现本项目用到的 chrome API 语义，供单元测试与冒烟脚本复用。
- * 实现阶段：P1–P2（storage 三区 P1；runtime 事件、runtime.connect、Port P2）
+ * 实现阶段：P1–P3（storage 三区 P1；runtime 事件、Port P2；storage.onChanged、getManifest、getURL P3）
  *
  * P2 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
- * tabs.sendMessage、scripting 随 P3/P6 首次使用时补（见项目架构 7.3、7.4）。
+ * P3 补 storage.onChanged、getManifest、getURL；tabs.sendMessage、scripting 随 P4/P7 首次使用时补。
  */
 
 let portSequence = 0;
@@ -43,11 +43,21 @@ function makeEvent() {
  * - get 支持字符串 / 数组 / 对象（带默认值）三种入参；null/undefined 返回全部；
  * - 数组入参只返回存在的键，缺失键省略；
  * - 对象入参合并默认值；
- * - set 合并写；remove 删除；clear 清空。
+ * - set 合并写；remove 删除；clear 清空；
+ * - 写操作按 chrome.storage.onChanged 语义发出变更（含 oldValue/newValue）。
+ * @param {string} areaName
+ * @param {object} onChanged
  * @returns {object}
  */
-function makeArea() {
+function makeArea(areaName, onChanged) {
   const store = new Map();
+
+  /**
+   * @param {Record<string, object>} changes
+   */
+  function emitChanges(changes) {
+    if (Object.keys(changes).length > 0) onChanged.emit(changes, areaName);
+  }
 
   return {
     async get(keys) {
@@ -71,14 +81,29 @@ function makeArea() {
       return out;
     },
     async set(values) {
-      for (const [key, value] of Object.entries(values)) store.set(key, value);
+      const changes = {};
+      for (const [key, value] of Object.entries(values)) {
+        changes[key] = { oldValue: store.get(key), newValue: value };
+        store.set(key, value);
+      }
+      emitChanges(changes);
     },
     async remove(keys) {
       const list = Array.isArray(keys) ? keys : [keys];
-      for (const key of list) store.delete(key);
+      const changes = {};
+      for (const key of list) {
+        if (store.has(key)) {
+          changes[key] = { oldValue: store.get(key) };
+          store.delete(key);
+        }
+      }
+      emitChanges(changes);
     },
     async clear() {
+      const changes = {};
+      for (const [key, value] of store) changes[key] = { oldValue: value };
       store.clear();
+      emitChanges(changes);
     },
   };
 }
@@ -135,11 +160,18 @@ function makePortPair(name, serverSender) {
 export function createChrome() {
   const onMessage = makeEvent();
   const onConnect = makeEvent();
+  const onStorageChanged = makeEvent();
 
   const runtime = {
     id: 'test-extension-id',
     onMessage,
     onConnect,
+    getManifest() {
+      return { version: '0.1.0' };
+    },
+    getURL(path = '') {
+      return `chrome-extension://${runtime.id}/${String(path).replace(/^\/+/, '')}`;
+    },
     connect(options = {}) {
       const { client, server } = makePortPair(options.name ?? '', { id: runtime.id });
       onConnect.emit(server);
@@ -171,9 +203,10 @@ export function createChrome() {
   return {
     runtime,
     storage: {
-      local: makeArea(),
-      sync: makeArea(),
-      session: makeArea(),
+      onChanged: onStorageChanged,
+      local: makeArea('local', onStorageChanged),
+      sync: makeArea('sync', onStorageChanged),
+      session: makeArea('session', onStorageChanged),
     },
   };
 }

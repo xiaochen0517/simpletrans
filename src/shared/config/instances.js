@@ -139,9 +139,9 @@ export async function getFullSettings() {
 
 /**
  * 旧配置惰性迁移入口：把旧的单一密钥转成默认引擎实例。
- * P1 只落空壳语义（当前无旧键可迁移），数据面由 P7 补；重复执行不产生重复实例。
+ * P1 只落空壳语义（当前无旧键可迁移），数据面由 P8 补；重复执行不产生重复实例。
  * @returns {Promise<void>}
  */
 export async function migrateLegacyKey() {
-  // P7 前无旧版配置，暂不迁移。
+  // P8 前无旧版配置，暂不迁移。
 }

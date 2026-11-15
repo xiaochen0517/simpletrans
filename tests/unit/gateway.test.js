@@ -139,14 +139,43 @@ describe('A2 请求网关：连接与心跳', () => {
     expect(wrongSenderDisconnect).toHaveBeenCalled();
   });
 
-  it('ST_PING 立即回 ST_PONG，带 sentAt 与 receivedAt', () => {
+  it('ST_PING 立即回 ST_PONG，随后下发一次 ST_LOG_CONFIG', async () => {
     const { client, frames } = connectGateway();
     client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 42 } });
 
-    expect(frames).toHaveLength(1);
     expect(frames[0].type).toBe(MESSAGE_TYPES.PONG);
     expect(frames[0].payload.sentAt).toBe(42);
     expect(typeof frames[0].payload.receivedAt).toBe('number');
+
+    await vi.waitFor(() => {
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toBe(true);
+    });
+    const config = frames.find((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG);
+    expect(config.payload.level).toBe('info');
+  });
+
+  it('同一连接只下发一次 ST_LOG_CONFIG', async () => {
+    const { client, frames } = connectGateway();
+    client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 1 } });
+    client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 2 } });
+
+    await vi.waitFor(() => {
+      expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toHaveLength(1);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toHaveLength(1);
+  });
+
+  it('日志级别非法时归一为 info', async () => {
+    await chrome.storage.sync.set({ settings: { logLevel: 'nope' } });
+    const { client, frames } = connectGateway();
+    client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 3 } });
+
+    await vi.waitFor(() => {
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toBe(true);
+    });
+    const config = frames.find((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG);
+    expect(config.payload.level).toBe('info');
   });
 });
 

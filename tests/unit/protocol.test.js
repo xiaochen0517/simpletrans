@@ -14,6 +14,7 @@ import {
   isKnownCode,
   isKnownMessageType,
   makeError,
+  normalizeTraceId,
 } from '../../src/shared/protocol.js';
 
 describe('E1 错误码与分类标志', () => {
@@ -68,10 +69,12 @@ describe('E1 消息名与载荷校验', () => {
     expect(MESSAGE_TYPES.PING).toBe('ST_PING');
     expect(MESSAGE_TYPES.PONG).toBe('ST_PONG');
     expect(MESSAGE_TYPES.CLOSE).toBe('ST_CLOSE');
+    expect(MESSAGE_TYPES.LOG_CONFIG).toBe('ST_LOG_CONFIG');
   });
 
   it('isKnownMessageType 只认架构 4.6 的名字', () => {
     expect(isKnownMessageType('ST_TRANSLATE_BATCH')).toBe(true);
+    expect(isKnownMessageType('ST_LOG_CONFIG')).toBe(true);
     expect(isKnownMessageType('ST_STOP')).toBe(false);
     expect(isKnownMessageType('ST_RETRY')).toBe(false);
     expect(isKnownMessageType('ST_GET_STATUS')).toBe(false);
@@ -107,5 +110,15 @@ describe('E1 消息名与载荷校验', () => {
       message: '失败',
       reason: 'X',
     });
+  });
+
+  it('normalizeTraceId 只保留非空且不超过 64 的字符串', () => {
+    expect(normalizeTraceId('t-123')).toBe('t-123');
+    expect(normalizeTraceId('  t-123  ')).toBe('t-123');
+    expect(normalizeTraceId('')).toBeUndefined();
+    expect(normalizeTraceId('   ')).toBeUndefined();
+    expect(normalizeTraceId('x'.repeat(65))).toBeUndefined();
+    expect(normalizeTraceId(42)).toBeUndefined();
+    expect(normalizeTraceId(null)).toBeUndefined();
   });
 });

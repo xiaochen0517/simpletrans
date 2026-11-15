@@ -12,14 +12,15 @@
 
 import { STORAGE_KEYS, read, write } from './storage.js';
 
-/** 默认设置（完整编辑界面留 P7，这里先定 schema 与默认值）。 */
+/** 默认设置（完整编辑界面留 P8，这里先定 schema 与默认值）。 */
 export const DEFAULT_SETTINGS = Object.freeze({
   enabled: true, // 扩展总开关
   targetLang: 'zh', // 目标语言（P1 固定中文）
   sourceLang: 'auto', // 源语言（P1 固定 auto，智能识别延后）
   keyStorage: 'local', // 密钥存放位置：local / sync
-  cacheEnabled: true, // 译文缓存开关（P4 生效）
+  cacheEnabled: true, // 译文缓存开关（P5 生效）
   concurrency: 3, // 用户并发数（P2 生效）
+  logLevel: 'info', // 日志级别：debug / info / warn / error / off（P3 生效）
 });
 
 /**

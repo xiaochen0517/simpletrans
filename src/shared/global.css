@@ -1,7 +1,7 @@
 /*
  * 全局样式（弹窗与设置页共用）
  * 职责：引入 Tailwind 与 daisyUI，提供页面级基础样式。
- * 实现阶段：P6–P7（随页面样式）
+ * 实现阶段：P7–P8（随页面样式）
  */
 @import "tailwindcss";
 @plugin "daisyui";

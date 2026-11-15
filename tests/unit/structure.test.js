@@ -72,4 +72,29 @@ describe('骨架结构', () => {
       expect(text, `${file} 直接引用了 SDK`).not.toMatch(/from\s+['"](ai|@ai-sdk\/)/);
     }
   });
+
+  it('除 E4 logger 外不直接使用 console', async () => {
+    expect(files).toContain('shared/log/logger.js');
+    for (const file of files) {
+      if (file === 'shared/log/logger.js') continue;
+      const text = await readFile(join(SRC, file), 'utf8');
+      expect(text, `${file} 直接使用了 console`).not.toMatch(/\bconsole\s*[.?]/);
+    }
+  });
+
+  it('E4 日志模块不依赖存储与设置', async () => {
+    const logFiles = files.filter((file) => file.startsWith('shared/log/'));
+    expect([...logFiles].sort()).toEqual([
+      'shared/log/levels.js',
+      'shared/log/logger.js',
+      'shared/log/record.js',
+    ]);
+    for (const file of logFiles) {
+      const text = await readFile(join(SRC, file), 'utf8');
+      expect(text, `${file} 引用了存储`).not.toMatch(/chrome\.storage/);
+      expect(text, `${file} 引用了设置模块`).not.toMatch(
+        /from\s+['"][^'"]*(?:settings|storage)\.js/
+      );
+    }
+  });
 });

@@ -44,8 +44,8 @@ export const RECONNECT_DELAYS_MS = Object.freeze([1000, 2000, 4000]);
 
 /**
  * AI 超时（架构 5.3）。
- * - singleSegment：单段首响应超时，15 秒（P8 落地判定）；
- * - delta：增量间隔超时，30 秒无新增量视为卡住（P8 落地判定）；
+ * - singleSegment：单段首响应超时，15 秒（P9 落地判定）；
+ * - delta：增量间隔超时，30 秒无新增量视为卡住（P9 落地判定）；
  * - total：单段总计超时，120 秒；
  * - batchTotal：整批总计超时，180 秒，必须小于后台单次事件的 5 分钟上限。
  */

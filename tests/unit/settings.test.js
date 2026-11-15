@@ -17,6 +17,12 @@ describe('E2 设置', () => {
     expect(settings.extra).toBe(1);
   });
 
+  it('默认日志级别为 info', async () => {
+    expect((await getSettings()).logLevel).toBe('info');
+    const saved = await saveSettings({ logLevel: 'debug' });
+    expect(saved.logLevel).toBe('debug');
+  });
+
   it('saveSettings 合并写回并返回完整设置', async () => {
     const saved = await saveSettings({ concurrency: 5 });
     expect(saved.concurrency).toBe(5);

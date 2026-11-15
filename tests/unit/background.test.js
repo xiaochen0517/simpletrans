@@ -27,7 +27,10 @@ import { MESSAGE_TYPES, PORT_NAME } from '../../src/shared/protocol.js';
 
 beforeEach(() => {
   vi.resetModules();
+  vi.spyOn(console, 'debug').mockImplementation(() => {});
   vi.spyOn(console, 'info').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -49,7 +52,7 @@ describe('后台入口', () => {
     expect(response.data.instances).toHaveLength(1);
   });
 
-  it('st-gateway 端口上的 ST_PING 立即回 ST_PONG', async () => {
+  it('st-gateway 端口上的 ST_PING 立即回 ST_PONG，并异步下发 ST_LOG_CONFIG', async () => {
     await importFresh('../../src/background/index.js');
     const frames = [];
     const client = chrome.runtime.connect({ name: PORT_NAME });
@@ -57,12 +60,25 @@ describe('后台入口', () => {
 
     client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 7 } });
 
-    expect(frames).toHaveLength(1);
     expect(frames[0]).toMatchObject({
       type: MESSAGE_TYPES.PONG,
       payload: { sentAt: 7 },
     });
+    await vi.waitFor(() => {
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toBe(true);
+    });
+    const config = frames.find((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG);
+    expect(config.payload.level).toBe('info');
     client.disconnect();
+  });
+
+  it('storage.onChanged 更新后台日志级别', async () => {
+    await importFresh('../../src/background/index.js');
+    const { getLogLevel } = await import('../../src/shared/log/logger.js');
+    await vi.waitFor(() => expect(getLogLevel()).toBe('info'));
+
+    await chrome.storage.sync.set({ settings: { logLevel: 'debug' } });
+    await vi.waitFor(() => expect(getLogLevel()).toBe('debug'));
   });
 
   it('未知一次性消息返回统一错误', async () => {

@@ -6,7 +6,7 @@
  * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A2（gateway 的并发名额）。
  * 实现阶段：P2（后台网关与页面通道）
  *
- * P2 只落控制面；标签页转发（ST_ROUTE/ST_START/ST_TOGGLE/ST_CLEAR）随 P3/P6 落地。
+ * P2 只落控制面；标签页转发（ST_ROUTE/ST_START/ST_TOGGLE/ST_CLEAR）随 P4/P7 落地。
  */
 
 import {
@@ -16,13 +16,18 @@ import {
   findForbiddenField,
   isKnownMessageType,
   makeError,
+  normalizeTraceId,
 } from '../shared/protocol.js';
 import { MAX_SEGMENT_CHARS } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
+import { createLogger } from '../shared/log/logger.js';
 import { getKey, getOrCreateDefaultInstance, getPublicSettings } from '../shared/config/instances.js';
 import { validateInstance } from '../shared/config/registry.js';
 import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
 import { normalizeConcurrency, withUpstreamSlot } from './gateway.js';
+
+/** A1 日志入口。 */
+const log = createLogger('A1');
 
 /**
  * 处理一条一次性消息。
@@ -32,22 +37,39 @@ import { normalizeConcurrency, withUpstreamSlot } from './gateway.js';
  */
 export async function handleMessage(message, sender) {
   if (!sender || sender.id !== chrome.runtime.id) {
+    log.warn('message.rejected', '拒绝来自扩展外部的消息');
     return failure(ERROR_CODES.OTHER, '拒绝来自扩展外部的消息');
   }
   if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
+    log.warn('message.rejected', '无法识别的消息');
     return failure(ERROR_CODES.OTHER, '无法识别的消息', FAILURE_REASONS.INVALID_MESSAGE);
   }
 
+  const traceId = normalizeTraceId(message.payload?.traceId);
+  log.debug('message.received', '收到一次性消息', { type: message.type, traceId });
+
   try {
+    let response;
     if (message.type === MESSAGE_TYPES.LIST_ENGINES) {
-      return await listEngines();
+      response = await listEngines();
+    } else if (message.type === MESSAGE_TYPES.TEST_ENGINE) {
+      response = await testEngine(message.payload);
+    } else {
+      const text = isKnownMessageType(message.type) ? '该消息暂未实现' : '无法识别的消息';
+      response = failure(ERROR_CODES.OTHER, text, FAILURE_REASONS.INVALID_MESSAGE);
     }
-    if (message.type === MESSAGE_TYPES.TEST_ENGINE) {
-      return await testEngine(message.payload);
+
+    if (!response.ok) {
+      log.warn('message.rejected', '控制面请求失败', {
+        type: message.type,
+        code: response.error?.code,
+        ...(response.error?.reason ? { reason: response.error.reason } : {}),
+        ...(traceId ? { traceId } : {}),
+      });
     }
-    const text = isKnownMessageType(message.type) ? '该消息暂未实现' : '无法识别的消息';
-    return failure(ERROR_CODES.OTHER, text, FAILURE_REASONS.INVALID_MESSAGE);
+    return response;
   } catch (error) {
+    log.error('message.error', '控制面请求异常', { type: message.type }, error);
     return failure(ERROR_CODES.OTHER, `请求处理失败：${error?.message ?? error}`);
   }
 }
@@ -84,6 +106,8 @@ async function testEngine(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return failure(ERROR_CODES.OTHER, '请求参数无效', FAILURE_REASONS.INVALID_MESSAGE);
   }
+  const traceId = normalizeTraceId(payload.traceId);
+  const traceLog = log.withTrace(traceId);
 
   if (findForbiddenField(payload)) {
     return failure(ERROR_CODES.OTHER, '请求包含不允许的字段', FAILURE_REASONS.FORBIDDEN_FIELD);
@@ -112,6 +136,11 @@ async function testEngine(payload) {
   if (!isSupportedTargetLang(targetLang)) {
     return failure(ERROR_CODES.OTHER, '不支持的目标语言', FAILURE_REASONS.UNSUPPORTED_LANG);
   }
+
+  traceLog.info('engine.test.start', '开始测试翻译', {
+    textLength: text.length,
+    targetLang,
+  });
 
   let instance;
   let apiKey;
@@ -144,6 +173,12 @@ async function testEngine(payload) {
       }
     }, normalizeConcurrency(settings.concurrency));
 
+    traceLog.info('engine.test.done', '测试翻译完成', {
+      ok: true,
+      elapsedMs,
+      totalTokens: result.usage?.totalTokens ?? null,
+    });
+
     return {
       ok: true,
       data: {
@@ -153,6 +188,12 @@ async function testEngine(payload) {
       },
     };
   } catch (error) {
+    const code = error instanceof TranslateError ? error.code : ERROR_CODES.OTHER;
+    traceLog.warn('engine.test.done', '测试翻译失败', {
+      ok: false,
+      code,
+      elapsedMs,
+    });
     if (error instanceof TranslateError) {
       return failure(error.code, error.message);
     }

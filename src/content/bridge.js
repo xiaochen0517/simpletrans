@@ -20,6 +20,10 @@ import {
   HEARTBEAT_TIMEOUT_MS,
   RECONNECT_DELAYS_MS,
 } from '../shared/constants.js';
+import { createLogger } from '../shared/log/logger.js';
+
+/** D4 日志入口；只记录状态、计数与等待时间。 */
+const log = createLogger('D4');
 
 /** 桥本地错误：形状与协议错误对象一致，便于上层统一处理。 */
 export class BridgeError extends Error {
@@ -64,6 +68,7 @@ export function createBridge({ onFrame, onStateChange, onDisconnect } = {}) {
     } catch {
       // 观察者异常不影响通道。
     }
+    log.info('bridge.state', '通道状态变化', { state });
   }
 
   function clearTimers() {
@@ -96,7 +101,7 @@ export function createBridge({ onFrame, onStateChange, onDisconnect } = {}) {
     }
     pendingRequestIds.clear();
     setState('closed');
-    console.info('[SimpleTrans] 扩展已重新加载，请刷新页面');
+    log.info('bridge.invalidated', '扩展已重新加载，请刷新页面');
   }
 
   function scheduleReconnect() {
@@ -104,7 +109,7 @@ export function createBridge({ onFrame, onStateChange, onDisconnect } = {}) {
     const delay =
       RECONNECT_DELAYS_MS[Math.min(reconnectIndex, RECONNECT_DELAYS_MS.length - 1)];
     reconnectIndex += 1;
-    console.debug(`[SimpleTrans] ${delay}ms 后重连后台`);
+    log.debug('bridge.reconnect', '等待重连后台', { delayMs: delay });
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
@@ -153,7 +158,7 @@ export function createBridge({ onFrame, onStateChange, onDisconnect } = {}) {
     pongTimer = setTimeout(() => {
       pongTimer = null;
       if (activePort !== port) return;
-      console.info('[SimpleTrans] 心跳超时，准备重连');
+      log.warn('bridge.heartbeat', '心跳超时，准备重连');
       handleDisconnect();
     }, HEARTBEAT_TIMEOUT_MS);
 
@@ -175,7 +180,7 @@ export function createBridge({ onFrame, onStateChange, onDisconnect } = {}) {
       pongTimer = null;
     }
     if (typeof payload?.sentAt === 'number') {
-      console.debug('[SimpleTrans] 心跳正常', {
+      log.debug('bridge.heartbeat', '心跳正常', {
         count: pingCount,
         rtt: Date.now() - payload.sentAt,
       });

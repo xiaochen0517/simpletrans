@@ -27,7 +27,7 @@ export const ERROR_CODES = Object.freeze({
 export const ERROR_FLAGS = Object.freeze({
   [ERROR_CODES.CONFIG]: Object.freeze({ retryable: false, splittable: false, fallbackable: true }),
   [ERROR_CODES.AUTH]: Object.freeze({ retryable: false, splittable: false, fallbackable: true }),
-  // 限流重试仍失败后才切换备用（见架构 6.8）；切换时机由 P8 决定。
+  // 限流重试仍失败后才切换备用（见架构 6.8）；切换时机由 P9 决定。
   [ERROR_CODES.RATE_LIMIT]: Object.freeze({ retryable: true, splittable: false, fallbackable: true }),
   [ERROR_CODES.NETWORK]: Object.freeze({ retryable: true, splittable: false, fallbackable: false }),
   [ERROR_CODES.BATCH_ALIGN]: Object.freeze({ retryable: false, splittable: true, fallbackable: false }),
@@ -62,10 +62,10 @@ export const PORT_NAME = 'st-gateway';
  */
 export const MESSAGE_TYPES = Object.freeze({
   // 控制面：一次性消息
-  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发（P6）
-  START: 'ST_START', // 后台 → 页面注入：开始整页任务（P3/P6）
-  TOGGLE: 'ST_TOGGLE', // 后台 → 页面注入：切换当前段（P3）
-  CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部译文（P3）
+  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发（P7）
+  START: 'ST_START', // 后台 → 页面注入：开始整页任务（P4/P7）
+  TOGGLE: 'ST_TOGGLE', // 后台 → 页面注入：切换当前段（P4）
+  CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部译文（P4）
   LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表（P2）
   TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译（P2）
 
@@ -81,7 +81,8 @@ export const MESSAGE_TYPES = Object.freeze({
   CANCEL_BATCH: 'ST_CANCEL_BATCH',
   CANCEL_ITEM: 'ST_CANCEL_ITEM',
   CLOSE: 'ST_CLOSE',
-  ENGINE_CHANGED: 'ST_ENGINE_CHANGED', // 后台 → 页面注入：切备用（P8）
+  ENGINE_CHANGED: 'ST_ENGINE_CHANGED', // 后台 → 页面注入：切备用（P9）
+  LOG_CONFIG: 'ST_LOG_CONFIG', // 后台 → 页面注入：连接建立后下发日志级别（P3）
 });
 
 const KNOWN_MESSAGE_TYPES = new Set(Object.values(MESSAGE_TYPES));
@@ -164,4 +165,16 @@ export function findForbiddenField(value) {
  */
 export function makeError(code, message, reason) {
   return reason ? { code, message, reason } : { code, message };
+}
+
+/**
+ * 归一可选的 traceId：非空字符串且 ≤ 64 才保留，其余返回 undefined。
+ * 只用于日志关联，不参与业务校验。
+ * @param {unknown} value
+ * @returns {string | undefined}
+ */
+export function normalizeTraceId(value) {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 64 ? trimmed : undefined;
 }

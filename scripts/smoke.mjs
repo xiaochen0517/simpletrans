@@ -10,7 +10,7 @@
  *   S5  content 产物不含密钥、引擎与签名相关词
  *   S6  content 产物不出现 storage.sync / storage.local
  *   S7  清单文案中性（不写死引擎名）
- *   S8  入口注册契约：background 注册 onMessage/onConnect，content 连接 st-gateway（P2 起）
+ *   S8  入口注册契约：background 注册 onMessage/onConnect，content 连接 st-gateway，且均含 ST_LOG_CONFIG（P3 起）
  *   S9  产物新鲜度：dist 不早于 src / public / scripts
  *   S10 dist 缺失或不完整时给出单条可操作提示
  *   S11 popup / options 页面骨架含 #root 与 module script
@@ -163,7 +163,24 @@ await test('S4 产物格式正确（content 为 IIFE，background 可 import）'
     pathToFileURL(join(projectRoot, 'tests', 'helpers', 'chrome.js')).href
   );
   installChrome();
-  await import(pathToFileURL(join(distDir, 'background.js')).href);
+  // 入口会初始化日志并输出 logger.ready；冒烟只验证产物契约，临时静音。
+  const muted = {
+    debug: console.debug,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+  };
+  console.debug = () => {};
+  console.info = () => {};
+  console.warn = () => {};
+  console.error = () => {};
+  try {
+    await import(pathToFileURL(join(distDir, 'background.js')).href);
+    // 让 getSettings().finally 的 logger.ready 在静音窗口内跑完。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    Object.assign(console, muted);
+  }
 });
 
 // -------------------------------------------------------------- S5 敏感信息
@@ -202,10 +219,11 @@ await test('S8 入口注册：background 注册 onMessage/onConnect，content �
     'chrome.runtime.onConnect',
     'st-gateway',
     'ST_TRANSLATE_BATCH',
+    'ST_LOG_CONFIG',
   ]) {
     assert.equal(background.includes(token), true, `background.js 缺少入口注册 ${token}`);
   }
-  for (const token of ['st-gateway', 'ST_PING', 'ST_TRANSLATE_BATCH']) {
+  for (const token of ['st-gateway', 'ST_PING', 'ST_TRANSLATE_BATCH', 'ST_LOG_CONFIG']) {
     assert.equal(content.includes(token), true, `content.js 缺少页面通道 ${token}`);
   }
 });

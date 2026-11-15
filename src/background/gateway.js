@@ -15,6 +15,7 @@ import {
   PORT_NAME,
   findForbiddenField,
   makeError,
+  normalizeTraceId,
 } from '../shared/protocol.js';
 import {
   AI_TIMEOUT_MS,
@@ -28,11 +29,16 @@ import {
   MAX_SEGMENT_CHARS,
 } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
+import { createLogger, getLogLevel, setLogLevel } from '../shared/log/logger.js';
+import { normalizeLevel } from '../shared/log/levels.js';
 import { getInstances, getKey } from '../shared/config/instances.js';
 import { validateInstance } from '../shared/config/registry.js';
 import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
 
-/** 已连接端口：Port → { port, batches, disconnected }。只在内存中存在。 */
+/** 网关日志入口。 */
+const log = createLogger('A2');
+
+/** 已连接端口：Port → { port, batches, disconnected, logConfigSent }。只在内存中存在。 */
 const connections = new Map();
 
 /** 全局上游并发信号量。 */
@@ -106,13 +112,34 @@ export function handleConnect(port) {
     return null;
   }
 
-  const conn = { port, batches: new Map(), disconnected: false };
+  const conn = { port, batches: new Map(), disconnected: false, logConfigSent: false };
   connections.set(port, conn);
-  console.info('[SimpleTrans] 网关已连接', port.sender?.tab?.id ?? 'extension');
+  log.info('gateway.connect', '网关已连接', { tabId: port.sender?.tab?.id ?? null });
 
   port.onMessage.addListener((message) => onMessage(conn, message));
   port.onDisconnect.addListener(() => cleanupConnection(conn));
   return conn;
+}
+
+/**
+ * 每个连接只下发一次日志级别；读取设置失败时用当前缓存级别（默认 info）。
+ * @param {object} conn
+ */
+async function sendLogConfig(conn) {
+  if (!conn || conn.disconnected || conn.logConfigSent) return;
+  conn.logConfigSent = true;
+
+  let level = getLogLevel();
+  try {
+    const settings = await getSettings();
+    level = normalizeLevel(settings.logLevel);
+    setLogLevel(level);
+  } catch {
+    // 读取失败时保留当前级别，不中断连接。
+  }
+
+  if (conn.disconnected) return;
+  send(conn, { type: MESSAGE_TYPES.LOG_CONFIG, payload: { level } });
 }
 
 /**
@@ -129,6 +156,7 @@ function onMessage(conn, message) {
       type: MESSAGE_TYPES.PONG,
       payload: { sentAt: payload?.sentAt ?? null, receivedAt: Date.now() },
     });
+    void sendLogConfig(conn);
     return;
   }
 
@@ -193,6 +221,7 @@ async function beginBatch(conn, payload) {
     rejectBatch(conn, null, ERROR_CODES.OTHER, '请求编号无效', FAILURE_REASONS.INVALID_REQUEST_ID);
     return;
   }
+  const traceId = normalizeTraceId(payload.traceId);
   if (conn.batches.has(requestId)) {
     rejectBatch(conn, requestId, ERROR_CODES.OTHER, '请求编号重复', FAILURE_REASONS.DUPLICATE_REQUEST);
     return;
@@ -378,6 +407,7 @@ async function beginBatch(conn, payload) {
 
   const batch = {
     requestId,
+    traceId,
     conn,
     cancelled: false,
     timedOut: false,
@@ -397,6 +427,11 @@ async function beginBatch(conn, payload) {
 
   conn.batches.set(requestId, batch);
   batch.deadlineTimer = setTimeout(() => onBatchTimeout(batch), AI_TIMEOUT_MS.batchTotal);
+  log.withTrace(traceId).info('batch.start', '开始处理批次', {
+    requestId,
+    items: batch.items.length,
+    targetLang,
+  });
 
   const limit = normalizeConcurrency(settings.concurrency);
   void runBatch(batch, { targetLang, instance, apiKey, limit }).catch((error) => {
@@ -518,6 +553,20 @@ function settle(batch, item, outcome, options = {}) {
   else if (outcome === 'failed') batch.failed += 1;
   else batch.cancelledCount += 1;
 
+  if (outcome === 'failed') {
+    log.withTrace(batch.traceId).warn('item.error', '段落翻译失败', {
+      requestId: batch.requestId,
+      itemId: item.itemId,
+      code: options.code ?? ERROR_CODES.OTHER,
+      ...(options.reason ? { reason: options.reason } : {}),
+    });
+  } else if (outcome === 'cancelled') {
+    log.withTrace(batch.traceId).debug('item.cancel', '段落已取消', {
+      requestId: batch.requestId,
+      itemId: item.itemId,
+    });
+  }
+
   if (!options.notify || batch.conn.disconnected || batch.finished) return;
 
   if (outcome === 'done') {
@@ -573,6 +622,13 @@ function finishBatch(batch) {
       failed: batch.failed,
       cancelled: batch.cancelledCount,
     },
+  });
+
+  log.withTrace(batch.traceId).info('batch.done', '批次结束', {
+    requestId: batch.requestId,
+    done: batch.done,
+    failed: batch.failed,
+    cancelled: batch.cancelledCount,
   });
 }
 
@@ -654,7 +710,7 @@ function cleanupConnection(conn) {
   if (conn.disconnected) return;
   conn.disconnected = true;
   connections.delete(conn.port);
-  console.info('[SimpleTrans] 网关已断开');
+  log.info('gateway.disconnect', '网关已断开', { pendingBatches: conn.batches.size });
 
   for (const batch of conn.batches.values()) {
     batch.finished = true;
@@ -692,6 +748,12 @@ function send(conn, frame) {
  * @param {string} [reason]
  */
 function rejectBatch(conn, requestId, code, message, reason) {
+  log.warn('batch.reject', '批次被拒绝', {
+    requestId: typeof requestId === 'string' ? requestId : null,
+    code,
+    ...(reason ? { reason } : {}),
+  });
+
   send(conn, {
     type: MESSAGE_TYPES.BATCH_DONE,
     payload: {
