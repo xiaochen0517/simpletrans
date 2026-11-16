@@ -21,7 +21,6 @@ vi.mock('../../src/shared/translate/adapter.js', () => {
     TranslateError,
     isSupportedTargetLang: (lang) => lang === 'zh',
     SUPPORTED_TARGET_LANGS: ['zh'],
-    PROMPT_VERSION: 1,
   };
 });
 
@@ -34,9 +33,12 @@ let gateway;
 let storeModule;
 let keyModule;
 let adapter;
+let prompt;
+let batch;
 let instances;
 let settings;
 let instance;
+let promptHash = '';
 let clients = [];
 let currentConn = null;
 
@@ -109,7 +111,10 @@ function expectedKeyFor(text, overrides = {}) {
     model: instance.model,
     sourceLang: 'auto',
     targetLang: overrides.targetLang ?? 'zh',
-    promptVersion: adapter.PROMPT_VERSION,
+    promptVersion: prompt.PROMPT_VERSION,
+    batchEncodingVersion: batch.BATCH_ENCODING_VERSION,
+    reasoningEffort: instance.reasoningEffort,
+    promptHash,
     context: overrides.context ?? '',
     text,
   });
@@ -125,6 +130,8 @@ beforeEach(async () => {
   // getCacheStore() 是模块级单例：重置模块后重新导入，避免跨用例共享连接与 generation。
   vi.resetModules();
   adapter = await import('../../src/shared/translate/adapter.js');
+  prompt = await import('../../src/shared/translate/prompt.js');
+  batch = await import('../../src/shared/translate/batch.js');
   gateway = await import('../../src/background/gateway.js');
   storeModule = await import('../../src/shared/cache/store.js');
   keyModule = await import('../../src/shared/cache/key.js');
@@ -144,6 +151,7 @@ beforeEach(async () => {
   });
 
   instance = await instances.getOrCreateDefaultInstance();
+  promptHash = await prompt.hashPrompt(instance.systemPrompt);
   await instances.writeKey(instance.id, 'sk-test');
 });
 
@@ -192,7 +200,7 @@ describe('A2 + A4：网关接入真实缓存 store（P5）', () => {
     });
 
     const expectedKey = await expectedKeyFor('Hello real cache');
-    expect(expectedKey).toMatch(/^cache:v1:[0-9a-f]{64}$/);
+    expect(expectedKey).toMatch(/^cache:v2:[0-9a-f]{64}$/);
     // 域名不进入 key：同文本 key 与域名无关。
     expect(expectedKey).not.toContain('example.com');
 

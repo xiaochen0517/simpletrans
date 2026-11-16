@@ -208,7 +208,7 @@ async function rawDelete(db, storeName, key) {
 describe('A4 常量', () => {
   it('数据库名、版本、容量、淘汰与回写常量与文档一致', () => {
     expect(CACHE_DB_NAME).toBe('simpletrans-cache');
-    expect(CACHE_DB_VERSION).toBe(1);
+    expect(CACHE_DB_VERSION).toBe(2);
     expect(CACHE_SCHEMA_VERSION).toBe(1);
     expect(CACHE_MAX_BYTES).toBe(1024 * 1024 * 1024);
     expect(CACHE_MAX_ENTRIES).toBe(1_000_000);
@@ -244,6 +244,54 @@ describe('A4 建库与结构', () => {
     const statsStore = db.transaction(['stats'], 'readonly').objectStore('stats');
     expect(statsStore.keyPath).toBe('id');
     expect(await requestResult(statsStore.get('stats'))).toEqual({
+      id: 'stats',
+      entries: 0,
+      bytes: 0,
+      schemaVersion: CACHE_SCHEMA_VERSION,
+    });
+  });
+
+  it('从版本 1 升级到版本 2 时清空旧缓存并重建统计', async () => {
+    // 手工建一个版本 1 的旧库，写入一条 P5 缓存。
+    const legacy = await new Promise((resolve, reject) => {
+      const request = fakeIndexedDB.open(factory.actualName(CACHE_DB_NAME), 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        db.createObjectStore('entries', { keyPath: 'key' });
+        const meta = db.createObjectStore('meta', { keyPath: 'key' });
+        meta.createIndex('by_lastUsedAt', 'lastUsedAt');
+        meta.createIndex('by_domain', 'domain');
+        db.createObjectStore('stats', { keyPath: 'id' });
+        const tx = request.transaction;
+        tx.objectStore('entries').put({
+          key: `cache:v1:${'f'.repeat(64)}`,
+          text: '旧译文',
+          bytes: 300,
+          createdAt: 1,
+        });
+        tx.objectStore('stats').put({
+          id: 'stats',
+          entries: 1,
+          bytes: 300,
+          schemaVersion: 1,
+        });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error('创建旧库失败'));
+    });
+    expect(legacy.version).toBe(1);
+    legacy.close();
+
+    const store = createStore();
+    const stats = await store.stats();
+    expect(stats.entries).toBe(0);
+    expect(stats.bytes).toBe(0);
+
+    const db = await openRaw();
+    expect(db.version).toBe(CACHE_DB_VERSION);
+    expect(await readAll(db, 'entries')).toEqual([]);
+    expect(await readAll(db, 'meta')).toEqual([]);
+    expect(await requestResult(db.transaction(['stats'], 'readonly').objectStore('stats').get('stats'))).toEqual({
       id: 'stats',
       entries: 0,
       bytes: 0,

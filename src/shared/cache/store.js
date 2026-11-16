@@ -5,7 +5,7 @@
  * 职责：在扩展自己的 IndexedDB `simpletrans-cache` 中读写译文缓存，负责容量淘汰、统计与清空；
  *       失败与取消不写入，读写异常只降级为未命中/不写入。
  * 依赖：E4 日志（P5 起）。不依赖 A4 key、E2 存储与设置：key 由调用方算好传入，是否启用缓存由 A2 判断。
- * 实现阶段：P5（译文缓存）
+ * 实现阶段：P5（译文缓存）；P6.2 数据库版本 2，升级时清空 v1 缓存。
  *
  * 结构：`entries` 只放译文与字节数/写入时间；`meta` 放容量、访问时间与来源域名（含 `by_domain` 索引）；
  * `stats` 只放一行汇总。命中只更新 `meta.lastUsedAt`，绝不重写 `entries.text`。
@@ -20,7 +20,7 @@ const log = createLogger('A4');
 export const CACHE_DB_NAME = 'simpletrans-cache';
 
 /** 数据库结构版本；结构变化时递增，旧库按不可信缓存清空重建。 */
-export const CACHE_DB_VERSION = 1;
+export const CACHE_DB_VERSION = 2;
 
 /** 统计记录结构版本。 */
 export const CACHE_SCHEMA_VERSION = 1;

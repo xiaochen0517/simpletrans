@@ -18,7 +18,6 @@ vi.mock('../../src/shared/translate/adapter.js', () => {
     translate: vi.fn(),
     TranslateError,
     SUPPORTED_TARGET_LANGS: ['zh'],
-    PROMPT_VERSION: 1,
     isSupportedTargetLang: (lang) => lang === 'zh',
   };
 });
@@ -110,17 +109,25 @@ import {
   MESSAGE_TYPES,
   PORT_NAME,
 } from '../../src/shared/protocol.js';
-import { DEFAULT_CONCURRENCY } from '../../src/shared/constants.js';
-import { getOrCreateDefaultInstance, removeKey, writeKey } from '../../src/shared/config/instances.js';
+import { DEFAULT_MAX_CONCURRENCY } from '../../src/shared/config/registry.js';
+import {
+  getOrCreateDefaultInstance,
+  removeKey,
+  updateInstance,
+  writeKey,
+} from '../../src/shared/config/instances.js';
 import { saveSettings } from '../../src/shared/settings.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 import { buildCacheKey } from '../../src/shared/cache/key.js';
 import { handleConnect, normalizeConcurrency } from '../../src/background/gateway.js';
-import { PROMPT_VERSION, translate, TranslateError } from '../../src/shared/translate/adapter.js';
+import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
+import { BATCH_ENCODING_VERSION } from '../../src/shared/translate/batch.js';
+import { hashPrompt, PROMPT_VERSION } from '../../src/shared/translate/prompt.js';
 import { __cache } from '../../src/shared/cache/store.js';
 
 let clients = [];
 let instance;
+let promptHash = '';
 let currentConn;
 
 function connectGateway() {
@@ -185,6 +192,9 @@ function cacheKeyFor(text, overrides = {}) {
     sourceLang: 'auto',
     targetLang: overrides.targetLang ?? 'zh',
     promptVersion: PROMPT_VERSION,
+    batchEncodingVersion: BATCH_ENCODING_VERSION,
+    reasoningEffort: instance.reasoningEffort,
+    promptHash,
     context: overrides.context ?? '',
     text,
   });
@@ -236,6 +246,7 @@ beforeEach(async () => {
   });
 
   instance = await getOrCreateDefaultInstance();
+  promptHash = await hashPrompt(instance.systemPrompt);
   await writeKey(instance.id, 'sk-test');
 });
 
@@ -507,7 +518,8 @@ describe('A2 请求网关：批次执行', () => {
     });
   });
 
-  it('全局并发不超过用户设置（默认 3）', async () => {
+  it('全局并发不超过实例最大并发数', async () => {
+    await updateInstance(instance.id, { maxConcurrency: 3 });
     translate.mockImplementation(abortableTranslate);
 
     const ports = Array.from({ length: 4 }, () => connectGateway());
@@ -563,7 +575,7 @@ describe('A2 请求网关：译文缓存（P5）', () => {
     expect(__cache.set).toHaveBeenCalledTimes(1);
     const [key, text, options] = __cache.set.mock.calls[0];
     expect(text).toBe('译:Hello cache');
-    expect(key).toMatch(/^cache:v1:[0-9a-f]{64}$/);
+    expect(key).toMatch(/^cache:v2:[0-9a-f]{64}$/);
     expect(key).toBe(await cacheKeyFor('Hello cache'));
     expect(options.generation).toBe(0);
     expect(options.domain).toBe('example.com');
@@ -574,6 +586,42 @@ describe('A2 请求网关：译文缓存（P5）', () => {
 
     const log = batchDoneLog('cache-miss');
     expect(log).toMatchObject({ cacheHits: 0, cacheMisses: 1, cacheWrites: 1 });
+  });
+
+  it('修改提示词或思考强度后同一文本不再命中缓存', async () => {
+    const text = 'styled paragraph';
+    const { client, frames } = connectGateway();
+
+    client.postMessage({
+      type: MESSAGE_TYPES.TRANSLATE_BATCH,
+      payload: { requestId: 'style-1', items: [textItem(text)] },
+    });
+    await waitForBatchDoneFor(frames, 'style-1');
+    expect(translate).toHaveBeenCalledTimes(1);
+
+    await updateInstance(instance.id, {
+      systemPrompt: '自定义 {{targetLang}} {{outputFormat}}',
+    });
+
+    frames.length = 0;
+    client.postMessage({
+      type: MESSAGE_TYPES.TRANSLATE_BATCH,
+      payload: { requestId: 'style-2', items: [textItem(text)] },
+    });
+    await waitForBatchDoneFor(frames, 'style-2');
+    expect(translate).toHaveBeenCalledTimes(2);
+    expect(batchDoneLog('style-2')).toMatchObject({ cacheHits: 0, cacheMisses: 1 });
+
+    await updateInstance(instance.id, { reasoningEffort: 'high' });
+
+    frames.length = 0;
+    client.postMessage({
+      type: MESSAGE_TYPES.TRANSLATE_BATCH,
+      payload: { requestId: 'style-3', items: [textItem(text)] },
+    });
+    await waitForBatchDoneFor(frames, 'style-3');
+    expect(translate).toHaveBeenCalledTimes(3);
+    expect(batchDoneLog('style-3')).toMatchObject({ cacheHits: 0, cacheMisses: 1 });
   });
 
   it('缓存写入失败只记日志，不改变翻译结果', async () => {
@@ -679,11 +727,11 @@ describe('A2 请求网关：译文缓存（P5）', () => {
     );
     // 日志不出现原文、域名与 key 哈希。
     expect(lines.join('\n')).not.toContain('log me');
-    expect(lines.join('\n')).not.toContain('cache:v1:');
+    expect(lines.join('\n')).not.toContain('cache:v2:');
   });
 
   it('命中不占用上游并发名额', async () => {
-    await saveSettings({ concurrency: 1 });
+    await updateInstance(instance.id, { maxConcurrency: 1 });
     const cachedText = 'cached paragraph';
     const key = await cacheKeyFor(cachedText);
     __cache.entries.set(key, { text: '缓存译文', bytes: 300, createdAt: Date.now() });
@@ -1128,10 +1176,11 @@ describe('A2 请求网关：边界与并发入口', () => {
     expect(sessionSet).not.toHaveBeenCalled();
   });
 
-  it('normalizeConcurrency 归一 1–4，非法值回退默认', () => {
-    expect(normalizeConcurrency(0)).toBe(DEFAULT_CONCURRENCY);
-    expect(normalizeConcurrency('nope')).toBe(DEFAULT_CONCURRENCY);
+  it('normalizeConcurrency 只接受正整数，非法值回退默认 4，不设固定上限', () => {
+    expect(normalizeConcurrency(0)).toBe(DEFAULT_MAX_CONCURRENCY);
+    expect(normalizeConcurrency('nope')).toBe(DEFAULT_MAX_CONCURRENCY);
     expect(normalizeConcurrency(2)).toBe(2);
-    expect(normalizeConcurrency(9)).toBe(4);
+    expect(normalizeConcurrency(2.7)).toBe(2);
+    expect(normalizeConcurrency(9)).toBe(9);
   });
 });

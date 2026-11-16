@@ -2,9 +2,9 @@
  * E3 引擎实例
  *
  * 模块：公共模块（E）/ E3
- * 职责：管理引擎实例、首选与备用引擎、密钥键名与旧配置迁移；校验配置并算出实际生效的引擎。
+ * 职责：管理引擎实例、首选与备用引擎、密钥键名与旧配置迁移；归一、校验并写入实例参数。
  * 依赖：E2 设置与存储（settings.js/storage.js）、E3 引擎类型目录（registry.js，P1 起）。
- * 实现阶段：P1（引擎层与密钥配置）
+ * 实现阶段：P1（引擎层与密钥配置）；P6.2 增加实例参数归一、读取补齐、`updateInstance` 与旧并发迁移。
  *
  * 密钥「只有后台读」是最终目标（P2 起）；P1 为做演示测试，设置页会临时直接读密钥，
  * 属需求文档 P1-5 已确认的临时偏离，P2 收敛到后台后消除。
@@ -12,19 +12,79 @@
 
 import { STORAGE_KEYS, read, write, removeKeys } from '../storage.js';
 import { getSettings, keyArea } from '../settings.js';
-import { ENGINE_TYPE_IDS, getEngineType } from './registry.js';
+import {
+  ENGINE_TYPE_IDS,
+  DEFAULT_BATCH_MAX_CHARS,
+  DEFAULT_BATCH_SIZE,
+  DEFAULT_MAX_CONCURRENCY,
+  DEFAULT_REASONING_EFFORT,
+  DEFAULT_SYSTEM_PROMPT,
+  getEngineType,
+  normalizeBatchSize,
+  normalizePositiveInt,
+  normalizeReasoningEffort,
+  validateInstance,
+} from './registry.js';
 
 /** 默认实例 id。 */
 const DEFAULT_INSTANCE_ID = 'default';
 
 /**
+ * 归一实例：合并默认值、裁剪字符串、归一思考强度与数值；不校验、不写存储。
+ * @param {unknown} instance
+ * @param {{ fallbackConcurrency?: unknown }} [options] 旧实例缺失 `maxConcurrency` 时的迁移回退
+ * @returns {Record<string, unknown>}
+ */
+export function normalizeInstance(instance, options = {}) {
+  const source = instance && typeof instance === 'object' && !Array.isArray(instance) ? instance : {};
+  const defaults = createDefaultInstance();
+
+  const rawModel = String(source.model ?? defaults.model ?? '').trim();
+  const rawBaseUrl = String(source.baseUrl ?? defaults.baseUrl ?? '').trim();
+  const rawName = String(source.name ?? defaults.name ?? '').trim();
+  const rawPrompt = String(source.systemPrompt ?? '').trim();
+  const hasMaxConcurrency = source.maxConcurrency != null;
+  const legacyConcurrency = normalizePositiveInt(
+    options.fallbackConcurrency,
+    DEFAULT_MAX_CONCURRENCY
+  );
+
+  return {
+    ...source,
+    id: String(source.id ?? defaults.id),
+    type: String(source.type ?? defaults.type),
+    name: rawName || defaults.name,
+    model: rawModel,
+    baseUrl: rawBaseUrl || defaults.baseUrl,
+    reasoningEffort: normalizeReasoningEffort(source.reasoningEffort),
+    batchSize: normalizeBatchSize(source.batchSize),
+    batchMaxChars: normalizePositiveInt(source.batchMaxChars, DEFAULT_BATCH_MAX_CHARS),
+    maxConcurrency: hasMaxConcurrency
+      ? normalizePositiveInt(source.maxConcurrency, DEFAULT_MAX_CONCURRENCY)
+      : legacyConcurrency,
+    // 空提示词保留为空，交给 `validateInstance` 拒绝；读取旧实例缺字段时才补默认模板。
+    systemPrompt: source.systemPrompt == null ? DEFAULT_SYSTEM_PROMPT : rawPrompt,
+  };
+}
+
+/**
  * 读引擎实例列表（storage.sync，不含密钥字段）。
+ * 每次读取都做归一；旧实例缺字段按默认值补齐，但不主动写回。
  * @returns {Promise<Array<Record<string, unknown>>>}
  */
 export async function getInstances() {
   const data = await read('sync', STORAGE_KEYS.instances);
   const list = data[STORAGE_KEYS.instances];
-  return Array.isArray(list) ? list : [];
+  if (!Array.isArray(list) || list.length === 0) return [];
+
+  // 旧实例缺少 maxConcurrency 时，用 `settings.concurrency` 的合法值作为一次性迁移回退。
+  let fallbackConcurrency = DEFAULT_MAX_CONCURRENCY;
+  try {
+    fallbackConcurrency = (await getSettings()).concurrency;
+  } catch {
+    // 设置读取失败时保持默认值，不阻断实例读取。
+  }
+  return list.map((instance) => normalizeInstance(instance, { fallbackConcurrency }));
 }
 
 /**
@@ -48,6 +108,11 @@ export function createDefaultInstance() {
     name: type.label,
     model: type.defaultModel,
     baseUrl: type.baseUrl,
+    reasoningEffort: DEFAULT_REASONING_EFFORT,
+    batchSize: DEFAULT_BATCH_SIZE,
+    batchMaxChars: DEFAULT_BATCH_MAX_CHARS,
+    maxConcurrency: DEFAULT_MAX_CONCURRENCY,
+    systemPrompt: DEFAULT_SYSTEM_PROMPT,
   };
 }
 
@@ -58,9 +123,33 @@ export function createDefaultInstance() {
 export async function getOrCreateDefaultInstance() {
   const instances = await getInstances();
   if (instances.length > 0) return instances[0];
-  const created = createDefaultInstance();
+  const created = normalizeInstance(createDefaultInstance());
   await saveInstances([created]);
   return created;
+}
+
+/**
+ * 更新一个实例：合并补丁、归一、校验，成功后写回完整字段；失败抛出且不写入。
+ * @param {string} id
+ * @param {Record<string, unknown>} patch
+ * @returns {Promise<Record<string, unknown>>}
+ */
+export async function updateInstance(id, patch) {
+  const instances = await getInstances();
+  const index = instances.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error('实例不存在');
+
+  const merged = normalizeInstance({
+    ...instances[index],
+    ...(patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {}),
+  });
+  const validation = validateInstance(merged);
+  if (!validation.ok) throw new Error(validation.errors.join('；'));
+
+  const next = instances.slice();
+  next[index] = merged;
+  await saveInstances(next);
+  return merged;
 }
 
 /**

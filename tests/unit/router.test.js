@@ -62,7 +62,7 @@ import {
 } from '../../src/shared/protocol.js';
 import { MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
-import { getOrCreateDefaultInstance, removeKey, writeKey } from '../../src/shared/config/instances.js';
+import { getOrCreateDefaultInstance, removeKey, updateInstance, writeKey } from '../../src/shared/config/instances.js';
 import { saveSettings } from '../../src/shared/settings.js';
 import { handleMessage, receivePageSubmit, sendToTab } from '../../src/background/router.js';
 import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
@@ -119,7 +119,7 @@ describe('A1 控制面：消息与发送方', () => {
 });
 
 describe('A1 控制面：ST_LIST_ENGINES', () => {
-  it('返回实例与 hasKey，不含密钥、apiKey 与 baseUrl', async () => {
+  it('返回完整实例参数与 hasKey，不含密钥、apiKey 与 baseUrl', async () => {
     const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
 
     expect(response.ok).toBe(true);
@@ -128,7 +128,14 @@ describe('A1 控制面：ST_LIST_ENGINES', () => {
       id: instance.id,
       type: 'deepseek',
       hasKey: true,
+      model: 'deepseek-chat',
+      reasoningEffort: 'off',
+      batchSize: 8,
+      batchMaxChars: 1000,
+      maxConcurrency: 4,
     });
+    expect(response.data.instances[0].systemPrompt).toContain('{{targetLang}}');
+    expect(response.data.instances[0].systemPrompt).toContain('{{outputFormat}}');
     expect(response.data.instances[0]).not.toHaveProperty('apiKey');
     expect(response.data.instances[0]).not.toHaveProperty('baseUrl');
 
@@ -143,6 +150,27 @@ describe('A1 控制面：ST_LIST_ENGINES', () => {
     const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
     expect(response.ok).toBe(true);
     expect(response.data.instances[0].hasKey).toBe(false);
+  });
+
+  it('返回保存后的实例参数', async () => {
+    await updateInstance(instance.id, {
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'high',
+      batchSize: 2,
+      batchMaxChars: 300,
+      maxConcurrency: 1,
+      systemPrompt: '自定义 {{targetLang}} {{outputFormat}}',
+    });
+
+    const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
+    expect(response.data.instances[0]).toMatchObject({
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'high',
+      batchSize: 2,
+      batchMaxChars: 300,
+      maxConcurrency: 1,
+      systemPrompt: '自定义 {{targetLang}} {{outputFormat}}',
+    });
   });
 
   it('首次列表会创建默认实例', async () => {
@@ -176,6 +204,27 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     // ST_TEST_ENGINE 不查缓存、不写缓存。
     expect(__cache.store.getMany).not.toHaveBeenCalled();
     expect(__cache.store.set).not.toHaveBeenCalled();
+  });
+
+  it('使用保存后的实例参数，不使用未保存草稿', async () => {
+    const prompt = '用书面语翻译成{{targetLang}}。{{outputFormat}}';
+    await updateInstance(instance.id, {
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'low',
+      systemPrompt: prompt,
+    });
+
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'Hello' } },
+      sender
+    );
+
+    expect(response.ok).toBe(true);
+    expect(translate.mock.calls[0][0].instance).toMatchObject({
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'low',
+      systemPrompt: prompt,
+    });
   });
 
   it('缺密钥返回 CONFIG，不调用上游', async () => {

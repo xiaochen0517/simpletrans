@@ -1,8 +1,8 @@
 /**
  * A4 缓存 key 测试
  *
- * 覆盖需求文档 2.2.1 / 3.3 / 3.9：字段稳定与逐项区分、规范串与 SHA-256、版本前缀、
- * 空上下文与缺省归一、域名等非 key 字段不参与、必填校验与失败路径。
+ * 覆盖 P6.2：key v2 字段顺序、提示词哈希、思考强度、批量编码版本、版本前缀、
+ * 必填校验与失败路径，以及域名等非 key 字段不参与。
  */
 
 import { createHash } from 'node:crypto';
@@ -18,10 +18,24 @@ const BASE = Object.freeze({
   model: 'deepseek-chat',
   sourceLang: 'auto',
   targetLang: 'zh',
-  promptVersion: 1,
+  promptVersion: 2,
+  batchEncodingVersion: 1,
+  reasoningEffort: 'off',
+  promptHash: 'a'.repeat(64),
   context: '',
   text: 'Hello world',
 });
+
+const REQUIRED_FIELDS = [
+  'engineType',
+  'model',
+  'targetLang',
+  'promptVersion',
+  'batchEncodingVersion',
+  'reasoningEffort',
+  'promptHash',
+  'text',
+];
 
 /** 计算规范串的 SHA-256 小写十六进制。 */
 function sha256(payload) {
@@ -33,15 +47,15 @@ afterEach(() => {
 });
 
 describe('A4 缓存 key', () => {
-  it('同一组字段重复计算得到同一个 key，形态为 cache:v1:<64 位小写十六进制>', async () => {
+  it('同一组字段重复计算得到同一个 key，形态为 cache:v2:<64 位小写十六进制>', async () => {
     const first = await buildCacheKey(BASE);
     const second = await buildCacheKey({ ...BASE });
 
     expect(second).toBe(first);
-    expect(CACHE_KEY_VERSION).toBe(1);
-    expect(CACHE_KEY_PREFIX).toBe('cache:v1:');
+    expect(CACHE_KEY_VERSION).toBe(2);
+    expect(CACHE_KEY_PREFIX).toBe('cache:v2:');
     expect(first.startsWith(CACHE_KEY_PREFIX)).toBe(true);
-    expect(first).toMatch(/^cache:v1:[0-9a-f]{64}$/);
+    expect(first).toMatch(/^cache:v2:[0-9a-f]{64}$/);
     expect(first).toHaveLength(CACHE_KEY_PREFIX.length + 64);
   });
 
@@ -53,7 +67,10 @@ describe('A4 缓存 key', () => {
       'deepseek-chat',
       'auto',
       'zh',
+      '2',
       '1',
+      'off',
+      'a'.repeat(64),
       '',
       'Hello world',
     ]);
@@ -66,7 +83,10 @@ describe('A4 缓存 key', () => {
     ['模型', { model: 'deepseek-reasoner' }],
     ['源语言', { sourceLang: 'en' }],
     ['目标语言', { targetLang: 'ja' }],
-    ['提示词版本', { promptVersion: 2 }],
+    ['提示词版本', { promptVersion: 1 }],
+    ['批量编码版本', { batchEncodingVersion: 2 }],
+    ['思考强度', { reasoningEffort: 'high' }],
+    ['提示词哈希', { promptHash: 'b'.repeat(64) }],
     ['每段上下文', { context: '上一段文字' }],
     ['原文', { text: 'Hello world!' }],
   ])('%s 变化后 key 发生变化', async (_label, patch) => {
@@ -74,7 +94,7 @@ describe('A4 缓存 key', () => {
     const changed = await buildCacheKey({ ...BASE, ...patch });
 
     expect(changed).not.toBe(base);
-    expect(changed).toMatch(/^cache:v1:[0-9a-f]{64}$/);
+    expect(changed).toMatch(/^cache:v2:[0-9a-f]{64}$/);
   });
 
   it('context 缺省、undefined、null 与空串得到同一个 key，且与有上下文不同', async () => {
@@ -121,6 +141,13 @@ describe('A4 缓存 key', () => {
     ).toBe(base);
   });
 
+  it('调度参数 batchSize、batchMaxChars、maxConcurrency 不进入 key', async () => {
+    const base = await buildCacheKey(BASE);
+    expect(await buildCacheKey({ ...BASE, batchSize: 1 })).toBe(base);
+    expect(await buildCacheKey({ ...BASE, batchMaxChars: 300 })).toBe(base);
+    expect(await buildCacheKey({ ...BASE, maxConcurrency: 8 })).toBe(base);
+  });
+
   it('key 中不出现原文、上下文、域名等明文，只保留哈希与版本前缀', async () => {
     const text = 'Hello world 你好 😀';
     const context = '上一段 ctx-123';
@@ -132,7 +159,7 @@ describe('A4 缓存 key', () => {
     expect(key).not.toContain('😀');
     expect(key).not.toContain('ctx-123');
     expect(key).not.toContain('example.com');
-    expect(key).toMatch(/^cache:v1:[0-9a-f]{64}$/);
+    expect(key).toMatch(/^cache:v2:[0-9a-f]{64}$/);
   });
 
   it('中文与 emoji 原文可以计算，且与 ASCII 原文互相区分', async () => {
@@ -140,7 +167,7 @@ describe('A4 缓存 key', () => {
     const chinese = await buildCacheKey({ ...BASE, text: '你好，世界' });
     const emoji = await buildCacheKey({ ...BASE, text: '👋🌍😀' });
 
-    for (const key of [chinese, emoji]) expect(key).toMatch(/^cache:v1:[0-9a-f]{64}$/);
+    for (const key of [chinese, emoji]) expect(key).toMatch(/^cache:v2:[0-9a-f]{64}$/);
     expect(new Set([ascii, chinese, emoji]).size).toBe(3);
   });
 
@@ -153,34 +180,28 @@ describe('A4 缓存 key', () => {
   });
 
   it('promptVersion 数值与等值字符串得到同一个 key，不同版本得到不同 key', async () => {
-    const fromNumber = await buildCacheKey({ ...BASE, promptVersion: 1 });
-    const fromString = await buildCacheKey({ ...BASE, promptVersion: '1' });
-    const nextVersion = await buildCacheKey({ ...BASE, promptVersion: 2 });
+    const fromNumber = await buildCacheKey({ ...BASE, promptVersion: 2 });
+    const fromString = await buildCacheKey({ ...BASE, promptVersion: '2' });
+    const nextVersion = await buildCacheKey({ ...BASE, promptVersion: 3 });
 
     expect(fromString).toBe(fromNumber);
     expect(nextVersion).not.toBe(fromNumber);
   });
 
-  it.each(['engineType', 'model', 'targetLang', 'promptVersion', 'text'])(
-    '必填字段 %s 缺失时抛 TypeError',
-    async (field) => {
-      const input = { ...BASE };
-      delete input[field];
+  it.each(REQUIRED_FIELDS)('必填字段 %s 缺失时抛 TypeError', async (field) => {
+    const input = { ...BASE };
+    delete input[field];
 
-      await expect(buildCacheKey(input)).rejects.toThrow(TypeError);
-    }
-  );
+    await expect(buildCacheKey(input)).rejects.toThrow(TypeError);
+  });
 
-  it.each(['engineType', 'model', 'targetLang', 'promptVersion', 'text'])(
-    '必填字段 %s 为空白字符串时抛 TypeError',
-    async (field) => {
-      await expect(buildCacheKey({ ...BASE, [field]: '   ' })).rejects.toThrow(TypeError);
-      await expect(buildCacheKey({ ...BASE, [field]: '' })).rejects.toThrow(TypeError);
-    }
-  );
+  it.each(REQUIRED_FIELDS)('必填字段 %s 为空白字符串时抛 TypeError', async (field) => {
+    await expect(buildCacheKey({ ...BASE, [field]: '   ' })).rejects.toThrow(TypeError);
+    await expect(buildCacheKey({ ...BASE, [field]: '' })).rejects.toThrow(TypeError);
+  });
 
   it('必填字段为 null 或 undefined 时抛 TypeError', async () => {
-    for (const field of ['engineType', 'model', 'targetLang', 'promptVersion', 'text']) {
+    for (const field of REQUIRED_FIELDS) {
       await expect(buildCacheKey({ ...BASE, [field]: null })).rejects.toThrow(TypeError);
       await expect(buildCacheKey({ ...BASE, [field]: undefined })).rejects.toThrow(TypeError);
     }

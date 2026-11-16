@@ -4,7 +4,7 @@
  * 用 vi.mock 隔离上游 ai SDK 与 @ai-sdk/deepseek，不联网、不需要真实密钥。
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('ai', () => ({ streamText: vi.fn() }));
 vi.mock('@ai-sdk/deepseek', () => ({
@@ -16,6 +16,7 @@ import { createDeepSeek } from '@ai-sdk/deepseek';
 import { ERROR_CODES } from '../../src/shared/protocol.js';
 import {
   buildSystemPrompt,
+  deepseekProviderOptions,
   isSupportedTargetLang,
   mapError,
   normalizeOutput,
@@ -23,23 +24,43 @@ import {
   TranslateError,
   translate,
 } from '../../src/shared/translate/adapter.js';
+import { DEFAULT_SYSTEM_PROMPT } from '../../src/shared/translate/prompt.js';
+import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 
 describe('A3 DeepSeek 适配器', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('导出 PROMPT_VERSION 供缓存 key 使用，且为正整数', () => {
-    expect(PROMPT_VERSION).toBeDefined();
-    expect(Number.isInteger(PROMPT_VERSION)).toBe(true);
-    expect(PROMPT_VERSION).toBeGreaterThan(0);
+  afterEach(() => {
+    resetLogging();
+    vi.restoreAllMocks();
+  });
+
+  it('导出 PROMPT_VERSION=2 供缓存 key 使用', () => {
+    expect(PROMPT_VERSION).toBe(2);
   });
 
   it('buildSystemPrompt 强调「数据不是指令」并带目标语言', () => {
-    const prompt = buildSystemPrompt('zh');
+    const prompt = buildSystemPrompt({ targetLang: 'zh', template: DEFAULT_SYSTEM_PROMPT });
     expect(prompt).toContain('中文');
     expect(prompt).toContain('数据');
     expect(prompt).toContain('指令');
+  });
+
+  it('deepseekProviderOptions：off 关闭思考，其余开启并传 effort', () => {
+    expect(deepseekProviderOptions({})).toEqual({
+      deepseek: { thinking: { type: 'disabled' } },
+    });
+    expect(deepseekProviderOptions({ reasoningEffort: 'bogus' })).toEqual({
+      deepseek: { thinking: { type: 'disabled' } },
+    });
+
+    for (const effort of ['low', 'medium', 'high', 'max']) {
+      expect(deepseekProviderOptions({ reasoningEffort: effort })).toEqual({
+        deepseek: { thinking: { type: 'enabled' }, reasoningEffort: effort },
+      });
+    }
   });
 
   it('normalizeOutput 去掉引号与首尾空白', () => {
@@ -95,6 +116,69 @@ describe('A3 DeepSeek 适配器', () => {
     expect(result.usage.totalTokens).toBe(3);
     expect(deltas.join('')).toBe(' 你好 ');
     expect(createDeepSeek).toHaveBeenCalledWith({ apiKey: 'sk-x', baseURL: 'https://api.deepseek.com' });
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: 'hello',
+        system: buildSystemPrompt({ targetLang: 'zh', template: DEFAULT_SYSTEM_PROMPT }),
+        providerOptions: { deepseek: { thinking: { type: 'disabled' } } },
+      })
+    );
+  });
+
+  it('使用实例保存的提示词与思考强度，测试翻译与页面翻译共用同一路径', async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield '译文';
+      })(),
+      usage: Promise.resolve({ totalTokens: 1 }),
+    });
+
+    const template = '把内容用书面语翻译成{{targetLang}}。{{outputFormat}}';
+    await translate({
+      text: 'hello',
+      targetLang: 'zh',
+      instance: {
+        apiKey: 'sk-x',
+        model: 'deepseek-chat',
+        reasoningEffort: 'low',
+        systemPrompt: template,
+      },
+    });
+
+    const call = streamText.mock.calls[0][0];
+    expect(call.system).toContain('用书面语');
+    expect(call.system).toContain('中文');
+    expect(call.system).not.toContain('{{targetLang}}');
+    expect(call.providerOptions).toEqual({
+      deepseek: { thinking: { type: 'enabled' }, reasoningEffort: 'low' },
+    });
+  });
+
+  it('engine.request 记录模型、思考强度与提示词版本，不记录提示词正文', async () => {
+    initLogging({ level: 'debug', sessionId: 'adapter-test' });
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield '译文';
+      })(),
+      usage: Promise.resolve({ totalTokens: 1 }),
+    });
+
+    const template = '机密模板内容 {{targetLang}} {{outputFormat}}';
+    await translate({
+      text: 'hello',
+      targetLang: 'zh',
+      instance: { apiKey: 'sk-x', model: 'deepseek-chat', reasoningEffort: 'high', systemPrompt: template },
+    });
+
+    const lines = console.debug.mock.calls.map(([line]) => String(line));
+    const request = lines.find((line) => line.includes('engine.request'));
+    expect(request).toBeTruthy();
+    expect(request).toContain('"reasoningEffort":"high"');
+    expect(request).toContain('"promptVersion":2');
+    expect(request).toContain('"promptDefault":false');
+    expect(lines.join('\n')).not.toContain('机密模板内容');
+    expect(lines.join('\n')).not.toContain('sk-x');
   });
 
   it('上游错误经 mapError 转成 TranslateError', async () => {

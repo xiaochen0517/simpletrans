@@ -6,7 +6,8 @@
  *       页面注入的统一段落提交；把结果回给调用方。
  * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A4（cache）、A2（gateway 的并发名额）、公共数值。
  * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息；P6.1 增加 `ST_ROUTE` 转发与
- *           `ST_PAGE_SUBMIT` 接收（校验、计数、逐段日志与回执，不调用网关）；本轮移除段落上下文校验。
+ *           `ST_PAGE_SUBMIT` 接收（校验、计数、逐段日志与回执，不调用网关）；本轮移除段落上下文校验；
+ *           P6.2 `ST_LIST_ENGINES` 返回完整实例参数，测试翻译改按实例 `maxConcurrency` 取并发名额。
  *
  * 标签页转发有两处入口：P4 的快捷键走 `ST_TOGGLE`（commands.js），P6.1 的弹窗走 `ST_ROUTE`
  * 的 `start` / `clear`（本文件），两者共用 `sendToTab` 的补注入与错误归一。
@@ -123,6 +124,11 @@ async function listEngines() {
           type: instance.type,
           name: instance.name,
           model: instance.model,
+          reasoningEffort: instance.reasoningEffort,
+          batchSize: instance.batchSize,
+          batchMaxChars: instance.batchMaxChars,
+          maxConcurrency: instance.maxConcurrency,
+          systemPrompt: instance.systemPrompt,
           hasKey: Boolean(instance.hasKey),
         })),
       },
@@ -364,7 +370,7 @@ async function testEngine(payload) {
       } finally {
         elapsedMs = Math.round(performance.now() - startedAt);
       }
-    }, normalizeConcurrency(settings.concurrency));
+    }, normalizeConcurrency(instance.maxConcurrency));
 
     traceLog.info('engine.test.done', '测试翻译完成', {
       ok: true,

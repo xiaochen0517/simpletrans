@@ -5,7 +5,8 @@
  * 职责：接收页面注入的批次请求，校验载荷、控制全局并发与每连接在途数量、查缓存、调用 A3 并转发增量与定稿；
  *       处理取消、断线与批超时；不保存任务状态，不写 storage。
  * 依赖：A3（adapter）、A4（cache）、E1（protocol）、E2（settings）、E3（instances/registry）、constants.js（P2 起）。
- * 实现阶段：P2（后台网关与页面通道）；P5 增加按段查缓存、命中帧与成功后写缓存。
+ * 实现阶段：P2（后台网关与页面通道）；P5 增加按段查缓存、命中帧与成功后写缓存；
+ *           P6.2 缓存 key 升 v2（提示词哈希、思考强度与批量编码版本），并发改读实例 `maxConcurrency`。
  */
 
 import {
@@ -20,8 +21,6 @@ import {
 } from '../shared/protocol.js';
 import {
   AI_TIMEOUT_MS,
-  DEFAULT_CONCURRENCY,
-  GLOBAL_CONCURRENCY,
   MAX_BATCH_CHARS,
   MAX_BATCH_CONTEXT_CHARS,
   MAX_BATCH_ITEMS,
@@ -32,16 +31,21 @@ import {
 import { getSettings } from '../shared/settings.js';
 import { createLogger, getLogLevel, setLogLevel } from '../shared/log/logger.js';
 import { normalizeLevel } from '../shared/log/levels.js';
-import { getInstances, getKey } from '../shared/config/instances.js';
-import { validateInstance } from '../shared/config/registry.js';
-import { buildCacheKey } from '../shared/cache/key.js';
-import { getCacheStore } from '../shared/cache/store.js';
 import {
-  isSupportedTargetLang,
-  PROMPT_VERSION,
-  translate,
-  TranslateError,
-} from '../shared/translate/adapter.js';
+  getInstances,
+  getKey,
+  getOrCreateDefaultInstance,
+} from '../shared/config/instances.js';
+import {
+  DEFAULT_MAX_CONCURRENCY,
+  normalizeReasoningEffort,
+  validateInstance,
+} from '../shared/config/registry.js';
+import { buildCacheKey, CACHE_KEY_VERSION } from '../shared/cache/key.js';
+import { getCacheStore } from '../shared/cache/store.js';
+import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
+import { BATCH_ENCODING_VERSION } from '../shared/translate/batch.js';
+import { hashPrompt, PROMPT_VERSION } from '../shared/translate/prompt.js';
 
 /** 网关日志入口。 */
 const log = createLogger('A2');
@@ -51,18 +55,19 @@ const connections = new Map();
 
 /** 全局上游并发信号量。 */
 let activeSlots = 0;
-let slotLimit = DEFAULT_CONCURRENCY;
+let slotLimit = DEFAULT_MAX_CONCURRENCY;
 const slotWaiters = [];
 
 /**
- * 归一用户并发数：1–4，非法值回退默认 3。
+ * 归一用户并发数：正整数，非法值回退默认 4；不设固定上限。
+ * 并发唯一来源是实例 `maxConcurrency`，`settings.concurrency` 只作旧实例迁移回退。
  * @param {unknown} value
  * @returns {number}
  */
 export function normalizeConcurrency(value) {
   const n = Number(value);
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_CONCURRENCY;
-  return Math.min(Math.floor(n), GLOBAL_CONCURRENCY);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_MAX_CONCURRENCY;
+  return Math.floor(n);
 }
 
 function pumpSlots() {
@@ -89,12 +94,14 @@ function releaseSlot() {
  * 在全局并发名额内执行一次上游调用。所有上游出口（批次与测试翻译）都必须经过这里。
  * @template T
  * @param {() => Promise<T>} fn
- * @param {number} [limit]
+ * @param {number} [limit] 实例 `maxConcurrency`；省略时读默认实例
  * @returns {Promise<T>}
  */
 export async function withUpstreamSlot(fn, limit) {
   const effective =
-    limit == null ? normalizeConcurrency((await getSettings()).concurrency) : normalizeConcurrency(limit);
+    limit == null
+      ? normalizeConcurrency((await getOrCreateDefaultInstance()).maxConcurrency)
+      : normalizeConcurrency(limit);
   slotLimit = effective;
   pumpSlots();
   await acquireSlot();
@@ -417,30 +424,48 @@ async function beginBatch(conn, payload) {
   const cacheEnabled = settings.cacheEnabled !== false;
   const cacheDomain = normalizeDomain(payload.domain);
   const cacheGeneration = cacheEnabled ? getCacheStore().generation() : 0;
+  const reasoningEffort = normalizeReasoningEffort(instance.reasoningEffort);
   let cacheKeys = null;
   let cacheEntries = new Map();
 
   if (cacheEnabled) {
+    // 提示词哈希每个批次只算一次；失败按「本批不参与缓存」降级。
+    let promptHash = null;
     try {
-      cacheKeys = await Promise.all(
-        normalized.map((item) =>
-          buildCacheKey({
-            engineType: instance.type,
-            model: instance.model,
-            sourceLang: settings.sourceLang ?? 'auto',
-            targetLang,
-            promptVersion: PROMPT_VERSION,
-            context: item.context ?? '',
-            text: item.text,
-          })
-        )
-      );
+      promptHash = await hashPrompt(instance.systemPrompt);
     } catch (error) {
-      cacheKeys = null;
-      log.warn('cache.error', '缓存 key 计算失败，本批不参与缓存', {
+      log.warn('cache.error', '提示词哈希计算失败，本批不参与缓存', {
         requestId,
         reason: error?.name ?? 'Error',
       });
+    }
+
+    if (promptHash) {
+      log.debug('cache.key.version', '缓存 key 版本', { version: CACHE_KEY_VERSION });
+      try {
+        cacheKeys = await Promise.all(
+          normalized.map((item) =>
+            buildCacheKey({
+              engineType: instance.type,
+              model: instance.model,
+              sourceLang: settings.sourceLang ?? 'auto',
+              targetLang,
+              promptVersion: PROMPT_VERSION,
+              batchEncodingVersion: BATCH_ENCODING_VERSION,
+              reasoningEffort,
+              promptHash,
+              context: item.context ?? '',
+              text: item.text,
+            })
+          )
+        );
+      } catch (error) {
+        cacheKeys = null;
+        log.warn('cache.error', '缓存 key 计算失败，本批不参与缓存', {
+          requestId,
+          reason: error?.name ?? 'Error',
+        });
+      }
     }
 
     if (cacheKeys) {
@@ -493,7 +518,7 @@ async function beginBatch(conn, payload) {
     targetLang,
   });
 
-  const limit = normalizeConcurrency(settings.concurrency);
+  const limit = normalizeConcurrency(instance.maxConcurrency);
   void runBatch(batch, { targetLang, instance, apiKey, limit }).catch((error) => {
     for (const item of batch.items) {
       if (!item.settled) {
