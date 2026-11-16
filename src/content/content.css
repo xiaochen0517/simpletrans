@@ -2,8 +2,45 @@
  * D3 译文渲染样式
  *
  * 模块：页面注入（D）/ D3
- * 职责：双语对照译文的 DOM 结构与主题样式；由清单静态注入，兜底注入走脚本注入接口。
+ * 职责：译文内嵌在原文宿主末尾，继承宿主字体与颜色；加载/流式/完成/失败只做轻量状态区分。
  * 实现阶段：P4（段落提取、悬停锚定与译文渲染）
  *
- * P0 只保留文件与产物位，不含任何规则；DOM 契约见 docs/modules/D3-译文渲染.md（待建）。
+ * 只匹配 data-st-* 标记；容器保持行内，换行由容器内部的 br 完成。
  */
+
+[data-st-translation] {
+  all: unset;
+  display: inline;
+  font: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-align: inherit;
+  white-space: inherit;
+  overflow-wrap: anywhere;
+  opacity: 0.92;
+  cursor: text;
+}
+
+[data-st-translation] > font {
+  all: unset;
+  font: inherit;
+  color: inherit;
+  white-space: inherit;
+}
+
+[data-st-translation][data-st-state='loading'],
+[data-st-translation][data-st-state='streaming'] {
+  opacity: 0.55;
+}
+
+[data-st-translation][data-st-state='error'] {
+  opacity: 0.8;
+  font-style: italic;
+  text-decoration: underline dotted;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-st-translation] {
+    transition: opacity 120ms ease-out;
+  }
+}

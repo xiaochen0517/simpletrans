@@ -29,6 +29,13 @@ import { normalizeConcurrency, withUpstreamSlot } from './gateway.js';
 /** A1 日志入口。 */
 const log = createLogger('A1');
 
+/** 每个标签页同一时刻只允许一次补注入。 */
+const injecting = new Map();
+
+/** Chrome 在目标页没有监听器时给出的错误特征。 */
+const NO_RECEIVER_PATTERN =
+  /Receiving end does not exist|Could not establish connection|message port closed/i;
+
 /**
  * 处理一条一次性消息。
  * @param {{ type?: string, payload?: object }} message
@@ -209,4 +216,81 @@ async function testEngine(payload) {
  */
 function failure(code, message, reason) {
   return { ok: false, error: makeError(code, message, reason) };
+}
+
+/**
+ * 把一次性命令送到标签页；页面注入未运行时先补样式再补脚本，然后重发一次。
+ * @param {number} tabId
+ * @param {{ type: string, payload?: object }} message
+ * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
+ */
+export async function sendToTab(tabId, message) {
+  if (typeof tabId !== 'number') {
+    return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
+  }
+
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    if (!NO_RECEIVER_PATTERN.test(String(error?.message ?? error))) {
+      log.warn('message.rejected', '无法与页面通信', {
+        tabId,
+        reason: FAILURE_REASONS.NO_RECEIVER,
+      });
+      return failure(
+        ERROR_CODES.OTHER,
+        '无法与页面通信，请刷新后重试',
+        FAILURE_REASONS.NO_RECEIVER
+      );
+    }
+  }
+
+  try {
+    await ensureInjected(tabId);
+  } catch {
+    return failure(
+      ERROR_CODES.OTHER,
+      '当前页面无法翻译，请在普通网页上使用',
+      FAILURE_REASONS.INJECTION_FAILED
+    );
+  }
+
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch {
+    return failure(
+      ERROR_CODES.OTHER,
+      '页面尚未准备好，请刷新后重试',
+      FAILURE_REASONS.NO_RECEIVER
+    );
+  }
+}
+
+/**
+ * 补注入页面脚本：先样式后脚本，与清单静态注入的顺序保持一致。
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+async function ensureInjected(tabId) {
+  const running = injecting.get(tabId);
+  if (running) return running;
+
+  const job = (async () => {
+    log.info('tab.inject', '页面未注入，开始补注入', { tabId });
+    try {
+      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    } catch (error) {
+      log.warn('tab.inject', '页面注入失败', {
+        tabId,
+        reason: FAILURE_REASONS.INJECTION_FAILED,
+      });
+      throw error;
+    }
+  })().finally(() => {
+    injecting.delete(tabId);
+  });
+
+  injecting.set(tabId, job);
+  return job;
 }

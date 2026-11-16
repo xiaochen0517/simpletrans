@@ -29,7 +29,7 @@ import {
   MESSAGE_TYPES,
 } from '../../src/shared/protocol.js';
 import { getOrCreateDefaultInstance, removeKey, writeKey } from '../../src/shared/config/instances.js';
-import { handleMessage } from '../../src/background/router.js';
+import { handleMessage, sendToTab } from '../../src/background/router.js';
 import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
 
 let instance;
@@ -174,5 +174,86 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     expect(response.ok).toBe(false);
     expect(response.error.code).toBe(ERROR_CODES.AUTH);
     expect(response.error.message).toBe('密钥无效或鉴权失败');
+  });
+});
+
+describe('A1 标签页转发与按需注入', () => {
+  const message = { type: MESSAGE_TYPES.TOGGLE, payload: { traceId: 't-1' } };
+  const noReceiver = new Error(
+    'Could not establish connection. Receiving end does not exist.'
+  );
+
+  it('页面已就绪时直接发送，不注入', async () => {
+    chrome.tabs.__response = { ok: true, data: { action: 'translating' } };
+
+    const result = await sendToTab(7, message);
+
+    expect(result).toEqual({ ok: true, data: { action: 'translating' } });
+    expect(chrome.tabs.__sent).toHaveLength(1);
+    expect(chrome.tabs.__sent[0]).toMatchObject({ tabId: 7, message });
+    expect(chrome.scripting.__calls).toEqual([]);
+  });
+
+  it('没有接收方时先注入样式再注入脚本，然后重发', async () => {
+    chrome.tabs.__sendQueue = [
+      { error: noReceiver },
+      { response: { ok: true, data: { action: 'translating' } } },
+    ];
+
+    const result = await sendToTab(9, message);
+
+    expect(result.ok).toBe(true);
+    expect(chrome.scripting.__calls.map((call) => call.api)).toEqual([
+      'insertCSS',
+      'executeScript',
+    ]);
+    expect(chrome.scripting.__calls[0].details).toEqual({
+      target: { tabId: 9 },
+      files: ['content.css'],
+    });
+    expect(chrome.scripting.__calls[1].details).toEqual({
+      target: { tabId: 9 },
+      files: ['content.js'],
+    });
+    expect(chrome.tabs.__sent).toHaveLength(2);
+  });
+
+  it('注入失败时返回 INJECTION_FAILED，不再重发', async () => {
+    chrome.tabs.__sendQueue = [{ error: noReceiver }];
+    chrome.scripting.__error = new Error('Cannot access a chrome:// URL');
+
+    const result = await sendToTab(3, message);
+
+    expect(result.ok).toBe(false);
+    expect(result.error.reason).toBe(FAILURE_REASONS.INJECTION_FAILED);
+    expect(chrome.scripting.__calls.map((call) => call.api)).toEqual(['insertCSS']);
+    expect(chrome.tabs.__sent).toHaveLength(1);
+  });
+
+  it('注入后仍然没有接收方时返回 NO_RECEIVER', async () => {
+    chrome.tabs.__sendQueue = [{ error: noReceiver }, { error: noReceiver }];
+
+    const result = await sendToTab(4, message);
+
+    expect(result.ok).toBe(false);
+    expect(result.error.reason).toBe(FAILURE_REASONS.NO_RECEIVER);
+    expect(chrome.scripting.__calls).toHaveLength(2);
+  });
+
+  it('非「没有接收方」的通信错误不注入', async () => {
+    chrome.tabs.__sendQueue = [{ error: new Error('boom') }];
+
+    const result = await sendToTab(5, message);
+
+    expect(result.ok).toBe(false);
+    expect(result.error.reason).toBe(FAILURE_REASONS.NO_RECEIVER);
+    expect(chrome.scripting.__calls).toEqual([]);
+  });
+
+  it('缺少标签页 id 时返回 NO_ACTIVE_TAB', async () => {
+    const result = await sendToTab(undefined, message);
+    expect(result.ok).toBe(false);
+    expect(result.error.reason).toBe(FAILURE_REASONS.NO_ACTIVE_TAB);
+    expect(chrome.tabs.__sent).toEqual([]);
   });
 });

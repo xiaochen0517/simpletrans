@@ -10,11 +10,11 @@
  *   S5  content 产物不含密钥、引擎与签名相关词
  *   S6  content 产物不出现 storage.sync / storage.local
  *   S7  清单文案中性（不写死引擎名）
- *   S8  入口注册契约：background 注册 onMessage/onConnect，content 连接 st-gateway，且均含 ST_LOG_CONFIG（P3 起）
+ *   S8  入口注册契约：background 注册 onMessage/onConnect 与快捷键监听，content 连接 st-gateway，且均含 ST_LOG_CONFIG（P3 起）
  *   S9  产物新鲜度：dist 不早于 src / public / scripts
  *   S10 dist 缺失或不完整时给出单条可操作提示
  *   S11 popup / options 页面骨架含 #root 与 module script
- *   S12 关键产物存在、非空（P2 起；content.css 仍允许为空）
+ *   S12 关键产物存在、非空（P4 起 content.css 也必须非空）
  *
  * 运行：node scripts/smoke.mjs（需先 npm run build）。只读，不构建。
  */
@@ -210,20 +210,29 @@ await test('S7 清单描述不写死引擎', () => {
 });
 
 // ------------------------------------------------------------ S8 入口注册
-await test('S8 入口注册：background 注册 onMessage/onConnect，content 连接 st-gateway', async () => {
+await test('S8 入口注册：background 注册 onMessage/onConnect/commands，content 连接 st-gateway', async () => {
   const background = await readFile(join(distDir, 'background.js'), 'utf8');
   const content = await readFile(join(distDir, 'content.js'), 'utf8');
 
   for (const token of [
     'chrome.runtime.onMessage',
     'chrome.runtime.onConnect',
+    'chrome.commands.onCommand',
     'st-gateway',
     'ST_TRANSLATE_BATCH',
+    'ST_TOGGLE',
     'ST_LOG_CONFIG',
   ]) {
     assert.equal(background.includes(token), true, `background.js 缺少入口注册 ${token}`);
   }
-  for (const token of ['st-gateway', 'ST_PING', 'ST_TRANSLATE_BATCH', 'ST_LOG_CONFIG']) {
+  for (const token of [
+    'st-gateway',
+    'ST_PING',
+    'ST_TRANSLATE_BATCH',
+    'ST_TOGGLE',
+    'ST_LOG_CONFIG',
+    'data-st-translation',
+  ]) {
     assert.equal(content.includes(token), true, `content.js 缺少页面通道 ${token}`);
   }
 });
@@ -270,13 +279,12 @@ await test('S11 popup / options 页面骨架完整', async () => {
 });
 
 // ---------------------------------------------------------------- S12 非空
-await test('S12 入口产物存在且非空（content.css 仍可为空）', async () => {
-  for (const file of ['background.js', 'content.js']) {
+await test('S12 入口产物与 CSS 存在且非空', async () => {
+  for (const file of ['background.js', 'content.js', 'content.css']) {
     const info = await stat(join(distDir, file));
     assert.ok(info.isFile(), `${file} 不是文件`);
-    assert.ok(info.size > 0, `${file} 为空，P2 起入口必须有代码`);
+    assert.ok(info.size > 0, `${file} 为空，P4 起入口与译文样式必须有内容`);
   }
-  // content.css 在 P3 之前仍允许为空。
 });
 
 // ------------------------------------------------------------------------ 汇总

@@ -87,4 +87,18 @@ describe('后台入口', () => {
     expect(response.ok).toBe(false);
     expect(response.error.message).toContain('无法识别');
   });
+
+  it('顶层注册快捷键监听，触发命令后向活动标签页发 ST_TOGGLE', async () => {
+    await importFresh('../../src/background/index.js');
+    expect(chrome.commands.onCommand.listeners).toHaveLength(1);
+
+    chrome.tabs.__response = { ok: true, data: { action: 'translating' } };
+    chrome.commands.onCommand.emit('translate-paragraph');
+
+    await vi.waitFor(() => expect(chrome.tabs.__sent).toHaveLength(1));
+    const [sent] = chrome.tabs.__sent;
+    expect(sent.tabId).toBe(1);
+    expect(sent.message.type).toBe(MESSAGE_TYPES.TOGGLE);
+    expect(sent.message.payload.traceId).toEqual(expect.any(String));
+  });
 });

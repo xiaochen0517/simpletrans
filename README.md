@@ -2,7 +2,7 @@
 
 基于 React + Vite 的 Chrome 扩展（Manifest V3），把网页内容翻译成目标语言，并以双语对照方式显示。目标支持传统 MT 与 AI LLM 多引擎。
 
-> **当前状态：P0–P3 已完成**。后台已统一翻译出口，页面注入通过 `st-gateway` 长连接发批与收帧；设置页测试翻译经后台执行，并可调整日志级别。P4 起继续实现段落提取与译文渲染。P0–P10 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
+> **当前状态：P0–P4 已完成**。后台已统一翻译出口，页面注入通过 `st-gateway` 长连接发批与收帧；页面已支持悬停单段翻译：任意文字标签可作为宿主，译文内嵌宿主末尾并按计算样式换行或空格分隔。设置页测试翻译经后台执行，并可调整日志级别。P5 起继续实现缓存、整页任务、弹窗与设置页。P0–P10 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
 
 ## 目录结构
 
@@ -27,13 +27,13 @@ src/
     main.jsx
     Options.jsx
   content/             页面注入（D）
-    index.js           入口：建立桥单例（P2）
+    index.js           入口：建立桥单例、处理业务帧与命令（P2/P4）
     bridge.js          D4 与后台通信：连接、心跳、重连（P2）
     hover.js           D2 悬停检测（P4）
-    task.js            D5 状态上报与任务调度（P6）
-    dom/scanner.js     D1 段落提取（P4）
+    task.js            D5 单段任务（P4）/ 状态上报与整页调度（P6）
+    dom/scanner.js     D1 任意标签宿主提取（P4）
     dom/renderer.js    D3 译文渲染（P4）
-    content.css        译文样式（P4 前只有注释）
+    content.css        译文样式（P4）
   shared/              公共模块（E）与引擎/缓存目录
     protocol.js        E1 消息协议：错误码、消息名、失败原因
     constants.js       超时、并发、心跳等数值
@@ -51,8 +51,8 @@ scripts/
 tests/
   unit/structure.test.js        结构、依赖边界与空壳约定
   unit/architecture.test.js     架构 3.1 目录树与仓库一致性
-  unit/*.test.js                P1/P2 行为测试（协议、存储、设置、实例、适配器、网关、路由、桥、入口）与 P3 日志测试
-  helpers/chrome.js             chrome API stub（storage / storage.onChanged / runtime / Port）
+  unit/*.test.js                P1/P2 行为测试（协议、存储、设置、实例、适配器、网关、路由、桥、入口）、P3 日志与 P4 悬停/渲染测试
+  helpers/chrome.js             chrome API stub（storage / storage.onChanged / runtime / Port / commands / tabs / scripting）
   helpers/load.js               安装 stub 与动态导入
 vitest.config.js       单元测试配置
 vite.config.js         构建配置（按模式切换产物格式）

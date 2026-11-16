@@ -3,10 +3,12 @@
  *
  * 模块：测试基建（tests/helpers）
  * 职责：在 Node 环境里用内存实现本项目用到的 chrome API 语义，供单元测试与冒烟脚本复用。
- * 实现阶段：P1–P3（storage 三区 P1；runtime 事件、Port P2；storage.onChanged、getManifest、getURL P3）
+ * 实现阶段：P1–P4（storage 三区 P1；runtime 事件、Port P2；storage.onChanged、getManifest、getURL P3；
+ *             commands、tabs、scripting P4）
  *
  * P2 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
- * P3 补 storage.onChanged、getManifest、getURL；tabs.sendMessage、scripting 随 P4/P7 首次使用时补。
+ * P3 补 storage.onChanged、getManifest、getURL；P4 补 commands.onCommand、tabs.query / sendMessage、
+ * scripting.insertCSS / executeScript（记录调用顺序）。
  */
 
 let portSequence = 0;
@@ -161,6 +163,7 @@ export function createChrome() {
   const onMessage = makeEvent();
   const onConnect = makeEvent();
   const onStorageChanged = makeEvent();
+  const onCommand = makeEvent();
 
   const runtime = {
     id: 'test-extension-id',
@@ -200,6 +203,45 @@ export function createChrome() {
     },
   };
 
+  const tabs = {
+    /** 下一次 query 的结果；测试可整体替换。 */
+    __queryResult: [{ id: 1, active: true }],
+    /** sendMessage 收到的消息，按调用顺序记录。 */
+    __sent: [],
+    /** 按顺序消费的响应队列：{ response } 或 { error }；为空时退回 __response/__error。 */
+    __sendQueue: [],
+    __response: undefined,
+    __error: null,
+    async query() {
+      return tabs.__queryResult.map((tab) => ({ ...tab }));
+    },
+    async sendMessage(tabId, message) {
+      tabs.__sent.push({ tabId, message });
+      if (tabs.__sendQueue.length > 0) {
+        const next = tabs.__sendQueue.shift();
+        if (next?.error) throw next.error;
+        return next?.response;
+      }
+      if (tabs.__error) throw tabs.__error;
+      if (tabs.__response !== undefined) return tabs.__response;
+      throw new Error('Could not establish connection. Receiving end does not exist.');
+    },
+  };
+
+  const scripting = {
+    /** 按调用顺序记录 { api, details }，用于断言「先样式后脚本」。 */
+    __calls: [],
+    __error: null,
+    async insertCSS(details) {
+      scripting.__calls.push({ api: 'insertCSS', details });
+      if (scripting.__error) throw scripting.__error;
+    },
+    async executeScript(details) {
+      scripting.__calls.push({ api: 'executeScript', details });
+      if (scripting.__error) throw scripting.__error;
+    },
+  };
+
   return {
     runtime,
     storage: {
@@ -208,6 +250,11 @@ export function createChrome() {
       sync: makeArea('sync', onStorageChanged),
       session: makeArea('session', onStorageChanged),
     },
+    commands: {
+      onCommand,
+    },
+    tabs,
+    scripting,
   };
 }
 

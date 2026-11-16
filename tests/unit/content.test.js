@@ -20,6 +20,17 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * 通过 runtime.onMessage 向页面注入发一条后台命令。
+ * @param {object} message
+ * @returns {Promise<object>}
+ */
+function sendToContent(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.onMessage.emit(message, { id: chrome.runtime.id }, resolve);
+  });
+}
+
 describe('页面注入入口', () => {
   it('导入即建立 st-gateway 连接，可在 Node 下导入', async () => {
     const connectSpy = vi.spyOn(chrome.runtime, 'connect');
@@ -53,6 +64,31 @@ describe('页面注入入口', () => {
     });
 
     expect(getLogLevel()).toBe('debug');
+    mod.getBridge().close();
+  });
+
+  it('Node 环境没有 DOM 时，ST_TOGGLE 返回明确失败而不抛错', async () => {
+    vi.resetModules();
+    const mod = await import('../../src/content/index.js');
+
+    const response = await sendToContent({
+      type: MESSAGE_TYPES.TOGGLE,
+      payload: { traceId: 't-1' },
+    });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.message).toContain('当前页面不可用');
+    mod.getBridge().close();
+  });
+
+  it('Node 环境没有 DOM 时，ST_CLEAR 返回明确失败而不抛错', async () => {
+    vi.resetModules();
+    const mod = await import('../../src/content/index.js');
+
+    const response = await sendToContent({ type: MESSAGE_TYPES.CLEAR, payload: {} });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.message).toContain('当前页面不可用');
     mod.getBridge().close();
   });
 });

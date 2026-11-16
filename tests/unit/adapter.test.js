@@ -130,6 +130,40 @@ describe('A3 DeepSeek 适配器', () => {
     ).rejects.toMatchObject({ code: ERROR_CODES.CANCELLED });
   });
 
+  it('取消时标记 usage 的拒绝为已处理，不产生未处理拒绝', async () => {
+    const controller = new AbortController();
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const usage = Promise.reject(
+        Object.assign(new Error('signal is aborted without reason'), { name: 'AbortError' })
+      );
+      streamText.mockReturnValue({
+        textStream: (async function* () {
+          controller.abort();
+          throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        })(),
+        usage,
+      });
+
+      await expect(
+        translate({
+          text: 'hi',
+          targetLang: 'zh',
+          instance: { apiKey: 'sk-x', model: 'm' },
+          signal: controller.signal,
+        })
+      ).rejects.toMatchObject({ code: ERROR_CODES.CANCELLED });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('超时映射 NETWORK', async () => {
     streamText.mockImplementation(() => {
       throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });

@@ -30,10 +30,9 @@
   "commands": {
     "translate-paragraph": {
       "suggested_key": {
-        "default": "Ctrl+Shift+S",
-        "mac": "Command+Shift+S"
+        "default": "Ctrl+Shift+Y"
       },
-      "description": "翻译当前段落"
+      "description": "翻译当前段落（备用快捷键；页面内按 Ctrl 单键也可触发）"
     }
   },
   "permissions": ["storage", "activeTab", "scripting", "contextMenus"],

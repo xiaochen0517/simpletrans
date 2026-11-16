@@ -258,6 +258,16 @@ function isExtensionRejection(reason) {
 }
 
 /**
+ * 判断是否为取消操作产生的 AbortError。
+ * @param {unknown} reason
+ * @returns {boolean}
+ */
+function isAbortReason(reason) {
+  if (!reason) return false;
+  return reason.name === 'AbortError' || reason.code === 20;
+}
+
+/**
  * 安装全局异常捕获；重复调用只安装一次。
  * @returns {boolean} 是否已安装
  */
@@ -296,7 +306,28 @@ export function installGlobalErrorHandlers() {
 
   const onUnhandledRejection = (event) => {
     try {
-      if (state.context === 'content' && !isExtensionRejection(event?.reason)) return;
+      const reason = event?.reason;
+      if (state.context === 'content' && !isExtensionRejection(reason)) return;
+
+      // 取消（AbortError）是预期行为：记一条普通日志，并阻止浏览器把它当未处理错误打印。
+      if (isAbortReason(reason)) {
+        try {
+          event?.preventDefault?.();
+        } catch {
+          // 某些 EventTarget 不支持 preventDefault，忽略。
+        }
+        emit(
+          'info',
+          'E4',
+          undefined,
+          'global.abort',
+          '操作已取消',
+          { origin: state.origin, name: reason?.name ?? 'AbortError' },
+          undefined
+        );
+        return;
+      }
+
       emit(
         'error',
         'E4',
@@ -304,7 +335,7 @@ export function installGlobalErrorHandlers() {
         'global.unhandledrejection',
         '未处理的 Promise 拒绝',
         { origin: state.origin },
-        sanitizeError(event?.reason)
+        sanitizeError(reason)
       );
     } catch {
       // 捕获器自身异常必须吞掉。

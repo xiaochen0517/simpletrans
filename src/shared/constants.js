@@ -33,6 +33,9 @@ export const DEFAULT_CONCURRENCY = 3;
 /** 每个连接的在途批次上限（架构 5.3）。 */
 export const MAX_INFLIGHT_BATCHES_PER_PORT = 4;
 
+/** 译文显示更新节流：合并增量，按帧刷新（架构 5.3）。 */
+export const DISPLAY_UPDATE_THROTTLE_MS = 80;
+
 /** 心跳间隔：页面注入发 ST_PING，后台回 ST_PONG（架构 5.3）。 */
 export const HEARTBEAT_INTERVAL_MS = 20_000;
 

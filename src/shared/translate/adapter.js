@@ -85,6 +85,27 @@ export function normalizeOutput(text) {
 }
 
 /**
+ * 取消/失败后观察一次 SDK 的 usage Promise。
+ *
+ * streamText 的 usage 是延迟 Promise；流被中断时它会 reject。
+ * 如果调用方在 catch 里直接返回，这个 reject 没有人等，会变成
+ * unhandledrejection（Chrome 控制台会打印 AbortError）。
+ * 这里主动挂一个 catch，只为了标记已处理，不读取值。
+ * @param {object | null} result
+ */
+function observePendingUsage(result) {
+  if (!result) return;
+  try {
+    const usage = result.usage;
+    if (usage && typeof usage.then === 'function') {
+      Promise.resolve(usage).catch(() => {});
+    }
+  } catch {
+    // usage getter 在极少数状态下会抛错，忽略。
+  }
+}
+
+/**
  * 把上游错误映射为统一错误码与用户可见提示。不把上游原始报错透传给页面。
  * @param {unknown} error
  * @returns {{ code: string, message: string }}
@@ -163,8 +184,9 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
   const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS.total);
   const abortSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
+  let result = null;
   try {
-    const result = streamText({
+    result = streamText({
       model: buildModel(instance),
       system: buildSystemPrompt(targetLang),
       prompt: String(text),
@@ -196,11 +218,13 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
         : null,
     };
   } catch (error) {
+    // 流被中断后，SDK 的 usage 延迟 Promise 可能已经 reject；先标记为已处理。
+    observePendingUsage(result);
+
     if (signal?.aborted) {
-      log.warn('engine.error', '引擎调用失败', {
+      log.info('engine.cancel', '翻译已取消', {
         engine,
         model,
-        code: ERROR_CODES.CANCELLED,
         elapsedMs: Date.now() - startedAt,
       });
       throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');

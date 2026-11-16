@@ -25,6 +25,7 @@ beforeEach(() => {
     },
   };
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'info').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -71,6 +72,26 @@ describe('E4 全局异常', () => {
     onRejection({ reason: extensionError });
     expect(console.error).toHaveBeenCalledTimes(1);
     expect(console.error.mock.calls[0][0]).toContain('global.unhandledrejection 未处理的 Promise 拒绝');
+  });
+
+  it('AbortError 按取消记录为普通日志，不再作为错误抛出', () => {
+    initLogging({ context: 'content', level: 'info', sessionId: 's-6', captureErrors: true });
+    const onRejection = handlers.unhandledrejection;
+    const abort = Object.assign(new Error('signal is aborted without reason'), {
+      name: 'AbortError',
+      stack:
+        'AbortError: signal is aborted without reason\n    at chrome-extension://test-extension-id/content.js:1:1',
+    });
+    const event = { reason: abort, preventDefault: vi.fn() };
+
+    onRejection(event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(console.error).not.toHaveBeenCalled();
+    expect(console.info).toHaveBeenCalledTimes(1);
+    const line = console.info.mock.calls[0][0];
+    expect(line).toContain('global.abort 操作已取消');
+    expect(line).not.toContain(abort.stack);
   });
 
   it('off 级别下全局异常也静默', () => {
