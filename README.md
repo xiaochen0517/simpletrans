@@ -2,7 +2,7 @@
 
 基于 React + Vite 的 Chrome 扩展（Manifest V3），把网页内容翻译成目标语言，并以双语对照方式显示。目标支持传统 MT 与 AI LLM 多引擎。
 
-> **当前状态：P0–P5 已完成，P6 进行中**（P6.1、P6.2、P6.3 已完成，验收 20261116；P6.4 待审核；P6.5 待整体复验）。后台已统一翻译出口；页面注入的 Ctrl 单段与整页翻译统一走 `ST_PAGE_SUBMIT`，提交后按页面内唯一段落 id 逐段回显「已提交 → 翻译中 → 流式 → 译文」，失败显示错误；译文来自后台缓存命中或临时逐段执行器，缓存命中几乎立即回显。整页首次提交当前视口附近段落，滚动后自动增量提交新段落。设置页可配置翻译实例的模型、思考强度、单批段数、批次最大字符数、最大并发数与 system 提示词，测试翻译使用已保存参数（经后台执行），并可调整日志级别；弹窗可打开扩展内的英文翻译测试页。P0–P10 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
+> **当前状态：P0–P5 已完成，P6 进行中**（P6.1–P6.4 已完成，验收 20261116；P6.5 待整体复验）。后台已统一翻译出口；页面注入的 Ctrl 单段与整页翻译统一走 `ST_PAGE_SUBMIT`，提交后按页面内唯一段落 id 逐段回显「已提交 → 翻译中 → 流式 → 译文」，失败显示错误；译文来自后台缓存命中或 A3 翻译队列（单段批流式、多段批一次 JSONL 请求按段返回），缓存命中几乎立即回显。整页首次提交当前视口附近段落，滚动后自动增量提交新段落。设置页可配置翻译实例的模型、思考强度、单批段数、批次最大字符数、最大并发数与 system 提示词，测试翻译使用已保存参数（经后台执行），并可调整日志级别；弹窗可打开扩展内的英文翻译测试页。P0–P10 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
 
 ## 目录结构
 
@@ -16,7 +16,7 @@ src/
     router.js          A1 控制面：引擎列表、测试翻译与页面提交转交（P2/P6.3）
     commands.js        A1 快捷键入口（P4/P7）
     context-menu.js    A1 右键菜单入口（P7）
-    gateway.js         A2 请求网关：校验、缓存、切批、并发、取消、断线（P2/P6.3）
+    gateway.js         A2 请求网关：校验、缓存、切批、队列接线、取消、断线（P2/P6.3/P6.4）
   popup/               工具栏弹窗（B）
     index.html
     main.jsx
@@ -45,7 +45,7 @@ src/
     storage.js         E2 存储读写
     settings.js        E2 设置与密钥
     config/            E3 引擎类型目录与实例（registry / instances）
-    translate/         A3 适配器、提示词模板与批量编码（adapter / prompt / batch）
+    translate/         A3 适配器、提示词模板、批量编码与翻译队列（adapter / prompt / batch / queue）
     cache/             A4 缓存 key 与存取（key / store）
     log/               E4 日志（levels / record / logger，P3 创建）
     global.css         弹窗与设置页的全局样式
@@ -56,7 +56,7 @@ scripts/
 tests/
   unit/structure.test.js        结构、依赖边界与空壳约定
   unit/architecture.test.js     架构 3.1 目录树与仓库一致性
-  unit/*.test.js                P1/P2 行为测试（协议、存储、设置、实例、适配器、网关、路由、桥、入口）、P3 日志与 P4 悬停/渲染测试
+  unit/*.test.js                P1–P6.4 行为测试（协议、存储、设置、实例、适配器、批量编码、队列、网关、路由、桥、入口、日志、悬停、渲染）
   helpers/chrome.js             chrome API stub（storage / storage.onChanged / runtime / Port / commands / tabs / scripting）
   helpers/load.js               安装 stub 与动态导入
 vitest.config.js       单元测试配置

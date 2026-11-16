@@ -4,11 +4,10 @@
  * 模块：后台服务（A）/ A3
  * 职责：定义每个服务商适配器的统一契约（地址、鉴权、语言码、错误映射与用量），并落地 DeepSeek 实现。
  * 依赖：E1 消息协议（错误分类）、公共数值（超时）、E3 引擎类型目录（思考强度归一）、
- *       A3 提示词模板（prompt.js）、`ai` + `@ai-sdk/deepseek`（P1 起）。
+ *       A3 提示词模板（prompt.js）、A3 批量编码（batch.js）、`ai` + `@ai-sdk/deepseek`（P1 起）。
  * 实现阶段：P1–P2（P1 单段 + 流式；P2 增加可选 signal、取消/超时区分与语言判定）；
- *           P6.2 使用实例 system 提示词并透传 DeepSeek thinking / reasoningEffort。
- *
- * 批量编码与解析（batch.js）留 P6.4。
+ *           P6.2 使用实例 system 提示词并透传 DeepSeek thinking / reasoningEffort；
+ *           P6.4 增加 `translateBatch`：一次 JSONL 请求、按段解析并逐段回调。
  */
 
 import { streamText } from 'ai';
@@ -24,6 +23,7 @@ import {
   SUPPORTED_TARGET_LANGS,
   isSupportedTargetLang,
 } from './prompt.js';
+import { BatchAlignError, BATCH_ENCODING_VERSION, createBatchParser, encodeBatchInput } from './batch.js';
 
 /** A3 日志入口；只记录引擎类型、模型、思考强度与提示词版本，不含原文/提示词/密钥。 */
 const log = createLogger('A3');
@@ -189,6 +189,7 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
     reasoningEffort,
     promptVersion: PROMPT_VERSION,
     promptDefault,
+    mode: 'single',
   });
 
   // 外部取消与总超时合并：任一触发都中断上游。
@@ -221,6 +222,7 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
       engine,
       model,
       reasoningEffort,
+      mode: 'single',
       elapsedMs: Date.now() - startedAt,
       totalTokens: usage?.totalTokens ?? null,
     });
@@ -259,6 +261,143 @@ export async function translate({ text, targetLang, instance, onDelta, signal })
     log.warn('engine.error', '引擎调用失败', {
       engine,
       model,
+      code: mapped.code,
+      elapsedMs: Date.now() - startedAt,
+    });
+    throw new TranslateError(mapped.code, mapped.message);
+  }
+}
+
+/**
+ * 多段批量翻译：一次上游请求，输入 JSONL，输出 JSONL；解析出一段就回调一段。
+ *
+ * - 空 `items` 直接返回 `{ usage: null }`，不发请求。
+ * - 缺密钥抛 `TranslateError(CONFIG)`；调用前已取消抛 `TranslateError(CANCELLED)`。
+ * - 外部取消与批量总超时（`AI_TIMEOUT_MS.batchTotal`）合并；超时从开始执行时计时。
+ * - 每段译文经 `normalizeOutput()` 归一后回调；空译文由调用方按该段失败处理。
+ * - 对齐失败抛 `BatchAlignError`（`code = BATCH_ALIGN`），已解析段落保留。
+ *
+ * @param {{
+ *   items: Array<{ groupId: string, text: string }>,
+ *   targetLang: string,
+ *   instance: Record<string, unknown>,
+ *   onItem?: (entry: { groupId: string, text: string }) => void,
+ *   signal?: AbortSignal,
+ * }} params
+ * @returns {Promise<{ usage: Record<string, unknown> | null }>}
+ */
+export async function translateBatch({ items, targetLang, instance, onItem, signal }) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return { usage: null };
+
+  if (!instance || !instance.apiKey || String(instance.apiKey).trim() === '') {
+    throw new TranslateError(ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥');
+  }
+
+  if (signal?.aborted) {
+    throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
+  }
+
+  const engine = String(instance.type ?? '');
+  const model = String(instance.model ?? '');
+  const reasoningEffort = normalizeReasoningEffort(instance.reasoningEffort);
+  const promptDefault = isDefaultPrompt(instance.systemPrompt);
+  const startedAt = Date.now();
+  log.debug('engine.request', '调用翻译引擎', {
+    engine,
+    model,
+    reasoningEffort,
+    promptVersion: PROMPT_VERSION,
+    promptDefault,
+    mode: 'batch',
+    batchItems: list.length,
+    encodingVersion: BATCH_ENCODING_VERSION,
+  });
+
+  const parser = createBatchParser(
+    list.map((item) => item.groupId),
+    {
+      onItem: (entry) => onItem?.({ groupId: entry.id, text: normalizeOutput(entry.text) }),
+    }
+  );
+
+  // 批量总超时与外部取消合并；任一触发都中断上游。
+  const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS.batchTotal);
+  const abortSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+
+  let result = null;
+  try {
+    result = streamText({
+      model: buildModel(instance),
+      system: buildSystemPrompt({
+        targetLang,
+        template: instance.systemPrompt,
+        mode: 'batch',
+      }),
+      prompt: encodeBatchInput(list),
+      abortSignal,
+      providerOptions: deepseekProviderOptions(instance),
+    });
+
+    for await (const delta of result.textStream) parser.push(delta);
+    parser.end();
+
+    const usage = await result.usage;
+    log.debug('engine.done', '引擎返回', {
+      engine,
+      model,
+      reasoningEffort,
+      mode: 'batch',
+      batchItems: list.length,
+      elapsedMs: Date.now() - startedAt,
+      totalTokens: usage?.totalTokens ?? null,
+    });
+    return {
+      usage: usage
+        ? {
+            promptTokens: usage.promptTokens ?? null,
+            completionTokens: usage.completionTokens ?? null,
+            totalTokens: usage.totalTokens ?? null,
+          }
+        : null,
+    };
+  } catch (error) {
+    observePendingUsage(result);
+
+    if (signal?.aborted) {
+      log.info('engine.cancel', '翻译已取消', {
+        engine,
+        model,
+        mode: 'batch',
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
+    }
+    if (error instanceof TranslateError) {
+      log.warn('engine.error', '引擎调用失败', {
+        engine,
+        model,
+        mode: 'batch',
+        code: error.code,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
+    if (error instanceof BatchAlignError) {
+      log.warn('batch.align', '批量结果对齐失败', {
+        engine,
+        model,
+        mode: 'batch',
+        counts: error.counts,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
+    const mapped = mapError(error);
+    log.warn('engine.error', '引擎调用失败', {
+      engine,
+      model,
+      mode: 'batch',
       code: mapped.code,
       elapsedMs: Date.now() - startedAt,
     });

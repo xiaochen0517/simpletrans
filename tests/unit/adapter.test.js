@@ -23,7 +23,13 @@ import {
   PROMPT_VERSION,
   TranslateError,
   translate,
+  translateBatch,
 } from '../../src/shared/translate/adapter.js';
+import {
+  BATCH_ENCODING_VERSION,
+  BatchAlignError,
+  encodeBatchInput,
+} from '../../src/shared/translate/batch.js';
 import { DEFAULT_SYSTEM_PROMPT } from '../../src/shared/translate/prompt.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 
@@ -263,5 +269,198 @@ describe('A3 DeepSeek 适配器', () => {
     await expect(
       translate({ text: 'hi', targetLang: 'zh', instance: { apiKey: 'sk-x', model: 'm' } })
     ).rejects.toMatchObject({ code: ERROR_CODES.NETWORK });
+  });
+});
+
+describe('A3 批量翻译（P6.4）', () => {
+  const instance = { apiKey: 'sk-x', model: 'deepseek-chat' };
+
+  /** 构造按给定增量输出的假 SDK 结果。 */
+  function fakeStream(chunks, usage = { promptTokens: 5, completionTokens: 6, totalTokens: 11 }) {
+    return {
+      textStream: (async function* () {
+        for (const chunk of chunks) yield chunk;
+      })(),
+      usage: Promise.resolve(usage),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    resetLogging();
+    vi.restoreAllMocks();
+  });
+
+  it('空 items 直接返回，不发上游请求', async () => {
+    const result = await translateBatch({ items: [], targetLang: 'zh', instance });
+    expect(result).toEqual({ usage: null });
+    expect(streamText).not.toHaveBeenCalled();
+  });
+
+  it('缺密钥抛 CONFIG，已取消抛 CANCELLED，都不发上游请求', async () => {
+    await expect(
+      translateBatch({ items: [{ groupId: 'g0', text: 'hi' }], targetLang: 'zh', instance: {} })
+    ).rejects.toMatchObject({ code: ERROR_CODES.CONFIG });
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      translateBatch({
+        items: [{ groupId: 'g0', text: 'hi' }],
+        targetLang: 'zh',
+        instance,
+        signal: controller.signal,
+      })
+    ).rejects.toMatchObject({ code: ERROR_CODES.CANCELLED });
+
+    expect(streamText).not.toHaveBeenCalled();
+  });
+
+  it('一次请求、JSONL 输入、逐段回调、批量 usage 返回', async () => {
+    streamText.mockReturnValue(
+      fakeStream(['{"id":"g0","text":" 你好 "}\n{"id":"g1","text":"', '世界"}\n'])
+    );
+    const items = [
+      { groupId: 'g0', text: 'Hello' },
+      { groupId: 'g1', text: 'World' },
+    ];
+    const onItem = vi.fn();
+
+    const result = await translateBatch({ items, targetLang: 'zh', instance, onItem });
+
+    expect(streamText).toHaveBeenCalledTimes(1);
+    const call = streamText.mock.calls[0][0];
+    expect(call.prompt).toBe(encodeBatchInput(items));
+    expect(call.system).toBe(
+      buildSystemPrompt({ targetLang: 'zh', template: undefined, mode: 'batch' })
+    );
+    expect(call.system).toContain('JSONL');
+    expect(onItem.mock.calls.map(([entry]) => entry)).toEqual([
+      { groupId: 'g0', text: '你好' },
+      { groupId: 'g1', text: '世界' },
+    ]);
+    expect(result.usage).toEqual({ promptTokens: 5, completionTokens: 6, totalTokens: 11 });
+    expect(BATCH_ENCODING_VERSION).toBe(1);
+  });
+
+  it('容错代码围栏与空行', async () => {
+    streamText.mockReturnValue(fakeStream(['```json\n{"id":"g0","text":"你好"}\n```\n']));
+    const onItem = vi.fn();
+
+    await translateBatch({
+      items: [{ groupId: 'g0', text: 'Hello' }],
+      targetLang: 'zh',
+      instance,
+      onItem,
+    });
+
+    expect(onItem).toHaveBeenCalledWith({ groupId: 'g0', text: '你好' });
+  });
+
+  it('使用实例提示词模板与思考强度', async () => {
+    streamText.mockReturnValue(fakeStream(['{"id":"g0","text":"译文"}\n']));
+    await translateBatch({
+      items: [{ groupId: 'g0', text: 'Hello' }],
+      targetLang: 'zh',
+      instance: {
+        ...instance,
+        reasoningEffort: 'high',
+        systemPrompt: '用书面语翻译成{{targetLang}}。{{outputFormat}}',
+      },
+    });
+
+    const call = streamText.mock.calls[0][0];
+    expect(call.system).toContain('用书面语');
+    expect(call.system).toContain('JSONL');
+    expect(call.providerOptions).toEqual({
+      deepseek: { thinking: { type: 'enabled' }, reasoningEffort: 'high' },
+    });
+  });
+
+  it('缺少段落时抛 BatchAlignError，已解析段落仍回调', async () => {
+    initLogging({ level: 'debug', sessionId: 'adapter-test' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    streamText.mockReturnValue(fakeStream(['{"id":"g0","text":"只有一段"}\n']));
+    const onItem = vi.fn();
+
+    let error = null;
+    try {
+      await translateBatch({
+        items: [
+          { groupId: 'g0', text: 'A' },
+          { groupId: 'g1', text: 'B' },
+        ],
+        targetLang: 'zh',
+        instance,
+        onItem,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(BatchAlignError);
+    expect(error.code).toBe(ERROR_CODES.BATCH_ALIGN);
+    expect(error.counts.missing).toBe(1);
+    expect(onItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('外部取消映射 CANCELLED；上游错误映射 NETWORK', async () => {
+    const controller = new AbortController();
+    streamText.mockImplementation(() => {
+      controller.abort();
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    });
+    await expect(
+      translateBatch({
+        items: [{ groupId: 'g0', text: 'A' }],
+        targetLang: 'zh',
+        instance,
+        signal: controller.signal,
+      })
+    ).rejects.toMatchObject({ code: ERROR_CODES.CANCELLED });
+
+    streamText.mockImplementation(() => {
+      throw Object.assign(new Error('fetch failed'), { name: 'TypeError' });
+    });
+    await expect(
+      translateBatch({ items: [{ groupId: 'g0', text: 'A' }], targetLang: 'zh', instance })
+    ).rejects.toMatchObject({ code: ERROR_CODES.NETWORK });
+  });
+
+  it('取消时观察 usage 的拒绝，不产生未处理拒绝', async () => {
+    const controller = new AbortController();
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const usage = Promise.reject(
+        Object.assign(new Error('signal is aborted without reason'), { name: 'AbortError' })
+      );
+      streamText.mockReturnValue({
+        textStream: (async function* () {
+          controller.abort();
+          throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        })(),
+        usage,
+      });
+
+      await expect(
+        translateBatch({
+          items: [{ groupId: 'g0', text: 'A' }],
+          targetLang: 'zh',
+          instance,
+          signal: controller.signal,
+        })
+      ).rejects.toMatchObject({ code: ERROR_CODES.CANCELLED });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });

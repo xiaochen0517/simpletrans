@@ -8,7 +8,8 @@
  * 实现阶段：P2（后台网关与页面通道）；P5 增加按段查缓存、命中帧与成功后写缓存；
  *           P6.2 缓存 key 升 v2（提示词哈希、思考强度与批量编码版本），并发改读实例 `maxConcurrency`；
  *           P6.3 增加 `ST_PAGE_SUBMIT` 入口：一次缓存预取、命中回显、唯一 key 分组、
- *           按 `batchMaxChars` / `batchSize` 切批、`inFlightByKey` 在途复用与临时逐 group 执行器。
+ *           按 `batchMaxChars` / `batchSize` 切批、`inFlightByKey` 在途复用与临时逐 group 执行器；
+ *           P6.4 把临时执行器替换为 A3 翻译队列：批次入队、按段回写缓存与 fan-out、批量对齐失败处理。
  */
 
 import {
@@ -50,6 +51,7 @@ import { buildCacheKey, CACHE_KEY_VERSION } from '../shared/cache/key.js';
 import { getCacheStore } from '../shared/cache/store.js';
 import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
 import { BATCH_ENCODING_VERSION } from '../shared/translate/batch.js';
+import { translationQueue } from '../shared/translate/queue.js';
 import { hashPrompt, PROMPT_VERSION } from '../shared/translate/prompt.js';
 
 /** 网关日志入口。 */
@@ -918,16 +920,20 @@ function cleanupConnection(conn) {
     pendingSubmissions: conn.submissions.size,
   });
 
+  const touchedShared = new Set();
   for (const submission of [...conn.submissions.values()]) {
     submission.finished = true;
     if (submission.deadlineTimer) clearTimeout(submission.deadlineTimer);
-    for (const item of submission.items) {
-      if (item.settled) continue;
-      detachItem(submission, item);
+    const pendingItems = submission.items.filter((item) => !item.settled);
+    for (const shared of takeSubscriptions(pendingItems)) touchedShared.add(shared);
+    for (const item of pendingItems) {
       item.settled = true;
+      item.state = 'cancelled';
+      item.subscriber = null;
     }
   }
   conn.submissions.clear();
+  for (const shared of touchedShared) releaseSharedIfUnused(undefined, shared);
 
   for (const batch of conn.batches.values()) {
     batch.finished = true;
@@ -985,7 +991,7 @@ function rejectBatch(conn, requestId, code, message, reason) {
 }
 
 /* ------------------------------------------------------------------------- *
- * P6.3 页面提交：缓存预取、命中回显、唯一 key 分组、切批与临时执行器
+ * P6.3 / P6.4 页面提交：缓存预取、命中回显、唯一 key 分组、切批与队列入队
  * ------------------------------------------------------------------------- */
 
 /**
@@ -1048,7 +1054,7 @@ function normalizeSubmitItems(paragraphs) {
 
 /**
  * 接收一次页面提交：读取设置/实例/密钥 → 计算 key → 一次预取缓存 → 命中回显 →
- * 未命中分组切批 → 临时执行器逐 group 执行。初始化失败时逐段发 `ST_ITEM_ERROR`，
+ * 未命中分组切批 → 批次入 A3 队列执行。初始化失败时逐段发 `ST_ITEM_ERROR`，
  * 再发 `ST_BATCH_DONE(ok:false)`，避免页面停在「已提交」。
  *
  * @param {{
@@ -1225,9 +1231,15 @@ export async function acceptPageSubmit({
   }
 
   const missGroups = [...groups.values()].filter((group) => group.state !== 'cache-hit');
+  // 已在途的 group 只订阅，不进入新批次；其余 group 才切批与入队。
+  const inFlightGroups = missGroups.filter((group) => inFlightByKey.has(group.key));
+  const newGroups = missGroups.filter((group) => !inFlightByKey.has(group.key));
   const batchSize = normalizeBatchSize(instance.batchSize);
   const batchMaxChars = normalizePositiveInt(instance.batchMaxChars, DEFAULT_BATCH_MAX_CHARS);
-  const batches = splitBatches(missGroups, { batchSize, batchMaxChars });
+  const batches = splitBatches(newGroups, { batchSize, batchMaxChars });
+  batches.forEach((batch, index) => {
+    batch.id = `b${index}`;
+  });
   const limit = normalizeConcurrency(instance.maxConcurrency);
 
   const submission = {
@@ -1331,29 +1343,136 @@ export async function acceptPageSubmit({
     domain: cacheDomain,
   };
 
-  // 临时执行器：逐 group 单段 translate；批次信息先记录，供日志与 P6.4 队列对接。
+  // 已在途 group：只订阅既有共享执行，不重复入队。
+  for (const group of inFlightGroups) {
+    const shared = inFlightByKey.get(group.key);
+    if (!shared) continue;
+    subscribeGroup(submission, group, shared, { owner: false });
+    traceLog.debug('dedupe.join', '订阅已有共享请求', { requestId, items: group.items.length });
+  }
+
+  // 新 group：先登记共享执行（批次等待期间新提交也能订阅），再按批入队。
+  for (const group of newGroups) {
+    const shared = createShared(submission, group, context);
+    subscribeGroup(submission, group, shared, { owner: true });
+    traceLog.debug('dedupe.owner', '创建共享请求', {
+      requestId,
+      items: group.items.length,
+      subscribers: shared.subscribers.size,
+    });
+  }
+
+  // 队列按实例 `maxConcurrency` 限制同时在途的批次数；批次内部再经过全局上游名额。
+  translationQueue.setConcurrency(limit);
   for (const batch of batches) {
+    batch.state = 'running';
+    const handle = translationQueue.enqueueBatch(createBatchJob(submission, batch, context));
     for (const group of batch.groups) {
-      if (group.items.every((item) => item.settled)) continue;
-      const existing = inFlightByKey.get(group.key);
-      if (existing) {
-        subscribeGroup(submission, group, existing, { owner: false });
-        traceLog.debug('dedupe.join', '订阅已有共享请求', { requestId, items: group.items.length });
-        continue;
-      }
-      const shared = createShared(submission, group, context);
-      subscribeGroup(submission, group, shared, { owner: true });
-      traceLog.debug('dedupe.owner', '创建共享请求', {
-        requestId,
-        items: group.items.length,
-        subscribers: shared.subscribers.size,
-      });
-      void runShared(shared);
+      if (group.shared) group.shared.jobHandle = handle;
     }
   }
 
   finishIfAllSettled(submission);
   return { accepted: true };
+}
+
+/**
+ * 把一个批次包装成 A3 队列 job；job 只负责执行与回调，缓存、帧与计数仍由 A2 处理。
+ * @param {object} submission
+ * @param {object} batch
+ * @param {object} context
+ * @returns {object}
+ */
+function createBatchJob(submission, batch, context) {
+  return {
+    requestId: submission.requestId,
+    batchId: batch.id ?? null,
+    groups: batch.groups,
+    targetLang: context.targetLang,
+    instance: { ...context.instance, apiKey: context.apiKey },
+    concurrency: context.limit,
+    withSlot: (fn, limit) => withUpstreamSlot(fn, limit),
+    onDelta: (delta) => forwardJobDelta(batch.groups[0], delta),
+    onItem: ({ group, text, usage }) => handleJobItem(submission, batch, group, text, usage),
+    onBatchDone: () => handleJobDone(submission, batch),
+    onBatchError: (error) => handleJobError(submission, batch, error),
+  };
+}
+
+/**
+ * 单段批的流式增量只转发给 owner；多段批没有增量。
+ * @param {object} group
+ * @param {string} delta
+ */
+function forwardJobDelta(group, delta) {
+  const owner = group?.shared?.owner;
+  if (!owner || owner.item.settled || typeof delta !== 'string') return;
+  send(owner.submission.conn, {
+    type: MESSAGE_TYPES.ITEM_DELTA,
+    payload: {
+      requestId: owner.submission.requestId,
+      itemId: owner.item.itemId,
+      delta,
+    },
+  });
+}
+
+/**
+ * 收到一个段落的批量结果：多段批的空译文按该段失败处理，其余立即写缓存并 fan-out。
+ * @param {object} submission
+ * @param {object} batch
+ * @param {object} group
+ * @param {string} text
+ * @param {unknown} usage
+ */
+function handleJobItem(submission, batch, group, text, usage) {
+  const shared = group?.shared;
+  if (!shared || shared.state !== 'running') return;
+
+  const value = typeof text === 'string' ? text : '';
+  if (batch.groups.length >= 2 && value.trim() === '') {
+    failShared(submission.traceId, shared, ERROR_CODES.OTHER, '引擎返回空译文');
+    return;
+  }
+  resolveShared(submission.traceId, shared, value, usage, batch.groups.length === 1 ? 'single' : 'batch');
+}
+
+/**
+ * 批次成功结束：已解析段落已结算；仍未被解析的 group 按批量对齐失败处理。
+ * @param {object} submission
+ * @param {object} batch
+ */
+function handleJobDone(submission, batch) {
+  batch.state = 'done';
+  for (const group of batch.groups) {
+    const shared = group.shared;
+    if (!shared || shared.state !== 'running') continue;
+    failShared(submission.traceId, shared, ERROR_CODES.BATCH_ALIGN, '批量结果缺少该段');
+  }
+  finishIfAllSettled(submission);
+}
+
+/**
+ * 批次失败：未结算 group 按统一错误码失败；已解析 group 保留。
+ * @param {object} submission
+ * @param {object} batch
+ * @param {unknown} error
+ */
+function handleJobError(submission, batch, error) {
+  batch.state = 'failed';
+  const code =
+    error instanceof TranslateError
+      ? error.code
+      : error?.code === ERROR_CODES.BATCH_ALIGN
+        ? ERROR_CODES.BATCH_ALIGN
+        : ERROR_CODES.OTHER;
+  const message = error?.message ?? '翻译失败';
+  for (const group of batch.groups) {
+    const shared = group.shared;
+    if (!shared || shared.state !== 'running') continue;
+    failShared(submission.traceId, shared, code, message);
+  }
+  finishIfAllSettled(submission);
 }
 
 /**
@@ -1425,6 +1544,7 @@ function fanOutCacheHit(submission, group) {
 
 /**
  * 创建一次共享执行；同一个 key 在 `inFlightByKey` 里只保留一个。
+ * 批次 job 由 A3 队列执行，`jobHandle` 用于在无订阅者时摘除该 group。
  * @param {object} submission
  * @param {object} group
  * @param {object} context
@@ -1432,19 +1552,16 @@ function fanOutCacheHit(submission, group) {
 function createShared(submission, group, context) {
   const shared = {
     key: group.key,
+    group,
     cacheKey: group.cacheKey,
     text: group.text,
-    targetLang: context.targetLang,
-    instance: context.instance,
-    apiKey: context.apiKey,
-    limit: context.limit,
     cacheEnabled: context.cacheEnabled,
     cacheGeneration: context.cacheGeneration,
     domain: context.domain,
-    controller: new AbortController(),
     subscribers: new Set(),
     owner: null,
     state: 'running',
+    jobHandle: null,
     startedAt: Date.now(),
     ownerSubmission: submission,
   };
@@ -1479,66 +1596,19 @@ function subscribeGroup(submission, group, shared, { owner }) {
 }
 
 /**
- * 临时执行器：在实例 `maxConcurrency` 名额内做一次单段 `translate`，
- * 增量只发给 owner，定稿后 fan-out 给全部订阅者并写一次缓存。
+ * 成功收到一个 group 的译文：按 group 写一次缓存，fan-out 给全部订阅者并从在途表移除。
+ * 多段批的每个 `ST_ITEM_DONE.usage` 为 `null`；单段批只把上游 usage 给 owner。
+ * @param {string} traceId
  * @param {object} shared
+ * @param {string} text
+ * @param {unknown} usage
+ * @param {'single'|'batch'} mode
  */
-async function runShared(shared) {
-  let result;
-  try {
-    result = await withUpstreamSlot(
-      () =>
-        translate({
-          text: shared.text,
-          targetLang: shared.targetLang,
-          instance: { ...shared.instance, apiKey: shared.apiKey },
-          signal: shared.controller.signal,
-          onDelta: (delta) => {
-            const owner = shared.owner;
-            if (!owner || owner.item.settled || typeof delta !== 'string') return;
-            send(owner.submission.conn, {
-              type: MESSAGE_TYPES.ITEM_DELTA,
-              payload: {
-                requestId: owner.submission.requestId,
-                itemId: owner.item.itemId,
-                delta,
-              },
-            });
-          },
-        }),
-      shared.limit
-    );
-  } catch (error) {
-    if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
-    // 全部订阅者已取消：中断来自主动 abort，不再结算。
-    if (shared.state === 'cancelled') return;
-    shared.state = 'failed';
-    const code =
-      error instanceof TranslateError
-        ? error.code
-        : error?.code === ERROR_CODES.CANCELLED
-          ? ERROR_CODES.CANCELLED
-          : ERROR_CODES.OTHER;
-    log.withTrace(shared.ownerSubmission?.traceId).warn('dedupe.error', '共享请求失败', {
-      requestId: shared.ownerSubmission?.requestId ?? null,
-      code,
-      subscribers: shared.subscribers.size,
-    });
-    for (const subscriber of [...shared.subscribers]) {
-      settleItem(subscriber.submission, subscriber.item, 'failed', {
-        notify: true,
-        code,
-        message: error?.message ?? '翻译失败',
-      });
-    }
-    return;
-  }
-
-  if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
-  if (shared.state === 'cancelled') return;
+function resolveShared(traceId, shared, text, usage, mode) {
+  if (!shared || shared.state !== 'running') return;
   shared.state = 'done';
+  if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
 
-  const text = typeof result?.text === 'string' ? result.text : '';
   // 先计入写入数再 fan-out，让同一次提交的 batch.done 能看到本次写入；实际写入仍异步。
   const shouldWrite = shared.cacheEnabled && shared.cacheKey && text.trim() !== '';
   if (shouldWrite && shared.ownerSubmission) shared.ownerSubmission.cacheWrites += 1;
@@ -1547,11 +1617,44 @@ async function runShared(shared) {
     settleItem(subscriber.submission, subscriber.item, 'done', {
       notify: true,
       text,
-      usage: subscriber === shared.owner ? (result?.usage ?? null) : null,
+      usage: mode === 'single' && subscriber === shared.owner ? (usage ?? null) : null,
     });
   }
+  shared.subscribers.clear();
 
   if (shouldWrite) writeSharedCache(shared, text);
+  log.withTrace(traceId).debug('dedupe.done', '共享请求完成', {
+    requestId: shared.ownerSubmission?.requestId ?? null,
+    mode,
+    subscribers: shared.subscribers.size,
+  });
+}
+
+/**
+ * 共享执行失败：从在途表移除，按统一错误码结算全部订阅者；已成功 group 不回滚。
+ * @param {string} traceId
+ * @param {object} shared
+ * @param {string} code
+ * @param {string} message
+ */
+function failShared(traceId, shared, code, message) {
+  if (!shared || shared.state !== 'running') return;
+  shared.state = 'failed';
+  if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
+
+  log.withTrace(traceId).warn('dedupe.error', '共享请求失败', {
+    requestId: shared.ownerSubmission?.requestId ?? null,
+    code,
+    subscribers: shared.subscribers.size,
+  });
+  for (const subscriber of [...shared.subscribers]) {
+    settleItem(subscriber.submission, subscriber.item, 'failed', {
+      notify: true,
+      code,
+      message,
+    });
+  }
+  shared.subscribers.clear();
 }
 
 /**
@@ -1701,17 +1804,18 @@ function finishSubmission(submission) {
 }
 
 /**
- * 取消整个提交：未结算 item 不发帧，只清理订阅；无订阅者的 shared 立即 abort。
+ * 取消整个提交：先摘除订阅并结算，再释放无订阅者的共享执行。
  * @param {object} submission
  */
 function cancelSubmission(submission) {
   if (!submission || submission.finished) return;
   submission.cancelled = true;
-  for (const item of submission.items) {
-    if (item.settled) continue;
-    detachItem(submission, item);
+  const pendingItems = submission.items.filter((item) => !item.settled);
+  const touched = takeSubscriptions(pendingItems);
+  for (const item of pendingItems) {
     settleItem(submission, item, 'cancelled', { notify: false });
   }
+  for (const shared of touched) releaseSharedIfUnused(submission.traceId, shared);
   finishIfAllSettled(submission);
 }
 
@@ -1723,51 +1827,57 @@ function cancelSubmission(submission) {
 function cancelItemOfSubmission(submission, itemId) {
   const item = submission.items.find((entry) => entry.itemId === itemId);
   if (!item || item.settled) return;
-  detachItem(submission, item);
+  const touched = takeSubscriptions([item]);
   settleItem(submission, item, 'cancelled', { notify: false });
+  for (const shared of touched) releaseSharedIfUnused(submission.traceId, shared);
   finishIfAllSettled(submission);
 }
 
 /**
- * 从共享执行上摘掉一个订阅；订阅集合为空时 abort 并删除在途表。
- * @param {object} submission
- * @param {object} item
+ * 摘除 item 的订阅但不触发取消，返回受影响的 shared 集合。
+ * 调用方先结算 item，再调用 `releaseSharedIfUnused`，避免取消回调早于结算。
+ * @param {object[]} items
+ * @returns {Set<object>}
  */
-function detachItem(submission, item) {
-  const shared = item.group?.shared;
-  if (!shared) {
+function takeSubscriptions(items) {
+  const touched = new Set();
+  for (const item of items) {
+    const shared = item.group?.shared;
+    const subscriber = item.subscriber;
     item.subscriber = null;
-    return;
+    if (!shared) continue;
+    if (subscriber) shared.subscribers.delete(subscriber);
+    if (shared.owner === subscriber) shared.owner = null;
+    touched.add(shared);
   }
-
-  if (item.subscriber) shared.subscribers.delete(item.subscriber);
-  if (shared.owner === item.subscriber) shared.owner = null;
-  item.subscriber = null;
-
-  if (shared.subscribers.size === 0 && shared.state === 'running') {
-    shared.state = 'cancelled';
-    try {
-      shared.controller.abort();
-    } catch {
-      // abort 失败不影响清理。
-    }
-    if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
-    log.withTrace(submission.traceId).debug('dedupe.abort', '无订阅者，取消共享请求', {
-      requestId: submission.requestId,
-    });
-  }
+  return touched;
 }
 
 /**
- * 提交超时：未结算段落以 NETWORK / BATCH_TIMEOUT 失败，并从共享执行摘除。
+ * 共享执行已无订阅者时置取消，并从队列 job 摘除该 group；job 无剩余 group 时由队列 abort。
+ * @param {string} traceId
+ * @param {object} shared
+ */
+function releaseSharedIfUnused(traceId, shared) {
+  if (!shared || shared.state !== 'running' || shared.subscribers.size > 0) return;
+  shared.state = 'cancelled';
+  if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
+  shared.jobHandle?.dropGroup(shared.group);
+  log.withTrace(traceId).debug('dedupe.abort', '无订阅者，取消批次中的段落组', {
+    requestId: shared.ownerSubmission?.requestId ?? null,
+  });
+}
+
+/**
+ * 提交超时：未结算段落以 NETWORK / BATCH_TIMEOUT 失败，并释放无订阅者的共享执行。
  * @param {object} submission
  */
 function onSubmissionTimeout(submission) {
   if (submission.finished) return;
   submission.timedOut = true;
-  for (const item of submission.items) {
-    if (item.settled) continue;
-    detachItem(submission, item);
+  const pendingItems = submission.items.filter((item) => !item.settled);
+  const touched = takeSubscriptions(pendingItems);
+  for (const item of pendingItems) {
     settleItem(submission, item, 'failed', {
       notify: true,
       code: ERROR_CODES.NETWORK,
@@ -1775,5 +1885,6 @@ function onSubmissionTimeout(submission) {
       reason: FAILURE_REASONS.BATCH_TIMEOUT,
     });
   }
+  for (const shared of touched) releaseSharedIfUnused(submission.traceId, shared);
   finishIfAllSettled(submission);
 }

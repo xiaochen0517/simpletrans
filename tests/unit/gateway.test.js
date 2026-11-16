@@ -16,6 +16,7 @@ vi.mock('../../src/shared/translate/adapter.js', () => {
   }
   return {
     translate: vi.fn(),
+    translateBatch: vi.fn(),
     TranslateError,
     SUPPORTED_TARGET_LANGS: ['zh'],
     isSupportedTargetLang: (lang) => lang === 'zh',
@@ -126,8 +127,8 @@ import {
   normalizeConcurrency,
   splitBatches,
 } from '../../src/background/gateway.js';
-import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
-import { BATCH_ENCODING_VERSION } from '../../src/shared/translate/batch.js';
+import { translate, translateBatch, TranslateError } from '../../src/shared/translate/adapter.js';
+import { BATCH_ENCODING_VERSION, BatchAlignError } from '../../src/shared/translate/batch.js';
 import { hashPrompt, PROMPT_VERSION } from '../../src/shared/translate/prompt.js';
 import { __cache } from '../../src/shared/cache/store.js';
 
@@ -249,6 +250,14 @@ beforeEach(async () => {
   translate.mockImplementation(async ({ text, onDelta }) => {
     onDelta?.(`[${text}]`);
     return { text: `译:${text}`, usage: { totalTokens: 1 } };
+  });
+
+  translateBatch.mockReset();
+  translateBatch.mockImplementation(async ({ items, onItem }) => {
+    for (const item of items) {
+      onItem?.({ groupId: item.groupId, text: `译:${item.text}` });
+    }
+    return { usage: { totalTokens: 2 } };
   });
 
   instance = await getOrCreateDefaultInstance();
@@ -1359,12 +1368,15 @@ describe('A2 页面提交（P6.3）：缓存、分组与切批', () => {
   });
 
   it('取消一个订阅者不影响其它提交；全部取消后 abort 共享请求', async () => {
-    const deferred = makeDeferred();
     let capturedSignal = null;
-    translate.mockImplementation((params) => {
-      capturedSignal = params.signal;
-      return deferred.promise;
-    });
+    translate.mockImplementation((params) =>
+      new Promise((resolve, reject) => {
+        capturedSignal = params.signal;
+        params.signal?.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted'), { code: ERROR_CODES.CANCELLED }));
+        });
+      })
+    );
     const { client, frames } = connectPage();
 
     await submitPage([{ hostId: 'h1', text: 'Shared' }], { requestId: 's-a' });
@@ -1663,5 +1675,380 @@ describe('A2 批次切分（P6.3）', () => {
     const byDefault = splitBatches(groups, { batchSize: 'x', batchMaxChars: -1 });
     expect(byDefault).toHaveLength(1);
     expect(byDefault[0].groups).toHaveLength(3);
+  });
+});
+
+describe('A2 页面提交（P6.4）：队列与批量翻译', () => {
+  /**
+   * 以页面注入的 sender 建立 st-gateway 连接（带 tab.id）。
+   * @param {number} [tabId]
+   */
+  function connectPage(tabId = 7) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: { id: chrome.runtime.id, tab: { id: tabId } },
+    });
+    clients.push(client);
+    const frames = [];
+    client.onMessage.addListener((message) => frames.push(message));
+    return { client, frames };
+  }
+
+  /**
+   * @param {Array<{ hostId?: string, text: string }>} paragraphs
+   * @param {{ requestId?: string, tabId?: number }} [options]
+   */
+  function submitPage(paragraphs, options = {}) {
+    return acceptPageSubmit({
+      requestId: options.requestId ?? 'q-1',
+      scope: 'page',
+      paragraphs,
+      tabId: options.tabId ?? 7,
+    });
+  }
+
+  it('两个新 group 只发一次批量请求，逐段 DONE 且 usage 为 null', async () => {
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'Hello' },
+        { hostId: 'h2', text: 'World' },
+      ],
+      { requestId: 'q-batch' }
+    );
+    const done = await waitForBatchDoneFor(frames, 'q-batch');
+
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(translate).not.toHaveBeenCalled();
+    expect(translateBatch.mock.calls[0][0].items).toEqual([
+      { groupId: 'g0', text: 'Hello' },
+      { groupId: 'g1', text: 'World' },
+    ]);
+    expect(
+      frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_START).map((frame) => frame.payload.itemId)
+    ).toEqual(['h1', 'h2']);
+    const dones = frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(dones.map((frame) => frame.payload.itemId)).toEqual(['h1', 'h2']);
+    expect(dones.map((frame) => frame.payload.text)).toEqual(['译:Hello', '译:World']);
+    expect(dones.every((frame) => frame.payload.usage === null)).toBe(true);
+    expect(done.payload).toMatchObject({ ok: true, done: 2, failed: 0, cancelled: 0 });
+    // 按 group 各写一次缓存。
+    expect(__cache.set).toHaveBeenCalledTimes(2);
+  });
+
+  it('批量对齐失败：已解析段保留，其余段 BATCH_ALIGN', async () => {
+    translateBatch.mockImplementation(async ({ items, onItem }) => {
+      onItem?.({ groupId: items[0].groupId, text: '只解析第一段' });
+      throw new BatchAlignError({ missing: 1 });
+    });
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+      ],
+      { requestId: 'q-align' }
+    );
+    const done = await waitForBatchDoneFor(frames, 'q-align');
+
+    const itemDone = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(itemDone.payload).toMatchObject({ itemId: 'h1', text: '只解析第一段' });
+    const itemError = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+    expect(itemError.payload).toMatchObject({ itemId: 'h2', code: ERROR_CODES.BATCH_ALIGN });
+    expect(done.payload).toMatchObject({ ok: false, done: 1, failed: 1 });
+    // 只写已解析段的缓存。
+    expect(__cache.set).toHaveBeenCalledTimes(1);
+    expect(__cache.set.mock.calls[0][1]).toBe('只解析第一段');
+  });
+
+  it('批量中某段空译文：该段按 OTHER 失败，其它段不受影响且不写缓存', async () => {
+    translateBatch.mockImplementation(async ({ items, onItem }) => {
+      onItem?.({ groupId: items[0].groupId, text: '正常译文' });
+      onItem?.({ groupId: items[1].groupId, text: '   ' });
+      return { usage: null };
+    });
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+      ],
+      { requestId: 'q-empty' }
+    );
+    const done = await waitForBatchDoneFor(frames, 'q-empty');
+
+    const itemError = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+    expect(itemError.payload).toMatchObject({
+      itemId: 'h2',
+      code: ERROR_CODES.OTHER,
+      message: '引擎返回空译文',
+    });
+    const itemDone = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(itemDone.payload).toMatchObject({ itemId: 'h1', text: '正常译文' });
+    expect(done.payload).toMatchObject({ ok: false, done: 1, failed: 1 });
+    expect(__cache.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('缓存命中与批量混合：命中项直接回显，其余两个 group 合成一批', async () => {
+    const hitKey = await cacheKeyFor('Cached');
+    __cache.entries.set(hitKey, {
+      text: '缓存译文',
+      bytes: 10,
+      createdAt: Date.now(),
+      domain: '',
+    });
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'Cached' },
+        { hostId: 'h2', text: 'One' },
+        { hostId: 'h3', text: 'Two' },
+      ],
+      { requestId: 'q-mix' }
+    );
+    const done = await waitForBatchDoneFor(frames, 'q-mix');
+
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(translateBatch.mock.calls[0][0].items.map((item) => item.text)).toEqual([
+      'One',
+      'Two',
+    ]);
+    expect(translate).not.toHaveBeenCalled();
+    const dones = frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(dones.map((frame) => [frame.payload.itemId, frame.payload.text])).toEqual([
+      ['h1', '缓存译文'],
+      ['h2', '译:One'],
+      ['h3', '译:Two'],
+    ]);
+    expect(done.payload).toMatchObject({ ok: true, done: 3, failed: 0 });
+    expect(__cache.set).toHaveBeenCalledTimes(2);
+    expect(batchDoneLog('q-mix')).toMatchObject({
+      cacheHits: 1,
+      cacheMisses: 2,
+      cacheWrites: 2,
+      done: 3,
+    });
+  });
+
+  it('单 group 批次走单段 translate，保留流式与上游 usage', async () => {
+    const { frames } = connectPage();
+
+    await submitPage([{ hostId: 'h1', text: 'Solo' }], { requestId: 'q-single' });
+    await waitForBatchDoneFor(frames, 'q-single');
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(translateBatch).not.toHaveBeenCalled();
+    expect(frames.map((frame) => frame.type)).toEqual([
+      MESSAGE_TYPES.ITEM_START,
+      MESSAGE_TYPES.ITEM_DELTA,
+      MESSAGE_TYPES.ITEM_DONE,
+      MESSAGE_TYPES.BATCH_DONE,
+    ]);
+    expect(frames[2].payload.usage).toEqual({ totalTokens: 1 });
+  });
+
+  it('队列按实例并发上限串行执行批次', async () => {
+    await updateInstance(instance.id, { batchSize: 2, maxConcurrency: 1 });
+    const pending = [];
+    translateBatch.mockImplementation(
+      (params) =>
+        new Promise((resolve, reject) => {
+          pending.push({ params, resolve, reject });
+        })
+    );
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'A' },
+        { hostId: 'h2', text: 'B' },
+        { hostId: 'h3', text: 'C' },
+        { hostId: 'h4', text: 'D' },
+      ],
+      { requestId: 'q-limit' }
+    );
+
+    await vi.waitFor(() => expect(translateBatch).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(pending[0].params.items).toHaveLength(2);
+
+    for (const [index, item] of pending[0].params.items.entries()) {
+      pending[0].params.onItem({ groupId: item.groupId, text: `批一-${index}` });
+    }
+    pending[0].resolve({ usage: null });
+    await vi.waitFor(() => expect(translateBatch).toHaveBeenCalledTimes(2));
+    expect(pending[1].params.items).toHaveLength(2);
+
+    for (const [index, item] of pending[1].params.items.entries()) {
+      pending[1].params.onItem({ groupId: item.groupId, text: `批二-${index}` });
+    }
+    pending[1].resolve({ usage: null });
+
+    const done = await waitForBatchDoneFor(frames, 'q-limit');
+    expect(done.payload).toMatchObject({ ok: true, done: 4, failed: 0 });
+  });
+
+  it('批次等待期间新提交同 key 只订阅在途 group，不重复入队', async () => {
+    let pending = null;
+    translateBatch.mockImplementation(
+      (params) =>
+        new Promise((resolve, reject) => {
+          pending = { params, resolve, reject };
+        })
+    );
+    const first = connectPage(7);
+    const second = connectPage(8);
+
+    await submitPage(
+      [
+        { hostId: 'a1', text: 'One' },
+        { hostId: 'a2', text: 'Two' },
+      ],
+      { requestId: 'join-a', tabId: 7 }
+    );
+    await vi.waitFor(() => expect(translateBatch).toHaveBeenCalledTimes(1));
+
+    await submitPage(
+      [
+        { hostId: 'b1', text: 'One' },
+        { hostId: 'b2', text: 'Two' },
+      ],
+      { requestId: 'join-b', tabId: 8 }
+    );
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(
+      second.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_START)
+    ).toHaveLength(2);
+
+    for (const [index, item] of pending.params.items.entries()) {
+      pending.params.onItem({ groupId: item.groupId, text: `共享-${index}` });
+    }
+    pending.resolve({ usage: { totalTokens: 3 } });
+
+    await waitForBatchDoneFor(first.frames, 'join-a');
+    await waitForBatchDoneFor(second.frames, 'join-b');
+    expect(
+      first.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)
+    ).toHaveLength(2);
+    expect(
+      second.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)
+    ).toHaveLength(2);
+    expect(batchDoneLog('join-b')).toMatchObject({ dedupeJoined: 2, done: 2 });
+  });
+
+  it('取消一个 group 不 abort 整批；全部取消后 abort 批次请求', async () => {
+    let captured = null;
+    translateBatch.mockImplementation(
+      (params) =>
+        new Promise((resolve, reject) => {
+          captured = { params, resolve, reject };
+          params.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted'), { code: ERROR_CODES.CANCELLED }));
+          });
+        })
+    );
+    const single = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+      ],
+      { requestId: 'q-cancel-item' }
+    );
+    await vi.waitFor(() => expect(translateBatch).toHaveBeenCalledTimes(1));
+
+    single.client.postMessage({
+      type: MESSAGE_TYPES.CANCEL_ITEM,
+      payload: { requestId: 'q-cancel-item', itemId: 'h1' },
+    });
+    expect(captured.params.signal.aborted).toBe(false);
+
+    // 已取消 group 的结果被队列忽略，剩余 group 正常定稿。
+    captured.params.onItem({ groupId: 'g0', text: '不应出现' });
+    captured.params.onItem({ groupId: 'g1', text: '剩余译文' });
+    captured.resolve({ usage: null });
+
+    const done = await waitForBatchDoneFor(single.frames, 'q-cancel-item');
+    expect(done.payload).toMatchObject({ ok: false, done: 1, cancelled: 1 });
+    expect(
+      single.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)
+    ).toHaveLength(1);
+    expect(
+      single.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)
+    ).toHaveLength(0);
+
+    // 全部取消：abort 批次请求，不发单段帧。
+    const all = connectPage();
+    await submitPage(
+      [
+        { hostId: 'c1', text: 'Three' },
+        { hostId: 'c2', text: 'Four' },
+      ],
+      { requestId: 'q-cancel-batch' }
+    );
+    await vi.waitFor(() => expect(translateBatch).toHaveBeenCalledTimes(2));
+    const secondCaptured = captured;
+    all.client.postMessage({
+      type: MESSAGE_TYPES.CANCEL_BATCH,
+      payload: { requestId: 'q-cancel-batch' },
+    });
+    expect(secondCaptured.params.signal.aborted).toBe(true);
+
+    const cancelDone = await waitForBatchDoneFor(all.frames, 'q-cancel-batch');
+    expect(cancelDone.payload).toMatchObject({ ok: false, done: 0, cancelled: 2 });
+    expect(
+      all.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)
+    ).toHaveLength(0);
+  });
+
+  it('提交超时：批量未结算段以 NETWORK / BATCH_TIMEOUT 失败并 abort 批次', async () => {
+    vi.useFakeTimers();
+    try {
+      let captured = null;
+      translateBatch.mockImplementation(
+        (params) =>
+          new Promise((resolve, reject) => {
+            captured = { params, resolve, reject };
+            params.signal?.addEventListener('abort', () => {
+              reject(Object.assign(new Error('aborted'), { code: ERROR_CODES.CANCELLED }));
+            });
+          })
+      );
+      const { frames } = connectPage();
+
+      await submitPage(
+        [
+          { hostId: 'h1', text: 'One' },
+          { hostId: 'h2', text: 'Two' },
+        ],
+        { requestId: 'q-timeout' }
+      );
+      await vi.waitFor(() => expect(translateBatch).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(AI_TIMEOUT_MS.batchTotal);
+      await vi.waitFor(() =>
+        expect(
+          frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)
+        ).toHaveLength(2)
+      );
+
+      for (const frame of frames.filter((entry) => entry.type === MESSAGE_TYPES.ITEM_ERROR)) {
+        expect(frame.payload).toMatchObject({
+          code: ERROR_CODES.NETWORK,
+          reason: FAILURE_REASONS.BATCH_TIMEOUT,
+        });
+      }
+      expect(captured.params.signal.aborted).toBe(true);
+      const done = await waitForBatchDoneFor(frames, 'q-timeout');
+      expect(done.payload).toMatchObject({ ok: false, failed: 2, cancelled: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

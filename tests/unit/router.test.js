@@ -16,6 +16,7 @@ vi.mock('../../src/shared/translate/adapter.js', () => {
   }
   return {
     translate: vi.fn(),
+    translateBatch: vi.fn(),
     TranslateError,
     isSupportedTargetLang: (lang) => lang === 'zh',
     SUPPORTED_TARGET_LANGS: ['zh'],
@@ -67,7 +68,7 @@ import { getOrCreateDefaultInstance, removeKey, updateInstance, writeKey } from 
 import { saveSettings } from '../../src/shared/settings.js';
 import { handleMessage, receivePageSubmit, sendToTab } from '../../src/background/router.js';
 import { handleConnect } from '../../src/background/gateway.js';
-import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
+import { translate, translateBatch, TranslateError } from '../../src/shared/translate/adapter.js';
 import { __cache } from '../../src/shared/cache/store.js';
 
 let instance;
@@ -80,6 +81,11 @@ beforeEach(async () => {
   clients = [];
   translate.mockReset();
   translate.mockResolvedValue({ text: '你好', usage: { totalTokens: 3 } });
+  translateBatch.mockReset();
+  translateBatch.mockImplementation(async ({ items, onItem }) => {
+    for (const item of items) onItem?.({ groupId: item.groupId, text: '你好' });
+    return { usage: { totalTokens: 3 } };
+  });
 
   __cache.state.statsResult = {
     entries: 1234,
@@ -684,15 +690,22 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.3）', () => {
   /** 让上游挂起，用于验证「提交进行中」的重复与并发行为。 */
   function makePendingTranslate() {
     const resolvers = [];
-    translate.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolvers.push(resolve);
-        })
+    const pending = (finish) =>
+      new Promise((resolve) => {
+        resolvers.push(() => {
+          finish?.();
+          resolve({ text: '你好', usage: null });
+        });
+      });
+    translate.mockImplementation(() => pending());
+    translateBatch.mockImplementation(({ items, onItem }) =>
+      pending(() => {
+        for (const item of items) onItem?.({ groupId: item.groupId, text: '你好' });
+      })
     );
     return {
-      resolveAll(value = { text: '你好', usage: null }) {
-        for (const resolve of resolvers.splice(0)) resolve(value);
+      resolveAll() {
+        for (const resolve of resolvers.splice(0)) resolve();
       },
     };
   }
@@ -712,7 +725,8 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.3）', () => {
         chars: 10,
       },
     });
-    await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(translateBatch).toHaveBeenCalledTimes(1));
+    expect(translate).not.toHaveBeenCalled();
     await vi.waitFor(() =>
       expect(frames.some((frame) => frame.type === MESSAGE_TYPES.BATCH_DONE)).toBe(true)
     );
