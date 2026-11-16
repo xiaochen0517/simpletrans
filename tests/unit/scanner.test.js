@@ -4,8 +4,8 @@
  *
  * 用 jsdom 验证容器判定、跳过规则、文本归一、译文到宿主的映射（P4 契约不变），
  * 以及 P6.1 的视口段落枚举：文档顺序、最外层宿主、按钮单独成段、跳过规则、
- * 只收集视口内段落、不做同文本合并、上下文、5000 上限、分片让出与日志。
- * 不加载真实 chrome，不联网。
+ * 只收集视口内段落、不做同文本合并、页面内唯一段落 id、5000 上限、分片让出与日志。
+ * 段落不再携带上下文。不加载真实 chrome，不联网。
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,9 +45,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+
+/** 段落 id 的形状：h + 6 位实例标记 + - + 序号。 */
+const HOST_ID_PATTERN = /^h[a-z0-9]{6}-\d+$/;
 
 describe('D1 文本归一', () => {
   it('去掉零宽字符，合并空白并去首尾空白', () => {
@@ -152,14 +156,35 @@ describe('D1 跳过规则', () => {
 });
 
 describe('D1 宿主登记与译文映射', () => {
-  it('ensureHost 复用同一个 id', () => {
+  it('ensureHost 复用同一个 id，并生成带实例前缀的段落 id', () => {
     mount('<p id="p">Hello</p>');
     const p = document.getElementById('p');
     const first = ensureHost(p);
     const second = ensureHost(p);
     expect(first).toBe(second);
     expect(p.getAttribute(HOST_ATTR)).toBe(first);
-    expect(first).toMatch(/^h\d+$/);
+    expect(first).toMatch(HOST_ID_PATTERN);
+  });
+
+  it('不同 content 实例的段落 id 前缀不同，页面上遗留的旧 id 原样复用', async () => {
+    mount('<p id="old">Old text</p><p id="a">A</p><p id="b">B</p>');
+    const oldHost = document.getElementById('old');
+    oldHost.setAttribute(HOST_ATTR, 'hlegacy1');
+
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.resetModules();
+    const first = await import('../../src/content/dom/scanner.js');
+    const firstId = first.ensureHost(document.getElementById('a'));
+    expect(firstId).toMatch(HOST_ID_PATTERN);
+
+    vi.spyOn(Math, 'random').mockReturnValue(0.25);
+    vi.resetModules();
+    const second = await import('../../src/content/dom/scanner.js');
+    const secondId = second.ensureHost(document.getElementById('b'));
+
+    expect(secondId).toMatch(HOST_ID_PATTERN);
+    expect(secondId).not.toBe(firstId);
+    expect(second.ensureHost(oldHost)).toBe('hlegacy1');
   });
 
   it('指针落在译文容器上时归到 data-st-for 指向的宿主', () => {
@@ -259,7 +284,7 @@ async function noYield() {}
 /**
  * 执行视口扫描；默认注入「全部在视口内」，避免 jsdom 的零尺寸矩形导致空结果。
  * @param {object} [options]
- * @returns {Promise<Array<{ index: number, text: string, context: string, host: Element }>>}
+ * @returns {Promise<Array<{ index: number, text: string, host: Element }>>}
  */
 function scan(options = {}) {
   return collectParagraphs({ yieldToMain: noYield, inViewport: () => true, ...options });
@@ -305,7 +330,7 @@ function stubRect(element, rect) {
 }
 
 describe('D1 视口扫描（P6.1）：顺序与宿主', () => {
-  it('从 body 按文档顺序返回 {index,text,context,host}，index 从 0 递增', async () => {
+  it('从 body 按文档顺序返回 {index,text,host}，index 从 0 递增且不带上下文', async () => {
     mount(
       '<h1 id="h1">Title</h1>' +
         '<div id="wrap"><p id="p1">First</p><span id="s1">Second</span><p id="p2">Third</p></div>' +
@@ -319,17 +344,10 @@ describe('D1 视口扫描（P6.1）：顺序与宿主', () => {
     expect(paragraphs[0]).toEqual({
       index: 0,
       text: 'Title',
-      context: '',
       host: document.getElementById('h1'),
     });
+    expect(paragraphs[0]).not.toHaveProperty('context');
     expect(paragraphs[4].host).toBe(document.getElementById('li'));
-    expect(paragraphs.map((paragraph) => paragraph.context)).toEqual([
-      '',
-      'Title',
-      'First',
-      'Second',
-      'Third',
-    ]);
   });
 
   it('p 内的行内标签并入同一段，span 不再单独成段', async () => {
@@ -362,21 +380,22 @@ describe('D1 视口扫描（P6.1）：顺序与宿主', () => {
       document.getElementById('p'),
       document.getElementById('b'),
     ]);
-    expect(paragraphs[1].context).toBe('Press now');
   });
 
-  it('多个按钮按文档顺序单独成段，并依次更新上下文', async () => {
+  it('多个按钮按文档顺序单独成段', async () => {
     mount('<p id="p">Ask <button id="b1">Yes</button> or <button id="b2">No</button> now</p>');
 
     const paragraphs = await scan();
 
     expect(textsOf(paragraphs)).toEqual(['Ask or now', 'Yes', 'No']);
-    expect(paragraphs.map((paragraph) => paragraph.context)).toEqual(['', 'Ask or now', 'Yes']);
     expect(hostsOf(paragraphs)).toEqual([
       document.getElementById('p'),
       document.getElementById('b1'),
       document.getElementById('b2'),
     ]);
+    const ids = paragraphs.map((paragraph) => paragraph.host.getAttribute(HOST_ATTR));
+    expect(new Set(ids).size).toBe(3);
+    for (const id of ids) expect(id).toMatch(HOST_ID_PATTERN);
   });
 
   it('纯数字、纯符号与纯 emoji 不成段', async () => {
@@ -394,7 +413,7 @@ describe('D1 视口扫描（P6.1）：顺序与宿主', () => {
     const first = await scan();
     const ids = first.map((paragraph) => paragraph.host.getAttribute(HOST_ATTR));
     expect(ids).toHaveLength(2);
-    for (const id of ids) expect(id).toMatch(/^h\d+$/);
+    for (const id of ids) expect(id).toMatch(HOST_ID_PATTERN);
 
     const second = await scan();
     expect(second.map((paragraph) => paragraph.host.getAttribute(HOST_ATTR))).toEqual(ids);
@@ -525,31 +544,32 @@ describe('D1 视口扫描（P6.1）：视口、上下文与去重', () => {
     expect(inViewport).toHaveBeenCalledWith(document.getElementById('c'));
   });
 
-  it('视口外的段落不更新下一段的上下文', async () => {
+  it('视口外的段落不收集，也不分配段落 id', async () => {
     mount('<p id="a">Alpha</p><p id="b">Beta</p><p id="c">Gamma</p>');
     const visible = new Set([document.getElementById('a'), document.getElementById('c')]);
 
     const paragraphs = await scan({ inViewport: (host) => visible.has(host) });
 
     expect(textsOf(paragraphs)).toEqual(['Alpha', 'Gamma']);
-    expect(paragraphs[0].context).toBe('');
-    // Beta 不在视口内：不收集，也不作为 Gamma 的上下文。
-    expect(paragraphs[1].context).toBe('Alpha');
+    expect(document.getElementById('b').getAttribute(HOST_ATTR)).toBe(null);
+    expect(paragraphs.every((paragraph) => !('context' in paragraph))).toBe(true);
   });
 
-  it('同文本不合并：每个宿主各占一个 index 并各自提交', async () => {
+  it('同文本不合并：每个宿主各有独立段落 id，各占一个 index', async () => {
     mount('<p id="a">Same text</p><p id="b">Other text</p><p id="c">  Same   text  </p>');
 
     const paragraphs = await scan();
 
     expect(textsOf(paragraphs)).toEqual(['Same text', 'Other text', 'Same text']);
     expect(paragraphs.map((paragraph) => paragraph.index)).toEqual([0, 1, 2]);
-    expect(paragraphs.map((paragraph) => paragraph.context)).toEqual(['', 'Same text', 'Other text']);
     expect(hostsOf(paragraphs)).toEqual([
       document.getElementById('a'),
       document.getElementById('b'),
       document.getElementById('c'),
     ]);
+    const ids = paragraphs.map((paragraph) => paragraph.host.getAttribute(HOST_ATTR));
+    expect(new Set(ids).size).toBe(3);
+    for (const id of ids) expect(id).toMatch(HOST_ID_PATTERN);
   });
 
   it('jsdom 中默认视口判定为不可见，不注入 inViewport 时不收集（需求 4.5）', async () => {

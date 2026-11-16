@@ -2,9 +2,10 @@
  * D3 译文渲染
  *
  * 模块：页面注入（D）/ D3
- * 职责：把提交状态内嵌到被翻译节点末尾、更新、隐藏与清除；正在提交、已提交与提交失败共用一套 DOM 契约。
+ * 职责：把提交与译文状态内嵌到被翻译节点末尾、更新、隐藏与清除；提交中、已提交、翻译中、流式、
+ *       译文与失败共用一套 DOM 契约。
  * 依赖：D1 的 DOM 标记常量与块级判定（P4 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为 submitting / submitted / error 三种提交状态。
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为提交状态；本轮恢复翻译中、流式与译文显示。
  *
  * 约束：状态文本只写 textContent，不使用 innerHTML；不改动原文文字与行内元素；不读 storage。
  * DOM 结构与样式见 docs/modules/D3-译文渲染.md。
@@ -24,6 +25,12 @@ const SUBMITTING_TEXT = '正在提交…';
 /** 已提交标记文本（P6.1 统一提交）。 */
 const SUBMITTED_TEXT = '已提交，等待翻译';
 
+/** 翻译中占位文本（收到 START、尚未有增量）。 */
+const LOADING_TEXT = '翻译中…';
+
+/** 翻译失败提示前缀。 */
+const TRANSLATE_ERROR_PREFIX = '翻译失败：';
+
 /** 行内模式的固定分隔：两个不换行空格（U+00A0）。 */
 const INLINE_SEPARATOR = '\u00A0\u00A0';
 
@@ -33,7 +40,11 @@ const INLINE_SEPARATOR = '\u00A0\u00A0';
  * @returns {{
  *   showSubmitting: (host: Element) => boolean,
  *   showSubmitted: (host: Element, text?: string) => boolean,
+ *   showLoading: (host: Element) => boolean,
+ *   update: (host: Element, text: string) => boolean,
+ *   showDone: (host: Element, text: string) => boolean,
  *   showSubmitError: (host: Element, message: string) => boolean,
+ *   showError: (host: Element, message: string) => boolean,
  *   remove: (host: Element) => boolean,
  *   clearAll: () => number,
  *   getState: (host: Element) => string | null,
@@ -139,6 +150,35 @@ export function createRenderer({ document: doc = globalThis.document } = {}) {
     },
 
     /**
+     * 收到开始帧：显示「翻译中…」，等待增量或定稿。
+     * @param {Element} host
+     * @returns {boolean}
+     */
+    showLoading(host) {
+      return write(host, 'loading', LOADING_TEXT);
+    },
+
+    /**
+     * 写入流式累计文本（P6.1 结果回显）。
+     * @param {Element} host
+     * @param {string} text
+     * @returns {boolean}
+     */
+    update(host, text) {
+      return write(host, 'streaming', text);
+    },
+
+    /**
+     * 写入定稿译文。
+     * @param {Element} host
+     * @param {string} text
+     * @returns {boolean}
+     */
+    showDone(host, text) {
+      return write(host, 'done', text);
+    },
+
+    /**
      * 整页或单段提交失败的提示（P6.1）。
      * @param {Element} host
      * @param {string} message
@@ -147,6 +187,17 @@ export function createRenderer({ document: doc = globalThis.document } = {}) {
     showSubmitError(host, message) {
       const detail = String(message ?? '').trim() || '提交失败，请重试';
       return write(host, 'error', `提交失败：${detail}`);
+    },
+
+    /**
+     * 翻译失败的提示（结果帧 ST_ITEM_ERROR）。
+     * @param {Element} host
+     * @param {string} message
+     * @returns {boolean}
+     */
+    showError(host, message) {
+      const detail = String(message ?? '').trim() || '翻译失败，请重试';
+      return write(host, 'error', `${TRANSLATE_ERROR_PREFIX}${detail}`);
     },
 
     remove(host) {

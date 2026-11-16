@@ -2,18 +2,23 @@
 /**
  * D5 任务测试
  *
- * 用 jsdom + 假提交验证 P6.1 的统一提交：
+ * 用 jsdom + 假提交验证 P6.1 的统一提交与结果回显：
  * - Ctrl 单段与整页都发 `ST_PAGE_SUBMIT`，只用 `scope` 区分；
- * - 整页首次提交、页面会话、滚动 200ms 防抖与 `hostId` 增量去重；
+ * - 整页首次提交、页面会话、滚动 200ms 防抖与段落 id 增量去重；
+ * - 提交记录、结果帧路由（START / DELTA / DONE / ERROR）、迟到与作废帧丢弃；
  * - 提交成功/失败、重复触发、清除、页面生命周期与日志契约。
  * 不加载真实 chrome，不联网。
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ERROR_CODES } from '../../src/shared/protocol.js';
+import { ERROR_CODES, MESSAGE_TYPES } from '../../src/shared/protocol.js';
+import { DISPLAY_UPDATE_THROTTLE_MS } from '../../src/shared/constants.js';
 import { HOST_ATTR, TRANSLATION_ATTR, ensureHost } from '../../src/content/dom/scanner.js';
 import { createRenderer } from '../../src/content/dom/renderer.js';
 import { createTask } from '../../src/content/task.js';
+
+/** 段落 id 的形状：h + 6 位实例标记 + - + 序号。 */
+const HOST_ID_PATTERN = /^h[a-z0-9]{6}-\d+$/;
 
 /** @type {ReturnType<typeof createRenderer>} */
 let renderer;
@@ -75,21 +80,17 @@ function textOf(host) {
 }
 
 /**
- * 构造扫描结果：index 按数组顺序，宿主都补上 data-st-host（模拟 D1 的职责）。
+ * 构造扫描结果：index 按数组顺序，宿主都补上段落 id（模拟 D1 的职责）。
  * @param {Element[]} hosts
  * @param {string[]} texts
- * @param {string[]} [contexts]
- * @returns {Array<{ index: number, text: string, context: string, host: Element }>}
+ * @returns {Array<{ index: number, text: string, host: Element }>}
  */
-function paragraphsOf(hosts, texts, contexts = []) {
+function paragraphsOf(hosts, texts) {
   return hosts.map((host, index) => {
     ensureHost(host);
-    const context =
-      contexts.length > 0 ? contexts[index] ?? '' : index > 0 ? texts[index - 1] : '';
     return {
       index,
       text: texts[index],
-      context,
       host,
     };
   });
@@ -113,19 +114,61 @@ function acceptedSubmit() {
 }
 
 /**
- * 用注入的扫描与提交重建任务。
- * @param {{ scan?: Function, submit?: Function, inViewport?: Function, logger?: object }} [deps]
+ * 用注入的扫描、提交与结果来源重建任务。
+ * @param {{ scan?: Function, submit?: Function, inViewport?: Function, logger?: object, resultsFactory?: Function }} [deps]
  * @returns {ReturnType<typeof createTask>}
  */
-function pageTask({ scan = async () => [], submit = acceptedSubmit(), inViewport, logger } = {}) {
+function pageTask({
+  scan = async () => [],
+  submit = acceptedSubmit(),
+  inViewport,
+  logger,
+  resultsFactory,
+} = {}) {
   task = createTask({
     renderer,
     submit,
     scan,
     ...(inViewport ? { inViewport } : {}),
     ...(logger ? { logger } : {}),
+    ...(resultsFactory ? { resultsFactory } : {}),
   });
   return task;
+}
+
+/**
+ * 记录调用的结果来源桩：不自己造帧，用例直接调用 `task.applyResultFrame`。
+ * @returns {{ start: Function, cancelAll: Function, setMode: Function, getMode: Function, starts: object[], cancels: number }}
+ */
+function resultSourceStub() {
+  const source = {
+    starts: [],
+    cancels: 0,
+    mode: 'normal',
+    start: vi.fn((submission) => {
+      source.starts.push(submission);
+    }),
+    cancelAll: vi.fn(() => {
+      source.cancels += 1;
+    }),
+    setMode: vi.fn((mode) => {
+      source.mode = mode;
+    }),
+    getMode: vi.fn(() => source.mode),
+  };
+  return source;
+}
+
+/**
+ * 组装一条结果帧。
+ * @param {string} type
+ * @param {string} requestId
+ * @param {string} itemId
+ * @param {object} [extra]
+ * @returns {{ type: string, payload: object }}
+ */
+function frameOf(type, requestId, itemId, extra = {}) {
+  return { type, payload: { requestId, itemId, ...extra } };
 }
 
 /**
@@ -177,8 +220,9 @@ describe('D5 整页统一提交（P6.1）：成功路径', () => {
     expect(payload.viewport).toEqual({ width: 1280, height: 800 });
     expect(payload.paragraphs).toEqual([
       { index: 0, hostId: hosts[0].getAttribute(HOST_ATTR), text: 'Hello' },
-      { index: 1, hostId: hosts[1].getAttribute(HOST_ATTR), text: 'World', context: 'Hello' },
+      { index: 1, hostId: hosts[1].getAttribute(HOST_ATTR), text: 'World' },
     ]);
+    expect(payload.paragraphs[1]).not.toHaveProperty('context');
     expect(payload).not.toHaveProperty('batch');
 
     for (const host of hosts) {
@@ -204,20 +248,17 @@ describe('D5 整页统一提交（P6.1）：成功路径', () => {
     expect(payload).not.toHaveProperty('targetLang');
   });
 
-  it('context 截断到 400，空 context 不带字段', async () => {
+  it('提交载荷的段落只有 index / hostId / text，不带上下文', async () => {
     const hosts = mountTexts(['One', 'Two']);
-    const longContext = 'c'.repeat(500);
     const submit = acceptedSubmit();
-    pageTask({
-      scan: async () => paragraphsOf(hosts, ['One', 'Two'], [longContext, '']),
-      submit,
-    });
+    pageTask({ scan: async () => paragraphsOf(hosts, ['One', 'Two']), submit });
 
     await task.start({ targetLang: 'zh' });
 
-    const [first, second] = submit.mock.calls[0][0].paragraphs;
-    expect(first.context).toHaveLength(400);
-    expect(second).not.toHaveProperty('context');
+    for (const paragraph of submit.mock.calls[0][0].paragraphs) {
+      expect(Object.keys(paragraph).sort()).toEqual(['hostId', 'index', 'text']);
+      expect(paragraph.hostId).toMatch(HOST_ID_PATTERN);
+    }
   });
 
   it('同文本段落不去重：各自占一个 index、各自提交并各自标记', async () => {
@@ -231,7 +272,6 @@ describe('D5 整页统一提交（P6.1）：成功路径', () => {
     const paragraphs = submit.mock.calls[0][0].paragraphs;
     expect(paragraphs.map((paragraph) => paragraph.index)).toEqual([0, 1]);
     expect(paragraphs[0].hostId).not.toBe(paragraphs[1].hostId);
-    expect(paragraphs[1].context).toBe('Same text');
     expect(document.querySelectorAll(`[${TRANSLATION_ATTR}]`)).toHaveLength(2);
     for (const host of hosts) expect(renderer.getState(host)).toBe('submitted');
   });
@@ -485,7 +525,7 @@ describe('D5 整页统一提交（P6.1）：并发、重复触发与清除', () 
     expect(document.querySelectorAll(`[${TRANSLATION_ATTR}]`)).toHaveLength(0);
     expect(task.getStatus()).toEqual({ phase: 'idle', total: 0 });
     for (const host of [...hosts, singleHost]) {
-      expect(host.getAttribute(HOST_ATTR)).toMatch(/^h\d+$/);
+      expect(host.getAttribute(HOST_ATTR)).toMatch(HOST_ID_PATTERN);
     }
 
     await scrollAndWait();
@@ -779,6 +819,243 @@ describe('D5 统一提交（P6.1）：Ctrl 单段', () => {
     expect(translationOf(hosts[0])).toBe(null);
     expect(renderer.getState(hosts[1])).toBe('submitted');
     expect(task.getStatus().phase).toBe('submitted');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 结果回显
+// ---------------------------------------------------------------------------
+
+describe('D5 结果回显（P6.1）', () => {
+  /**
+   * 启动一次整页提交，返回宿主、提交桩、结果来源与 requestId。
+   * @param {string[]} [texts]
+   * @returns {Promise<{ hosts: Element[], submit: import('vitest').Mock, source: object, requestId: string }>}
+   */
+  async function startPage(texts = ['Hello', 'World']) {
+    const hosts = mountTexts(texts);
+    const submit = acceptedSubmit();
+    const source = resultSourceStub();
+    pageTask({
+      scan: async () => paragraphsOf(hosts, texts),
+      submit,
+      resultsFactory: () => source,
+    });
+    await task.start({ targetLang: 'zh' });
+    return { hosts, submit, source, requestId: submit.mock.calls[0][0].requestId };
+  }
+
+  it('提交成功后把提交记录交给结果来源，START/DELTA/DONE 落到对应段落', async () => {
+    const { hosts, source, requestId } = await startPage();
+    expect(source.starts).toHaveLength(1);
+    expect(source.starts[0].requestId).toBe(requestId);
+    expect(source.starts[0].items.size).toBe(2);
+
+    const [first, second] = hosts;
+    const firstId = first.getAttribute(HOST_ATTR);
+
+    expect(task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_START, requestId, firstId))).toBe(true);
+    expect(renderer.getState(first)).toBe('loading');
+    expect(textOf(first)).toBe('翻译中…');
+    expect(renderer.getState(second)).toBe('submitted');
+
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DELTA, requestId, firstId, { delta: '【模拟 ' })
+      )
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(DISPLAY_UPDATE_THROTTLE_MS);
+    expect(renderer.getState(first)).toBe('streaming');
+    expect(textOf(first)).toBe('【模拟 ');
+
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DELTA, requestId, firstId, { delta: `${firstId}】Hello` })
+      )
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(DISPLAY_UPDATE_THROTTLE_MS);
+    expect(textOf(first)).toBe(`【模拟 ${firstId}】Hello`);
+
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, firstId, {
+          text: `【模拟 ${firstId}】Hello world`,
+        })
+      )
+    ).toBe(true);
+    expect(renderer.getState(first)).toBe('done');
+    expect(textOf(first)).toBe(`【模拟 ${firstId}】Hello world`);
+    expect(renderer.getState(second)).toBe('submitted');
+  });
+
+  it('缓存回显式的 START → DONE（零增量）同样显示定稿译文', async () => {
+    const { hosts, requestId } = await startPage(['Hello']);
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    expect(task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_START, requestId, itemId))).toBe(true);
+    expect(renderer.getState(host)).toBe('loading');
+
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: `【模拟 ${itemId}】Hello` })
+      )
+    ).toBe(true);
+    expect(renderer.getState(host)).toBe('done');
+    expect(textOf(host)).toBe(`【模拟 ${itemId}】Hello`);
+  });
+
+  it('ITEM_ERROR 显示「翻译失败：」并保持页面会话', async () => {
+    const { hosts, requestId } = await startPage(['Hello']);
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_START, requestId, itemId));
+
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_ERROR, requestId, itemId, {
+          code: ERROR_CODES.NETWORK,
+          message: '模拟失败',
+        })
+      )
+    ).toBe(true);
+    expect(renderer.getState(host)).toBe('error');
+    expect(textOf(host)).toBe('翻译失败：模拟失败');
+    expect(task.getStatus().phase).toBe('submitted');
+  });
+
+  it('未知 requestId、未知 itemId、非结果帧与空帧都丢弃且不改页面', async () => {
+    const { hosts, requestId } = await startPage(['Hello']);
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, 's-unknown', itemId, { text: 'x' }))
+    ).toBe(false);
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, 'hunknown-1', { text: 'x' }))
+    ).toBe(false);
+    expect(task.applyResultFrame({ type: MESSAGE_TYPES.LOG_CONFIG, payload: {} })).toBe(false);
+    expect(task.applyResultFrame(null)).toBe(false);
+    expect(task.applyResultFrame({ type: MESSAGE_TYPES.ITEM_DONE })).toBe(false);
+
+    expect(renderer.getState(host)).toBe('submitted');
+    expect(textOf(host)).toBe('已提交，等待翻译');
+  });
+
+  it('宿主已断开时丢弃结果帧', async () => {
+    const { hosts, requestId } = await startPage(['Hello']);
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+    host.remove();
+
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: 'x' }))
+    ).toBe(false);
+  });
+
+  it('重新触发后旧 requestId 的结果帧被丢弃，新 requestId 正常生效', async () => {
+    const { hosts, submit, requestId: firstRequestId } = await startPage(['Hello']);
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    await task.start({ targetLang: 'zh' });
+    const secondRequestId = submit.mock.calls[1][0].requestId;
+    expect(secondRequestId).not.toBe(firstRequestId);
+
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DONE, firstRequestId, itemId, { text: '旧结果' })
+      )
+    ).toBe(false);
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DONE, secondRequestId, itemId, { text: '新结果' })
+      )
+    ).toBe(true);
+    expect(textOf(host)).toBe('新结果');
+  });
+
+  it('重复 START 不打断已定稿段落，DONE 后 DELTA 被忽略', async () => {
+    const { hosts, requestId } = await startPage(['Hello']);
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '定稿' }));
+    expect(task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_START, requestId, itemId))).toBe(false);
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DELTA, requestId, itemId, { delta: 'x' }))
+    ).toBe(false);
+    expect(textOf(host)).toBe('定稿');
+  });
+
+  it('清除与卸载会停止结果来源并丢弃在途帧', async () => {
+    const { hosts, source, requestId } = await startPage(['Hello']);
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    task.clearAll();
+    expect(source.cancels).toBeGreaterThanOrEqual(1);
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: 'x' }))
+    ).toBe(false);
+    expect(translationOf(host)).toBe(null);
+
+    await task.start({ targetLang: 'zh' });
+    task.dispose();
+    expect(source.cancels).toBeGreaterThanOrEqual(2);
+  });
+
+  it('setResultMode 转交给结果来源并返回生效模式', async () => {
+    const { source } = await startPage(['Hello']);
+
+    expect(task.setResultMode('fail')).toBe('fail');
+    expect(source.setMode).toHaveBeenCalledWith('fail');
+  });
+
+  it('提交失败时不启动结果来源', async () => {
+    const hosts = mountTexts(['Hello']);
+    const source = resultSourceStub();
+    pageTask({
+      scan: async () => paragraphsOf(hosts, ['Hello']),
+      submit: vi.fn(async () => ({
+        ok: false,
+        error: { code: ERROR_CODES.NETWORK, message: '离线' },
+      })),
+      resultsFactory: () => source,
+    });
+
+    await task.start({ targetLang: 'zh' });
+
+    expect(source.start).not.toHaveBeenCalled();
+    expect(source.starts).toHaveLength(0);
+  });
+
+  it('滚动增量提交的结果也登记到结果来源，并能落到新增段落', async () => {
+    const hosts = mountTexts(['A', 'B']);
+    let scanned = paragraphsOf(hosts, ['A', 'B']);
+    const submit = acceptedSubmit();
+    const source = resultSourceStub();
+    pageTask({ scan: async () => scanned, submit, resultsFactory: () => source });
+
+    await task.start({ targetLang: 'zh' });
+    expect(source.starts).toHaveLength(1);
+
+    const [extra] = appendTexts(['C'], 2);
+    scanned = paragraphsOf([...hosts, extra], ['A', 'B', 'C']);
+    await scrollAndWait();
+
+    expect(source.starts).toHaveLength(2);
+    const requestId = submit.mock.calls[1][0].requestId;
+    const itemId = extra.getAttribute(HOST_ATTR);
+    expect(source.starts[1].requestId).toBe(requestId);
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: `【模拟 ${itemId}】C` })
+      )
+    ).toBe(true);
+    expect(textOf(extra)).toBe(`【模拟 ${itemId}】C`);
   });
 });
 

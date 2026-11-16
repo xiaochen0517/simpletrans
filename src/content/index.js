@@ -6,7 +6,8 @@
  *       提供 Ctrl 单键手势作为主快捷键（Chrome commands 不支持裸修饰键）。
  * 依赖：D1–D5、E1 消息协议、E4 日志、content.css（P2 起）。
  * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加 `ST_START` 整页任务入口与统一提交；
- *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务。
+ *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务；
+ *           本轮把结果回显的临时假数据源接到 D5（P6.2 换成后台帧）。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -29,6 +30,7 @@ import {
 } from '../shared/log/logger.js';
 import { createBridge } from './bridge.js';
 import { createRenderer } from './dom/renderer.js';
+import { createFakeResults } from './fake-results.js';
 import { createHoverTracker } from './hover.js';
 import { createTask } from './task.js';
 
@@ -370,7 +372,12 @@ function main() {
 
   if (typeof document !== 'undefined') {
     const renderer = createRenderer();
-    task = createTask({ renderer, submit: submitPage });
+    task = createTask({
+      renderer,
+      submit: submitPage,
+      // 本阶段结果来源：页面内假数据（P6.2 接入后台缓存回显后删除）。
+      resultsFactory: (options) => createFakeResults(options),
+    });
     hover = createHoverTracker();
     hover.start();
     installCtrlTap(triggerCtrlTap);

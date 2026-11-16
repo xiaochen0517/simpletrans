@@ -4,10 +4,10 @@
  *
  * 在 jsdom 中模拟后台一次性消息，验证：
  * - P6.1：Ctrl 单段与整页都经 ST_PAGE_SUBMIT 提交（scope=single/page）；
- * - ST_START 异步扫描视口附近段落 → 一条提交 → 每段「已提交」标记；
+ * - ST_START 异步扫描视口附近段落 → 一条提交 → 每段「已提交」→ 假数据逐段回显；
  * - 滚动 200ms 后只补交新段落；
  * - ST_CLEAR 清除标记并返回 removed；
- * - 提交失败、无页面与 Ctrl 手势边界。
+ * - 提交失败、模拟失败、无页面与 Ctrl 手势边界。
  * 不加载真实扩展、不联网、不读写真实存储。
  */
 
@@ -429,13 +429,13 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
         index: 1,
         hostId: document.getElementById('b').getAttribute(HOST_ATTR),
         text: 'World',
-        context: 'Hello',
       },
     ]);
+    expect(payload.paragraphs[1]).not.toHaveProperty('context');
 
     for (const id of ['a', 'b']) {
       const host = document.getElementById(id);
-      expect(host.getAttribute(HOST_ATTR)).toMatch(/^h\d+$/);
+      expect(host.getAttribute(HOST_ATTR)).toMatch(/^h[a-z0-9]{6}-\d+$/);
       expect(translationOf(host).getAttribute('data-st-state')).toBe('submitted');
       expect(rendererTextOf(host)).toBe('已提交，等待翻译');
     }
@@ -460,7 +460,7 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
       'Visible',
       'Also visible',
     ]);
-    expect(submissions[0].paragraphs[1].context).toBe('Visible');
+    expect(submissions[0].paragraphs[1]).not.toHaveProperty('context');
     expect(document.getElementById('b').getAttribute(HOST_ATTR)).toBe(null);
     expect(translationOf(document.getElementById('b'))).toBe(null);
   });
@@ -569,7 +569,7 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
       'New paragraph',
     ]);
     const newHost = document.getElementById('c');
-    expect(newHost.getAttribute(HOST_ATTR)).toMatch(/^h\d+$/);
+    expect(newHost.getAttribute(HOST_ATTR)).toMatch(/^h[a-z0-9]{6}-\d+$/);
     expect(translationOf(newHost).getAttribute('data-st-state')).toBe('submitted');
 
     // 已提交区域再次滚动不重复提交。
@@ -593,7 +593,7 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
     expect(response).toEqual({ ok: true, data: { removed: 2 } });
     expect(response.data).not.toHaveProperty('cancelled');
     expect(document.querySelectorAll(`[${TRANSLATION_ATTR}]`)).toHaveLength(0);
-    expect(document.getElementById('a').getAttribute(HOST_ATTR)).toMatch(/^h\d+$/);
+    expect(document.getElementById('a').getAttribute(HOST_ATTR)).toMatch(/^h[a-z0-9]{6}-\d+$/);
   });
 
   it('ST_START 异步处理：handleMessage 返回 true 并异步回包', async () => {
@@ -662,5 +662,101 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
 
     expect(translationOf(p)).toBe(null);
     expect(submissions).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 结果回显（假数据）
+// ---------------------------------------------------------------------------
+
+describe('页面注入结果回显（P6.1）', () => {
+  it('整页提交后逐段回显：已提交 → 翻译中 → 定稿，内容带段落 id', async () => {
+    await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p><p id="b">World</p>';
+
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+    const a = document.getElementById('a');
+    const b = document.getElementById('b');
+    const itemId = a.getAttribute(HOST_ATTR);
+    expect(rendererTextOf(a)).toBe('已提交，等待翻译');
+    expect(rendererTextOf(b)).toBe('已提交，等待翻译');
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(a).getAttribute('data-st-state')).toBe('loading');
+    expect(rendererTextOf(a)).toBe('翻译中…');
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(a).getAttribute('data-st-state')).toBe('done');
+    expect(rendererTextOf(a)).toBe(`【模拟 ${itemId}】Hello`);
+    expect(translationOf(b).getAttribute('data-st-state')).toBe('done');
+  });
+
+  it('长段落按增量刷新，定稿前能看到流式文本', async () => {
+    await loadContent();
+    const long = 'A'.repeat(60);
+    document.body.innerHTML = `<p id="a">${long}</p>`;
+
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+    const host = document.getElementById('a');
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('loading');
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(rendererTextOf(host)).toBe('翻译中…');
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('streaming');
+    expect(rendererTextOf(host)).toHaveLength(20);
+
+    await vi.advanceTimersByTimeAsync(160);
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('done');
+    expect(rendererTextOf(host)).toBe(`【模拟 ${itemId}】${long}`);
+  });
+
+  it('模拟失败模式显示「翻译失败」，页面会话保持 submitted', async () => {
+    const mod = await loadContent();
+    mod.getTask().setResultMode('fail');
+    document.body.innerHTML = '<p id="a">Hello</p>';
+
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+    await vi.advanceTimersByTimeAsync(80);
+
+    const host = document.getElementById('a');
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('error');
+    expect(rendererTextOf(host)).toBe('翻译失败：模拟失败');
+    expect(mod.getTask().getStatus().phase).toBe('submitted');
+  });
+
+  it('Ctrl 单段提交后同样进入回显', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello</p>');
+    hover(p);
+
+    await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    const itemId = p.getAttribute(HOST_ATTR);
+    expect(rendererTextOf(p)).toBe('已提交，等待翻译');
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(p).getAttribute('data-st-state')).toBe('loading');
+
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(p).getAttribute('data-st-state')).toBe('done');
+    expect(rendererTextOf(p)).toBe(`【模拟 ${itemId}】Hello`);
+  });
+
+  it('流式进行中「显示原文」后不再出现新字符', async () => {
+    await loadContent();
+    document.body.innerHTML = `<p id="a">${'A'.repeat(60)}</p>`;
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+    await vi.advanceTimersByTimeAsync(160);
+
+    const response = await sendToContent({ type: MESSAGE_TYPES.CLEAR, payload: {} });
+    expect(response.ok).toBe(true);
+    expect(document.querySelector(`[${TRANSLATION_ATTR}]`)).toBe(null);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(document.querySelector(`[${TRANSLATION_ATTR}]`)).toBe(null);
   });
 });

@@ -19,8 +19,16 @@
         翻译整页
       </button>
       <button id="test-clear" type="button" class="test-button">显示原文</button>
+      <label class="test-toggle">
+        <input id="test-mode-slow" type="checkbox" />
+        模拟慢速
+      </label>
+      <label class="test-toggle">
+        <input id="test-mode-fail" type="checkbox" />
+        模拟失败
+      </label>
       <span id="test-status" class="test-status" role="status">就绪</span>
-      <span class="test-hint">悬停英文段落按 Ctrl 提交/隐藏标记；滚动后自动提交新段落；本操作条不参与翻译。</span>
+      <span class="test-hint">悬停英文段落按 Ctrl 提交/隐藏；滚动后自动提交新段落；定稿带「【模拟 &lt;段落id&gt;】」前缀；两个开关只影响之后的提交。</span>
     </header>
 
     <main id="test-page">

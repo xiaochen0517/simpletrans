@@ -3,9 +3,10 @@
  *
  * 模块：页面注入（D）/ D1
  * 职责：悬停时从指针所在元素向上找最近的文字宿主；整页翻译时按文档顺序枚举视口附近的段落级宿主，
- *       记录上一段上下文并登记宿主，供 D5 统一提交。
+ *       给宿主分配页面内唯一段落 id，供 D5 统一提交与结果回显。
  * 依赖：公共数值（MAX_PAGE_PARAGRAPHS / SCAN_CHUNK_SIZE，P6.1 起）；日志由调用方经 E4 注入。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加视口附近段落枚举 `collectParagraphs`。
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加视口附近段落枚举 `collectParagraphs`；
+ *           本轮增加带实例前缀的段落 id，并移除段落上下文。
  *
  * 约束：不读 storage、不发消息、不直接调用 console（日志由调用方经 E4 输出）。
  *
@@ -14,7 +15,7 @@
 
 import { MAX_PAGE_PARAGRAPHS, SCAN_CHUNK_SIZE, VIEWPORT_MARGIN_RATIO } from '../../shared/constants.js';
 
-/** 宿主标记：值为 h1、h2…，由 D1 分配。 */
+/** 宿主标记：值为段落 id（`h<实例标记>-<序号>`），由 D1 分配，同时作为结果帧的 `itemId`。 */
 export const HOST_ATTR = 'data-st-host';
 
 /** 译文容器标记：存在即表示该宿主有加载、流式、完成或失败显示。 */
@@ -169,8 +170,28 @@ const POINTER_BLOCKED_SELECTOR = [
 /** 页面声明不翻译的区域。 */
 const NO_TRANSLATE_SELECTOR = `[translate="no"], .notranslate, [${IGNORE_ATTR}]`;
 
-/** 宿主 id 序号：只在当前页面生命周期内递增。 */
+/** 宿主 id 序号：只在当前 content 实例内递增。 */
 let hostSequence = 0;
+
+/** 段落 id 的实例标记长度：6 位 `[0-9a-z]`。 */
+const INSTANCE_TAG_LENGTH = 6;
+
+/**
+ * 生成当前 content 实例的段落 id 标记：模块加载时执行一次。
+ * 只用于让重复注入后的新 id 不与页面上遗留的旧 id 相撞，不用于安全用途。
+ * @returns {string}
+ */
+function createInstanceTag() {
+  let tag = '';
+  while (tag.length < INSTANCE_TAG_LENGTH) {
+    const chunk = Math.random().toString(36).slice(2);
+    tag += chunk === '' ? '0' : chunk;
+  }
+  return tag.slice(0, INSTANCE_TAG_LENGTH);
+}
+
+/** 当前实例标记；同一页面里的旧 id 由 `data-st-host` 原样复用。 */
+const INSTANCE_TAG = createInstanceTag();
 
 /**
  * 读取计算样式；不可用时返回 null。
@@ -378,7 +399,7 @@ export function resolveAt(element) {
 }
 
 /**
- * 分配或复用宿主 id（h1、h2…）。
+ * 分配或复用段落 id（`h<实例标记>-<序号>`）。同一宿主多次调用返回同一个 id。
  * @param {Element} element
  * @returns {string}
  */
@@ -386,7 +407,7 @@ export function ensureHost(element) {
   const existing = element.getAttribute?.(HOST_ATTR);
   if (existing) return existing;
   hostSequence += 1;
-  const id = `h${hostSequence}`;
+  const id = `h${INSTANCE_TAG}-${hostSequence}`;
   element.setAttribute(HOST_ATTR, id);
   return id;
 }
@@ -534,14 +555,11 @@ function paragraphText(element, doc) {
 /**
  * 收集选中宿主内部的按钮：按钮文字不并入父段，按文档顺序单独成段。
  * @param {Element} host
- * @param {Array<{ index: number, text: string, context: string, host: Element }>} paragraphs
- * @param {string} context
+ * @param {Array<{ index: number, text: string, host: Element }>} paragraphs
  * @param {{ limit: number, inViewport: (host: Element) => boolean }} options
- * @returns {string} 更新后的上一段文本
  */
-function collectButtons(host, paragraphs, context, { limit, inViewport }) {
-  let lastText = context;
-  if (typeof host.querySelectorAll !== 'function') return lastText;
+function collectButtons(host, paragraphs, { limit, inViewport }) {
+  if (typeof host.querySelectorAll !== 'function') return;
   for (const button of host.querySelectorAll('button')) {
     if (paragraphs.length >= limit) break;
     if (shouldSkipSubtree(button) || hasBlockChild(button)) continue;
@@ -549,17 +567,15 @@ function collectButtons(host, paragraphs, context, { limit, inViewport }) {
     const text = normalizeText(extractText(button));
     if (!text || !hasLetter(text)) continue;
     ensureHost(button);
-    paragraphs.push({ index: paragraphs.length, text, context: lastText, host: button });
-    lastText = text;
+    paragraphs.push({ index: paragraphs.length, text, host: button });
   }
-  return lastText;
 }
 
 /**
- * 枚举视口附近的段落：按文档顺序扫描，选出最外层可译文字宿主，记录上一段上下文。
+ * 枚举视口附近的段落：按文档顺序扫描，选出最外层可译文字宿主并分配段落 id。
  *
  * 只读 DOM 与计算样式；不改页面文字；给选中的宿主打 `data-st-host`。不做同文本合并：
- * 每个宿主就是一个段落，去重与分批属于后台后续阶段。
+ * 每个宿主就是一个段落，去重与分批属于后台后续阶段。段落不携带上下文。
  *
  * @param {{
  *   root?: Element,
@@ -570,7 +586,7 @@ function collectButtons(host, paragraphs, context, { limit, inViewport }) {
  *   logger?: { debug: Function, info: Function, warn: Function } | null,
  *   now?: () => number,
  * }} [options]
- * @returns {Promise<Array<{ index: number, text: string, context: string, host: Element }>>}
+ * @returns {Promise<Array<{ index: number, text: string, host: Element }>>}
  */
 export async function collectParagraphs({
   root,
@@ -595,10 +611,9 @@ export async function collectParagraphs({
   const visible = typeof inViewport === 'function' ? inViewport : isElementInNearViewport;
 
   const startedAt = now();
-  /** @type {Array<{ index: number, text: string, context: string, host: Element }>} */
+  /** @type {Array<{ index: number, text: string, host: Element }>} */
   const paragraphs = [];
   const stack = [scanRoot];
-  let lastText = '';
   let skipped = 0;
   let limited = false;
   let sinceYield = 0;
@@ -638,9 +653,8 @@ export async function collectParagraphs({
           continue;
         }
         ensureHost(element);
-        paragraphs.push({ index: paragraphs.length, text, context: lastText, host: element });
-        lastText = text;
-        lastText = collectButtons(element, paragraphs, lastText, { limit, inViewport: visible });
+        paragraphs.push({ index: paragraphs.length, text, host: element });
+        collectButtons(element, paragraphs, { limit, inViewport: visible });
         // 选中宿主后不再把它的后代作为独立段落。
         continue;
       }

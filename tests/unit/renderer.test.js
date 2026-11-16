@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 /**
- * D3 提交状态渲染测试
+ * D3 提交与译文状态渲染测试
  *
- * 用 jsdom 验证内嵌插入、两种格式、submitting / submitted / error 三种状态、
- * 文本写入安全、隐藏与清除；不加载真实 chrome，不联网。
+ * 用 jsdom 验证内嵌插入、两种格式、submitting / submitted / loading / streaming / done / error
+ * 六种状态、文本写入安全、隐藏与清除；不加载真实 chrome，不联网。
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -167,6 +167,69 @@ describe('D3 状态与文本', () => {
     const p = host('<p id="p">Original</p>');
     renderer.showSubmitError(p, '   ');
     expect(textOf(p)).toBe('提交失败：提交失败，请重试');
+  });
+});
+
+describe('D3 结果回显状态（P6.1）', () => {
+  it('翻译中、流式与定稿三种状态可区分，文本可增量覆盖', () => {
+    const p = host('<p id="p">Original</p>');
+
+    renderer.showLoading(p);
+    expect(renderer.getState(p)).toBe('loading');
+    expect(translationOf(p).getAttribute('data-st-state')).toBe('loading');
+    expect(textOf(p)).toBe('翻译中…');
+
+    renderer.update(p, '【模拟 ');
+    expect(renderer.getState(p)).toBe('streaming');
+    expect(translationOf(p).getAttribute('data-st-state')).toBe('streaming');
+    expect(textOf(p)).toBe('【模拟 ');
+
+    renderer.update(p, '【模拟 h1-1】Hello');
+    expect(textOf(p)).toBe('【模拟 h1-1】Hello');
+
+    renderer.showDone(p, '【模拟 h1-1】Hello world');
+    expect(renderer.getState(p)).toBe('done');
+    expect(translationOf(p).getAttribute('data-st-state')).toBe('done');
+    expect(textOf(p)).toBe('【模拟 h1-1】Hello world');
+  });
+
+  it('翻译失败与提交失败提示前缀不同', () => {
+    const p = host('<p id="p">Original</p>');
+
+    renderer.showError(p, '模拟失败');
+    expect(renderer.getState(p)).toBe('error');
+    expect(textOf(p)).toBe('翻译失败：模拟失败');
+
+    renderer.showSubmitError(p, '离线');
+    expect(textOf(p)).toBe('提交失败：离线');
+
+    renderer.showError(p, '   ');
+    expect(textOf(p)).toBe('翻译失败：翻译失败，请重试');
+  });
+
+  it('状态切换复用同一个容器，不重复插入', () => {
+    const p = host('<p id="p">Original</p>');
+    renderer.showSubmitting(p);
+    const container = translationOf(p);
+
+    renderer.showSubmitted(p);
+    renderer.showLoading(p);
+    renderer.update(p, '流式');
+    renderer.showDone(p, '译文');
+    renderer.showError(p, '失败');
+
+    expect(document.querySelectorAll(`[${TRANSLATION_ATTR}]`)).toHaveLength(1);
+    expect(translationOf(p)).toBe(container);
+    expect(container.getAttribute('data-st-state')).toBe('error');
+    expect(p.lastElementChild).toBe(container);
+  });
+
+  it('流式文本只按纯文本写入', () => {
+    const p = host('<p id="p">Original</p>');
+    renderer.update(p, '<b>不是标签</b>');
+
+    expect(translationOf(p).querySelector('b')).toBe(null);
+    expect(textOf(p)).toBe('<b>不是标签</b>');
   });
 });
 

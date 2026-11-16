@@ -60,7 +60,7 @@ import {
   FAILURE_REASONS,
   MESSAGE_TYPES,
 } from '../../src/shared/protocol.js';
-import { MAX_CONTEXT_CHARS, MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
+import { MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 import { getOrCreateDefaultInstance, removeKey, writeKey } from '../../src/shared/config/instances.js';
 import { saveSettings } from '../../src/shared/settings.js';
@@ -576,8 +576,8 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
       domain: 'example.com',
       viewport: { width: 1280, height: 800 },
       paragraphs: [
-        { index: 0, hostId: 'h1', text: 'Hello', context: '' },
-        { index: 1, hostId: 'h2', text: 'World', context: 'Hello' },
+        { index: 0, hostId: 'h1', text: 'Hello' },
+        { index: 1, hostId: 'h2', text: 'World' },
       ],
     };
   }
@@ -668,12 +668,11 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
     }
   });
 
-  it('context 恰好 400 字符、hostId 恰好 64 字符时接受', async () => {
+  it('hostId 恰好 64 字符时接受', async () => {
     const response = await submitPage({
       paragraphs: [
         {
           text: 'Hi',
-          context: 'c'.repeat(MAX_CONTEXT_CHARS),
           hostId: 'h'.repeat(64),
         },
       ],
@@ -733,20 +732,24 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
     }
   });
 
-  it('context 超过 400 字符返回 CONTEXT_TOO_LONG', async () => {
+  it('段落里的 context 字段被忽略，不报错也不影响回执', async () => {
     const response = await submitPage({
-      paragraphs: [{ text: 'Hi', context: 'c'.repeat(MAX_CONTEXT_CHARS + 1) }],
+      paragraphs: [
+        { text: 'Hi', context: 'c'.repeat(500) },
+        { text: 'Yo', context: 123 },
+      ],
     });
 
-    expect(response.ok).toBe(false);
-    expect(response.error.reason).toBe(FAILURE_REASONS.CONTEXT_TOO_LONG);
-  });
-
-  it('context 不是字符串时返回 CONTEXT_TOO_LONG（需求 3.5）', async () => {
-    const response = await submitPage({ paragraphs: [{ text: 'Hi', context: 123 }] });
-
-    expect(response.ok).toBe(false);
-    expect(response.error.reason).toBe(FAILURE_REASONS.CONTEXT_TOO_LONG);
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        accepted: true,
+        requestId: null,
+        scope: 'page',
+        paragraphs: 2,
+        chars: 4,
+      },
+    });
   });
 
   it('hostId 不是字符串或超过 64 字符返回 INVALID_ITEMS', async () => {

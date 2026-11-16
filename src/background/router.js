@@ -6,7 +6,7 @@
  *       页面注入的统一段落提交；把结果回给调用方。
  * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A4（cache）、A2（gateway 的并发名额）、公共数值。
  * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息；P6.1 增加 `ST_ROUTE` 转发与
- *           `ST_PAGE_SUBMIT` 接收（校验、计数、逐段日志与回执，不调用网关）。
+ *           `ST_PAGE_SUBMIT` 接收（校验、计数、逐段日志与回执，不调用网关）；本轮移除段落上下文校验。
  *
  * 标签页转发有两处入口：P4 的快捷键走 `ST_TOGGLE`（commands.js），P6.1 的弹窗走 `ST_ROUTE`
  * 的 `start` / `clear`（本文件），两者共用 `sendToTab` 的补注入与错误归一。
@@ -21,7 +21,7 @@ import {
   makeError,
   normalizeTraceId,
 } from '../shared/protocol.js';
-import { MAX_CONTEXT_CHARS, MAX_PAGE_PARAGRAPHS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
+import { MAX_PAGE_PARAGRAPHS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
 import { createLogger } from '../shared/log/logger.js';
 import { getKey, getOrCreateDefaultInstance, getPublicSettings } from '../shared/config/instances.js';
@@ -254,15 +254,6 @@ export function receivePageSubmit(payload, sender, traceId) {
     }
     if (typeof raw.text !== 'string' || raw.text.trim() === '') {
       return failure(ERROR_CODES.OTHER, '存在空段落', FAILURE_REASONS.EMPTY_TEXT);
-    }
-    if (raw.context != null) {
-      if (typeof raw.context !== 'string' || raw.context.length > MAX_CONTEXT_CHARS) {
-        return failure(
-          ERROR_CODES.OTHER,
-          `段落上下文无效或超过 ${MAX_CONTEXT_CHARS} 字符`,
-          FAILURE_REASONS.CONTEXT_TOO_LONG
-        );
-      }
     }
     if (raw.hostId != null && (typeof raw.hostId !== 'string' || raw.hostId.length > 64)) {
       return failure(ERROR_CODES.OTHER, '段落标识无效', FAILURE_REASONS.INVALID_ITEMS);
