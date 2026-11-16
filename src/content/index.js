@@ -5,7 +5,8 @@
  * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5、处理后台命令与日志级别帧；
  *       提供 Ctrl 单键手势作为主快捷键（Chrome commands 不支持裸修饰键）。
  * 依赖：D1–D5、E1 消息协议、E4 日志、content.css（P2 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加 `ST_START` 整页任务入口与统一提交；
+ *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -145,16 +146,24 @@ function installCtrlTap(onTrigger) {
 }
 
 /**
- * Ctrl 单键触发：翻译/隐藏鼠标所在段落。
+ * Ctrl 单键触发：提交/隐藏鼠标所在段落。
  */
 function triggerCtrlTap() {
   if (!task || !hover) return;
   const traceId = newTraceId();
-  const result = task.toggle(hover.getCurrentHost(), traceId);
-  log?.debug('hotkey.trigger', 'Ctrl 单键触发翻译', {
-    action: result?.data?.action ?? null,
-    traceId,
-  });
+  Promise.resolve(task.toggle(hover.getCurrentHost(), traceId))
+    .then((result) => {
+      log?.debug('hotkey.trigger', 'Ctrl 单键触发提交', {
+        action: result?.data?.action ?? null,
+        traceId,
+      });
+    })
+    .catch((error) => {
+      log?.warn('hotkey.trigger', 'Ctrl 单键处理失败', {
+        reason: error?.message ?? null,
+        traceId,
+      });
+    });
 }
 
 /**
@@ -190,7 +199,24 @@ function pageUnavailable() {
 }
 
 /**
- * 处理后端帧：日志级别交给 E4，其余业务帧交给 D5。
+ * 把视口段落一次性提交给后台；后台收到并回执即算成功（P6.1）。
+ * @param {object} payload
+ * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
+ */
+async function submitPage(payload) {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.PAGE_SUBMIT,
+      payload,
+    });
+    return response ?? { ok: false, error: makeError(ERROR_CODES.OTHER, '后台没有返回结果') };
+  } catch {
+    return { ok: false, error: makeError(ERROR_CODES.NETWORK, '无法连接后台，请稍后重试') };
+  }
+}
+
+/**
+ * 处理后端帧：只处理日志级别；D5 的提交走一次性消息，不再消费数据面帧。
  * @param {object} frame
  */
 function handleFrame(frame) {
@@ -198,9 +224,7 @@ function handleFrame(frame) {
     setLogLevel(frame.payload?.level);
     log?.debug('log.config', '收到日志级别', { level: getLogLevel() });
     logReadyOnce();
-    return;
   }
-  task?.onFrame(frame);
 }
 
 /**
@@ -221,13 +245,37 @@ function handleMessage(message, sender, sendResponse) {
         return false;
       }
       const traceId = normalizeTraceId(message.payload?.traceId);
-      const result = task.toggle(hover.getCurrentHost(), traceId);
-      log?.debug('content.toggle', '处理翻译当前段落命令', {
-        action: result?.data?.action ?? null,
+      log?.debug('content.toggle', '收到提交当前段落命令', {
         ...(traceId ? { traceId } : {}),
       });
-      sendResponse?.(result);
-      return false;
+
+      // 提交是异步的：先返回 true 保持消息通道，完成后回包。
+      Promise.resolve(task.toggle(hover.getCurrentHost(), traceId))
+        .then((result) => {
+          try {
+            sendResponse?.(result);
+          } catch (error) {
+            log?.debug('content.toggle', '当前段落响应失败', {
+              reason: error?.message ?? null,
+            });
+          }
+          log?.debug('content.toggle', '当前段落处理完成', {
+            action: result?.data?.action ?? null,
+            ...(traceId ? { traceId } : {}),
+          });
+        })
+        .catch((error) => {
+          log?.error('content.toggle', '当前段落处理异常', {}, error);
+          try {
+            sendResponse?.({
+              ok: false,
+              error: makeError(ERROR_CODES.OTHER, `处理命令失败：${error?.message ?? error}`),
+            });
+          } catch {
+            // 回包失败不影响页面。
+          }
+        });
+      return true;
     }
 
     if (message.type === MESSAGE_TYPES.CLEAR) {
@@ -237,6 +285,44 @@ function handleMessage(message, sender, sendResponse) {
       }
       sendResponse?.(task.clearAll());
       return false;
+    }
+
+    if (message.type === MESSAGE_TYPES.START) {
+      if (!task || typeof document === 'undefined' || !document.body) {
+        sendResponse?.(pageUnavailable());
+        return false;
+      }
+      const traceId = normalizeTraceId(message.payload?.traceId);
+      const payload = message.payload ?? {};
+      log?.debug('content.start', '收到开始整页提交命令', {
+        ...(traceId ? { traceId } : {}),
+      });
+
+      // 扫描与提交是异步的：先返回 true 保持消息通道，完成后回包。
+      task
+        .start({ targetLang: payload.targetLang, traceId })
+        .then((result) => {
+          try {
+            sendResponse?.(result);
+          } catch (error) {
+            // 弹窗已关闭时回包失败只记日志，任务继续。
+            log?.debug('content.start', '整页提交响应失败', {
+              reason: error?.message ?? null,
+            });
+          }
+        })
+        .catch((error) => {
+          log?.error('content.start', '整页提交异常', {}, error);
+          try {
+            sendResponse?.({
+              ok: false,
+              error: makeError(ERROR_CODES.OTHER, '扫描页面失败，请稍后重试'),
+            });
+          } catch {
+            // 回包失败不影响页面。
+          }
+        });
+      return true;
     }
   } catch (error) {
     log?.error('content.message', '处理后台命令失败', { type: message.type }, error);
@@ -251,7 +337,7 @@ function handleMessage(message, sender, sendResponse) {
 }
 
 /**
- * 桥断开时通知 D5；在途段落会显示失败态。
+ * 桥断开时只记录状态；D5 的提交走一次性消息，不再依赖长连接在途请求。
  * @param {string[]} pendingRequestIds
  */
 function handleDisconnect(pendingRequestIds) {
@@ -260,7 +346,6 @@ function handleDisconnect(pendingRequestIds) {
       pending: pendingRequestIds.length,
     });
   }
-  task?.onDisconnect(pendingRequestIds);
 }
 
 /**
@@ -280,12 +365,12 @@ function main() {
   bridge = createBridge({
     onFrame: handleFrame,
     onDisconnect: handleDisconnect,
-    onStateChange: (state) => task?.onBridgeState(state),
+    onStateChange: (state) => log?.debug('bridge.state', '通道状态变化', { state }),
   });
 
   if (typeof document !== 'undefined') {
     const renderer = createRenderer();
-    task = createTask({ bridge, renderer });
+    task = createTask({ renderer, submit: submitPage });
     hover = createHoverTracker();
     hover.start();
     installCtrlTap(triggerCtrlTap);
@@ -306,6 +391,7 @@ function main() {
       if (event.persisted) {
         bridge?.connect();
         hover?.start();
+        task?.resume();
       }
     });
   }
@@ -323,4 +409,13 @@ if (!(typeof document !== 'undefined' && globalThis[LOAD_FLAG])) {
  */
 export function getBridge() {
   return bridge;
+}
+
+/**
+ * 返回当前页面任务，供扩展内的翻译测试页驱动同一份 D5 状态。
+ * 普通网页注入不调用；没有 DOM 或尚未装配时返回 null。
+ * @returns {ReturnType<typeof createTask> | null}
+ */
+export function getTask() {
+  return task;
 }

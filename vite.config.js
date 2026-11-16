@@ -5,7 +5,7 @@
  * - Content Script 不是 ES Module，产物必须是**自包含单文件**（IIFE），
  *   否则一旦 import 了 shared/，浏览器会拿到无法执行的 `import` 语句；
  * - Background 是 `type: module`，可以保留 ESM；
- * - Popup / Options 是 HTML 页面，需要 React + Tailwind。
+ * - Popup / Options 是 React + Tailwind 页面；Testpage 是静态 HTML + 独立 CSS。
  *
  * 由 `scripts/build.mjs` 依次以 `--mode web|background|content` 调用。
  */
@@ -89,6 +89,7 @@ export default defineConfig(() => {
         input: {
           popup: r('src/popup/index.html'),
           options: r('src/options/index.html'),
+          testpage: r('src/testpage/index.html'),
         },
         output: {
           entryFileNames: 'assets/[name]-[hash].js',

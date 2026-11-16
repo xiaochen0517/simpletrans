@@ -1,37 +1,44 @@
 /**
- * D5 状态上报与任务调度（P4 单段切片）
+ * D5 任务调度
  *
  * 模块：页面注入（D）/ D5（任务调度属流程机制，见项目架构 6.2）
- * 职责：串联宿主提取、单段请求与渲染；维护在途批次、合并增量、处理取消与断线。
- * 依赖：D1（文本与宿主）、D3（渲染）、D4（桥）、E1、公共数值、E4（P4 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P5 起批次携带页面 `domain`（只作为缓存元数据）。
+ * 职责：Ctrl 单段与整页翻译共用同一提交函数，经 `ST_PAGE_SUBMIT` 把段落发到后台；整页提交当前视口
+ *       附近的段落，并在页面会话期间按 200ms 防抖增量提交新出现的段落；按回执渲染「正在提交」/
+ *       「已提交」/「提交失败」。
+ * 依赖：D1（视口附近段落与宿主）、D3（渲染）、E1、公共数值、E4。
+ * 实现阶段：P4（悬停单段任务）、P5（批次 `domain`）、P6.1（统一提交、页面会话与滚动增量）。
  *
- * P4 只做悬停单段：一次触发一个批次，不在页面侧缓存译文，不写 storage.session；
- * 整页任务、状态镜像、重试与备用切换留到 P6/P7/P9。
+ * 页面不做分批、不做同文本去重、不接收逐段译文：这些都属于后台（P6.2 / P6.4）。
+ * 提交是一次性控制消息（`ST_PAGE_SUBMIT`），后台收到并回执即视为本阶段成功；
+ * 任务数据只在页面内存，不写 `storage.session`（状态镜像归 P7）。
  */
 
 import {
   ERROR_CODES,
-  FAILURE_REASONS,
-  MESSAGE_TYPES,
   makeError,
   normalizeDomain,
 } from '../shared/protocol.js';
-import { DISPLAY_UPDATE_THROTTLE_MS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
+import { MAX_CONTEXT_CHARS, SCROLL_SUBMIT_DEBOUNCE_MS } from '../shared/constants.js';
 import { createLogger } from '../shared/log/logger.js';
-import { ensureHost, extractText, hasLetter, normalizeText } from './dom/scanner.js';
+import {
+  HOST_ATTR,
+  collectParagraphs,
+  ensureHost,
+  extractText,
+  hasLetter,
+  normalizeText,
+} from './dom/scanner.js';
 
 /** D5 日志入口。 */
 const log = createLogger('D5');
 
-/** 每次请求只含一段。 */
-const ITEM_ID = 'i0';
-
-/** 补注入后等待后台连接的最长时间；超时后显示失败，不无限加载。 */
-const QUEUE_TIMEOUT_MS = 5_000;
+/** 用户可见的提示语。 */
+const MESSAGES = Object.freeze({
+  submitFailed: '提交失败，请稍后重试',
+});
 
 /**
- * 当前页面 hostname，只作为缓存元数据随批次上报；取不到时为空串。
+ * 当前页面 hostname，只作为缓存元数据随提交上报；取不到时为空串。
  * 只取 hostname，不带协议、端口、路径与查询串。
  * @returns {string}
  */
@@ -44,6 +51,27 @@ function currentDomain() {
 }
 
 /**
+ * 当前视口尺寸，只用于日志与后台定位。
+ * @returns {{ width: number, height: number }}
+ */
+function currentViewport() {
+  const view = typeof window !== 'undefined' ? window : undefined;
+  return {
+    width: Number(view?.innerWidth ?? 0),
+    height: Number(view?.innerHeight ?? 0),
+  };
+}
+
+/**
+ * 读取宿主的 `data-st-host`；没有时返回空串。
+ * @param {Element} host
+ * @returns {string}
+ */
+function hostIdOf(host) {
+  return host?.getAttribute?.(HOST_ATTR) ?? '';
+}
+
+/**
  * @param {string} action
  * @returns {{ ok: true, data: { action: string } }}
  */
@@ -52,406 +80,499 @@ function ok(action) {
 }
 
 /**
- * 创建单段任务控制器。
+ * 创建任务控制器：统一提交 + 页面会话滚动增量 + Ctrl 单段。
+ *
  * @param {{
- *   bridge: { postBatch: Function, cancelBatch: Function },
  *   renderer: {
- *     showLoading: Function,
- *     update: Function,
- *     showDone: Function,
- *     showError: Function,
+ *     showSubmitting: Function,
+ *     showSubmitted: Function,
+ *     showSubmitError: Function,
  *     remove: Function,
  *     clearAll: Function,
  *     getState: Function,
+ *     has: Function,
  *   },
+ *   submit?: (payload: object) => Promise<{ ok: boolean, data?: object, error?: object }>,
  *   logger?: object,
  *   now?: () => number,
  *   schedule?: (fn: () => void, ms: number) => unknown,
  *   cancel?: (handle: unknown) => void,
+ *   scan?: (options: object) => Promise<Array<object>>,
+ *   inViewport?: (host: Element) => boolean,
  * }} deps
  */
 export function createTask({
-  bridge,
   renderer,
+  submit,
   logger = log,
   now = () => Date.now(),
   schedule = (fn, ms) => setTimeout(fn, ms),
   cancel = (handle) => clearTimeout(handle),
+  scan = collectParagraphs,
+  inViewport,
 } = {}) {
-  /** @type {Map<string, { requestId: string, host: Element, buffer: string, status: string, timer: unknown, startedAt: number, traceId?: string }>} */
-  const requests = new Map();
   let sequence = 0;
+  let scrollTimer = null;
+  let scrollBound = false;
+  let scrolling = false;
+  let scrollPending = false;
 
-  function nextRequestId() {
+  /**
+   * @param {string} [traceId]
+   * @returns {object}
+   */
+  function traceOf(traceId) {
+    return traceId && typeof logger.withTrace === 'function'
+      ? logger.withTrace(traceId)
+      : logger;
+  }
+
+  /** 页面会话；段落只保存本会话已提交与在途的 hostId。 */
+  const page = {
+    phase: 'idle',
+    targetLang: undefined,
+    traceId: undefined,
+    requestId: null,
+    /** @type {Set<string>} */
+    submittedHosts: new Set(),
+    /** @type {Set<string>} */
+    attemptedHosts: new Set(),
+    /** @type {Set<string>} */
+    inFlightHosts: new Set(),
+    sessionToken: 0,
+    labelEpoch: 0,
+    startedAt: 0,
+    lastError: null,
+  };
+
+  /**
+   * 状态响应。
+   * @returns {{ ok: true, data: { phase: string, total: number } }}
+   */
+  function status() {
+    return { ok: true, data: { phase: page.phase, total: page.submittedHosts.size } };
+  }
+
+  function nextSubmitRequestId() {
     sequence += 1;
-    return `b-${now().toString(36)}-${sequence}`;
+    return `s-${now().toString(36)}-${sequence}`;
   }
 
   /**
-   * @param {object} request
-   */
-  function clearTimer(request) {
-    if (request.timer != null) {
-      cancel(request.timer);
-      request.timer = null;
-    }
-  }
-
-  /**
-   * @param {object} request
-   */
-  function clearQueueTimer(request) {
-    if (request.queueTimer != null) {
-      cancel(request.queueTimer);
-      request.queueTimer = null;
-    }
-  }
-
-  /**
-   * @param {object} request
-   */
-  function cleanup(request) {
-    clearTimer(request);
-    clearQueueTimer(request);
-    requests.delete(request.requestId);
-  }
-
-  /**
-   * @param {Element} host
-   * @returns {object | null}
-   */
-  function findRequest(host) {
-    for (const request of requests.values()) {
-      if (request.host === host) return request;
-    }
-    return null;
-  }
-
-  /**
-   * @param {object} request
-   */
-  function flush(request) {
-    request.timer = null;
-    renderer.update(request.host, request.buffer);
-  }
-
-  /**
-   * @param {object} request
-   */
-  function scheduleFlush(request) {
-    if (request.timer != null) return;
-    request.timer = schedule(() => flush(request), DISPLAY_UPDATE_THROTTLE_MS);
-  }
-
-  /**
-   * 取消一个在途批次；桥未连接或已断开时只记日志，不影响页面清理。
+   * 组装 `ST_PAGE_SUBMIT` 载荷；只包含段落文本、上下文与宿主标识，不含 HTML 或 URL。
+   * @param {'page'|'single'} scope
+   * @param {Array<object>} paragraphs
    * @param {string} requestId
-   * @param {object} [request]
+   * @param {string} [traceId]
+   * @returns {object}
    */
-  function cancelRequest(requestId, request) {
-    if (request && !request.sent) {
-      logger.debug('task.cancel', '取消排队中的请求', { requestId });
-      cleanup(request);
+  function buildPayload(scope, paragraphs, requestId, traceId = page.traceId) {
+    return {
+      requestId,
+      ...(traceId ? { traceId } : {}),
+      scope,
+      ...(page.targetLang ? { targetLang: page.targetLang } : {}),
+      domain: currentDomain(),
+      viewport: currentViewport(),
+      paragraphs: paragraphs.map((paragraph, index) => ({
+        index,
+        hostId: paragraph.hostId ?? hostIdOf(paragraph.host),
+        text: paragraph.text,
+        ...(paragraph.context
+          ? { context: String(paragraph.context).slice(0, MAX_CONTEXT_CHARS) }
+          : {}),
+      })),
+    };
+  }
+
+  /**
+   * 对一批段落执行一次渲染。
+   * @param {Array<object>} paragraphs
+   * @param {'submitting'|'submitted'|'error'} mode
+   * @param {string} [message]
+   */
+  function renderParagraphs(paragraphs, mode, message) {
+    for (const paragraph of paragraphs) {
+      const host = paragraph.host;
+      if (!host || host.isConnected === false) continue;
+      try {
+        if (mode === 'submitting') renderer.showSubmitting(host);
+        else if (mode === 'submitted') renderer.showSubmitted(host);
+        else renderer.showSubmitError(host, message ?? MESSAGES.submitFailed);
+      } catch {
+        // 单个宿主渲染失败不影响其它段落。
+      }
+    }
+  }
+
+  /**
+   * 把一段或多段加入本会话已提交集合。
+   * @param {Array<object>} paragraphs
+   */
+  function markSubmitted(paragraphs) {
+    for (const paragraph of paragraphs) {
+      const hostId = paragraph.hostId ?? hostIdOf(paragraph.host);
+      if (!hostId) continue;
+      page.submittedHosts.add(hostId);
+      page.attemptedHosts.add(hostId);
+    }
+  }
+
+  /**
+   * 发送一条 `ST_PAGE_SUBMIT`；提交期间把 hostId 记入在途集合。
+   * @param {'page'|'single'} scope
+   * @param {Array<object>} paragraphs
+   * @param {string} [traceId]
+   * @returns {Promise<{ requestId: string, response: object | null }>}
+   */
+  async function submitBatch(scope, paragraphs, traceId) {
+    const requestId = nextSubmitRequestId();
+    const hostIds = paragraphs
+      .map((paragraph) => paragraph.hostId ?? hostIdOf(paragraph.host))
+      .filter(Boolean);
+    for (const hostId of hostIds) page.inFlightHosts.add(hostId);
+
+    page.requestId = requestId;
+    const payload = buildPayload(scope, paragraphs, requestId, traceId);
+    let response = null;
+    try {
+      response = typeof submit === 'function' ? await submit(payload) : null;
+    } catch {
+      response = null;
+    }
+
+    for (const hostId of hostIds) page.inFlightHosts.delete(hostId);
+    return { requestId, response };
+  }
+
+  /**
+   * 移除滚动监听、防抖计时器与扫描挂起标记。
+   */
+  function stopScroll() {
+    if (scrollTimer != null) {
+      cancel(scrollTimer);
+      scrollTimer = null;
+    }
+    if (scrollBound && typeof window !== 'undefined') {
+      window.removeEventListener('scroll', onScroll);
+    }
+    scrollBound = false;
+    scrolling = false;
+    scrollPending = false;
+  }
+
+  /**
+   * 重置 200ms 防抖计时器；滚动停止后才扫描。
+   */
+  function resetScrollTimer() {
+    if (scrollTimer != null) cancel(scrollTimer);
+    scrollTimer = schedule(() => {
+      scrollTimer = null;
+      runScrollSubmit();
+    }, SCROLL_SUBMIT_DEBOUNCE_MS);
+  }
+
+  /**
+   * 滚动事件：只重置防抖，不在事件里扫描。
+   */
+  function onScroll() {
+    if (page.phase !== 'submitted') return;
+    if (scrolling) {
+      scrollPending = true;
       return;
     }
-    try {
-      bridge.cancelBatch(requestId);
-    } catch (error) {
-      logger.warn('task.cancel', '取消批次失败', {
-        requestId,
-        reason: error?.reason ?? null,
-      });
+    resetScrollTimer();
+  }
+
+  /**
+   * 滚动停止后扫描视口附近段落，只提交新的 hostId。
+   */
+  async function runScrollSubmit() {
+    if (page.phase !== 'submitted') return;
+    if (scrolling) {
+      scrollPending = true;
+      return;
     }
-    if (request) {
-      logger.debug('task.cancel', '已取消单段请求', { requestId });
-      cleanup(request);
+
+    scrolling = true;
+    const token = page.sessionToken;
+    const traceLog = traceOf(page.traceId);
+
+    try {
+      let paragraphs;
+      try {
+        paragraphs = await scan({ ...(inViewport ? { inViewport } : {}), logger: traceLog });
+      } catch {
+        if (token === page.sessionToken) {
+          traceLog.warn('page.error', '滚动扫描失败', { code: ERROR_CODES.OTHER });
+        }
+        return;
+      }
+      if (token !== page.sessionToken) return;
+
+      const fresh = (Array.isArray(paragraphs) ? paragraphs : []).filter((paragraph) => {
+        const hostId = hostIdOf(paragraph.host);
+        return hostId && !page.attemptedHosts.has(hostId) && !page.inFlightHosts.has(hostId);
+      });
+      if (fresh.length === 0) return;
+
+      renderParagraphs(fresh, 'submitting');
+      const { requestId, response } = await submitBatch('page', fresh, page.traceId);
+      if (token !== page.sessionToken) return;
+
+      for (const paragraph of fresh) {
+        const hostId = hostIdOf(paragraph.host);
+        if (hostId) page.attemptedHosts.add(hostId);
+      }
+
+      if (response?.ok && response.data?.accepted) {
+        renderParagraphs(fresh, 'submitted');
+        markSubmitted(fresh);
+        traceLog.info('page.submit', '滚动增量已提交', {
+          requestId,
+          scope: 'page',
+          paragraphs: fresh.length,
+          chars:
+            response.data?.chars ??
+            fresh.reduce((sum, paragraph) => sum + paragraph.text.length, 0),
+          accepted: true,
+        });
+        traceLog.debug('page.scroll', '滚动增量提交完成', { added: fresh.length });
+      } else {
+        const code = response?.error?.code ?? ERROR_CODES.NETWORK;
+        const message = response?.error?.message ?? MESSAGES.submitFailed;
+        renderParagraphs(fresh, 'error', message);
+        traceLog.warn('page.error', '滚动增量提交失败', {
+          requestId,
+          scope: 'page',
+          paragraphs: fresh.length,
+          code,
+        });
+      }
+    } finally {
+      scrolling = false;
+      if (scrollPending) {
+        scrollPending = false;
+        if (page.phase === 'submitted') resetScrollTimer();
+      }
     }
   }
 
   /**
-   * 提交已登记的请求；桥尚未连上时排队，等连接建立后自动发出。
-   * @param {object} request
-   * @returns {{ ok: true } | { ok: false, queued: true } | { ok: false, queued: false, error: object }}
+   * 页面会话进入 `submitted` 后安装滚动监听。
    */
-  function submit(request) {
-    if (request.sent) return { ok: true };
-    const traceLog = request.traceId && typeof logger.withTrace === 'function'
-      ? logger.withTrace(request.traceId)
-      : logger;
+  function installScroll() {
+    if (scrollBound || typeof window === 'undefined') return;
+    window.addEventListener('scroll', onScroll, { passive: true });
+    scrollBound = true;
+  }
 
+  /**
+   * 取当前视口附近段落并提交；成功后进入页面会话并监听滚动。
+   * @param {{ targetLang?: string, traceId?: string }} [options]
+   * @returns {Promise<{ ok: true, data: { phase: string, total: number } } | { ok: false, error: object }>}
+   */
+  async function start({ targetLang, traceId } = {}) {
+    if (page.phase === 'scanning' || page.phase === 'submitting') {
+      return status();
+    }
+
+    page.sessionToken += 1;
+    const token = page.sessionToken;
+    page.labelEpoch += 1;
+    stopScroll();
+    renderer.clearAll();
+    page.submittedHosts.clear();
+    page.attemptedHosts.clear();
+    page.inFlightHosts.clear();
+    page.requestId = null;
+    page.lastError = null;
+
+    if (typeof targetLang === 'string' && targetLang.trim() !== '') {
+      page.targetLang = targetLang.trim();
+    }
+    if (traceId) page.traceId = traceId;
+
+    page.phase = 'scanning';
+    page.startedAt = now();
+    const traceLog = traceOf(traceId ?? page.traceId);
+
+    let paragraphs;
     try {
-      bridge.postBatch({
-        requestId: request.requestId,
-        ...(request.traceId ? { traceId: request.traceId } : {}),
-        domain: currentDomain(),
-        items: [{ itemId: ITEM_ID, text: request.text }],
-      });
-    } catch (error) {
-      const reason = error?.reason;
-      if (reason === FAILURE_REASONS.NOT_CONNECTED || reason === FAILURE_REASONS.DISCONNECTED) {
-        request.status = 'queued';
-        clearQueueTimer(request);
-        request.queueTimer = schedule(() => {
-          request.queueTimer = null;
-          if (requests.get(request.requestId) !== request) return;
-          renderer.showError(request.host, '连接后台超时，请稍后重试');
-          traceLog.warn('task.error', '等待后台连接超时', {
-            requestId: request.requestId,
-            code: ERROR_CODES.NETWORK,
-          });
-          cleanup(request);
-        }, QUEUE_TIMEOUT_MS);
-        traceLog.debug('task.request', '桥未连接，等待连接后提交', {
-          requestId: request.requestId,
-        });
-        return { ok: false, queued: true };
-      }
+      paragraphs = await scan({ ...(inViewport ? { inViewport } : {}), logger: traceLog });
+    } catch {
+      if (token !== page.sessionToken) return status();
+      page.phase = 'error';
+      page.lastError = ERROR_CODES.OTHER;
+      traceLog.warn('page.error', '扫描页面失败', { code: ERROR_CODES.OTHER });
+      return {
+        ok: false,
+        error: makeError(ERROR_CODES.OTHER, '扫描页面失败，请稍后重试'),
+      };
+    }
+    if (token !== page.sessionToken) return status();
 
-      cleanup(request);
-      const message = error?.message ?? '无法连接后台，请稍后重试';
-      renderer.showError(request.host, message);
-      traceLog.warn('task.error', '提交翻译请求失败', {
-        requestId: request.requestId,
-        code: error?.code ?? ERROR_CODES.NETWORK,
-        reason: reason ?? null,
+    const collected = Array.isArray(paragraphs) ? paragraphs : [];
+    if (collected.length === 0) {
+      page.phase = 'idle';
+      return status();
+    }
+
+    page.phase = 'submitting';
+    const { requestId, response } = await submitBatch('page', collected, traceId ?? page.traceId);
+    if (token !== page.sessionToken) return status();
+
+    if (!response?.ok || !response.data?.accepted) {
+      const code = response?.error?.code ?? ERROR_CODES.NETWORK;
+      const message = response?.error?.message ?? MESSAGES.submitFailed;
+      renderParagraphs(collected, 'error', message);
+      page.phase = 'error';
+      page.lastError = code;
+      traceLog.warn('page.error', '提交整页段落失败', {
+        requestId,
+        scope: 'page',
+        paragraphs: collected.length,
+        code,
       });
       return {
         ok: false,
-        queued: false,
-        error: makeError(error?.code ?? ERROR_CODES.NETWORK, message, reason),
+        error: makeError(code, message, response?.error?.reason),
       };
     }
 
-    request.sent = true;
-    request.status = 'loading';
-    clearQueueTimer(request);
-    traceLog.info('task.request', '提交单段翻译', {
-      requestId: request.requestId,
-      textLength: request.text.length,
+    renderParagraphs(collected, 'submitted');
+    markSubmitted(collected);
+    page.phase = 'submitted';
+    installScroll();
+    traceLog.info('page.submit', '已提交整页段落', {
+      requestId,
+      scope: 'page',
+      paragraphs: collected.length,
+      chars:
+        response.data?.chars ??
+        collected.reduce((sum, paragraph) => sum + paragraph.text.length, 0),
+      accepted: true,
+      elapsedMs: Math.max(0, now() - page.startedAt),
     });
-    return { ok: true };
+    return status();
+  }
+
+  /**
+   * Ctrl 单段：已提交/失败标记直接移除；其它情况走同一提交函数。
+   * @param {Element} host
+   * @param {string} [traceId]
+   * @returns {Promise<{ ok: true, data: { action: string } } | { ok: false, error: object }>}
+   */
+  async function toggle(host, traceId) {
+    if (!host || host.nodeType !== 1 || host.isConnected === false) {
+      return ok('no-target');
+    }
+
+    const hostId = ensureHost(host);
+    const traceLog = traceOf(traceId ?? page.traceId);
+    const state = renderer.getState(host);
+
+    if (state === 'submitted' || state === 'error') {
+      renderer.remove(host);
+      traceLog.info('task.toggle', '移除段落标记', { action: 'hidden' });
+      return ok('hidden');
+    }
+
+    if (state === 'submitting') {
+      traceLog.debug('task.toggle', '段落正在提交，忽略重复触发', { action: 'submitting' });
+      return ok('submitting');
+    }
+
+    const text = normalizeText(extractText(host));
+    if (!text || !hasLetter(text)) {
+      traceLog.debug('segment.skip', '段落没有可翻译文本', { action: 'no-target' });
+      return ok('no-target');
+    }
+
+    const paragraph = { index: 0, text, context: '', host, hostId };
+    const epoch = page.labelEpoch;
+    renderer.showSubmitting(host);
+    const { requestId, response } = await submitBatch('single', [paragraph], traceId ?? page.traceId);
+
+    // 提交期间页面被清除或重新触发：丢弃旧结果，避免清除后又冒出一条标记。
+    if (epoch !== page.labelEpoch) {
+      traceLog.debug('task.cancel', '单段提交结果已过期', { requestId, action: 'hidden' });
+      return ok('hidden');
+    }
+
+    if (response?.ok && response.data?.accepted) {
+      renderer.showSubmitted(host);
+      page.submittedHosts.add(hostId);
+      page.attemptedHosts.add(hostId);
+      traceLog.info('task.toggle', '单段已提交', {
+        action: 'submitted',
+        requestId,
+        textLength: text.length,
+      });
+      return ok('submitted');
+    }
+
+    const code = response?.error?.code ?? ERROR_CODES.NETWORK;
+    const message = response?.error?.message ?? MESSAGES.submitFailed;
+    page.attemptedHosts.add(hostId);
+    renderer.showSubmitError(host, message);
+    traceLog.warn('task.error', '单段提交失败', {
+      action: 'failed',
+      requestId,
+      code,
+    });
+    return { ok: false, error: makeError(code, message, response?.error?.reason) };
+  }
+
+  /**
+   * 清除全部标记并结束页面会话与滚动监听。
+   * @returns {{ ok: true, data: { removed: number } }}
+   */
+  function clearAll() {
+    page.sessionToken += 1;
+    page.labelEpoch += 1;
+    stopScroll();
+    page.phase = 'idle';
+    page.submittedHosts.clear();
+    page.attemptedHosts.clear();
+    page.inFlightHosts.clear();
+    page.requestId = null;
+    page.lastError = null;
+
+    const removed = renderer.clearAll();
+    logger.info('task.cancel', '已清除全部标记', { removed });
+    return { ok: true, data: { removed } };
+  }
+
+  /**
+   * 页面卸载：停止滚动监听与计时器，不清除页面上的标记。
+   */
+  function dispose() {
+    page.sessionToken += 1;
+    stopScroll();
+  }
+
+  /**
+   * 页面从 bfcache 恢复：页面会话仍在时重新安装滚动监听。
+   */
+  function resume() {
+    if (page.phase === 'submitted') installScroll();
+  }
+
+  /**
+   * 供测试与后续阶段读取提交状态快照。
+   * @returns {{ phase: string, total: number }}
+   */
+  function getStatus() {
+    return status().data;
   }
 
   return {
-    /**
-     * 切换宿主段落的译文状态。
-     * @param {Element} host
-     * @param {string} [traceId]
-     * @returns {{ ok: true, data: { action: string } } | { ok: false, error: object }}
-     */
-    toggle(host, traceId) {
-      if (!host || host.nodeType !== 1 || host.isConnected === false) {
-        return ok('no-target');
-      }
-
-      ensureHost(host);
-      const traceLog = traceId && typeof logger.withTrace === 'function' ? logger.withTrace(traceId) : logger;
-      const state = renderer.getState(host);
-
-      if (state === 'loading' || state === 'streaming') {
-        const request = findRequest(host);
-        if (request) cancelRequest(request.requestId, request);
-        renderer.remove(host);
-        traceLog.info('task.toggle', '取消加载中的段落', { action: 'cancelled', traceId });
-        return ok('cancelled');
-      }
-
-      if (state === 'done') {
-        renderer.remove(host);
-        traceLog.info('task.toggle', '隐藏段落译文', { action: 'hidden', traceId });
-        return ok('hidden');
-      }
-
-      if (state === 'error') renderer.remove(host);
-
-      const text = normalizeText(extractText(host));
-      if (!text || !hasLetter(text)) {
-        traceLog.debug('segment.skip', '段落没有可翻译文本', { action: 'no-target', traceId });
-        return ok('no-target');
-      }
-
-      if (text.length > MAX_SEGMENT_CHARS) {
-        renderer.showError(host, `段落超过 ${MAX_SEGMENT_CHARS} 字符，暂不支持`);
-        traceLog.warn('task.toggle', '段落超过单段上限', {
-          action: 'too-long',
-          textLength: text.length,
-          traceId,
-        });
-        return ok('too-long');
-      }
-
-      const requestId = nextRequestId();
-      const request = {
-        requestId,
-        host,
-        text,
-        buffer: '',
-        status: 'loading',
-        sent: false,
-        timer: null,
-        queueTimer: null,
-        startedAt: now(),
-        traceId,
-      };
-      requests.set(requestId, request);
-      renderer.showLoading(host);
-
-      const submitted = submit(request);
-      if (!submitted.ok && !submitted.queued) {
-        return { ok: false, error: submitted.error };
-      }
-      return ok('translating');
-    },
-
-    /**
-     * 桥连接状态变化：连接建立后补发排队请求；连接永久关闭时结束等待。
-     * @param {string} state
-     */
-    onBridgeState(state) {
-      if (state === 'connected') {
-        for (const request of [...requests.values()]) {
-          if (request.sent) continue;
-          submit(request);
-        }
-        return;
-      }
-
-      if (state === 'closed') {
-        for (const request of [...requests.values()]) {
-          renderer.showError(request.host, '扩展已重新加载，请刷新页面');
-          cleanup(request);
-        }
-      }
-    },
-
-    /**
-     * 处理后台帧。
-     * @param {object} frame
-     */
-    onFrame(frame) {
-      const type = frame?.type;
-      const payload = frame?.payload;
-      if (!payload || typeof payload.requestId !== 'string') return;
-      const request = requests.get(payload.requestId);
-      if (!request) return;
-      if (payload.itemId != null && payload.itemId !== ITEM_ID) return;
-
-      const traceLog = request.traceId && typeof logger.withTrace === 'function'
-        ? logger.withTrace(request.traceId)
-        : logger;
-
-      if (type === MESSAGE_TYPES.ITEM_START) {
-        request.status = 'streaming';
-        return;
-      }
-
-      if (type === MESSAGE_TYPES.ITEM_DELTA) {
-        request.buffer += String(payload.delta ?? '');
-        scheduleFlush(request);
-        return;
-      }
-
-      if (type === MESSAGE_TYPES.ITEM_DONE) {
-        clearTimer(request);
-        const text = String(payload.text ?? '').trim();
-        if (!text) {
-          renderer.showError(request.host, '引擎返回空译文，请重试');
-          traceLog.warn('task.error', '引擎返回空译文', {
-            requestId: request.requestId,
-            code: ERROR_CODES.OTHER,
-          });
-        } else {
-          renderer.showDone(request.host, text);
-          traceLog.info('task.done', '段落翻译完成', {
-            requestId: request.requestId,
-            textLength: text.length,
-            elapsedMs: Math.max(0, now() - request.startedAt),
-          });
-        }
-        cleanup(request);
-        return;
-      }
-
-      if (type === MESSAGE_TYPES.ITEM_ERROR) {
-        clearTimer(request);
-        if (payload.code === ERROR_CODES.CANCELLED) {
-          renderer.remove(request.host);
-          traceLog.debug('task.cancel', '段落请求已取消', { requestId: request.requestId });
-        } else {
-          renderer.showError(request.host, payload.message ?? '翻译失败');
-          traceLog.warn('task.error', '段落翻译失败', {
-            requestId: request.requestId,
-            code: payload.code ?? ERROR_CODES.OTHER,
-            reason: payload.reason ?? null,
-          });
-        }
-        cleanup(request);
-        return;
-      }
-
-      if (type === MESSAGE_TYPES.BATCH_DONE) {
-        clearTimer(request);
-        const message = payload?.error?.message ?? '翻译未完成，请重试';
-        renderer.showError(request.host, message);
-        traceLog.warn('task.error', '批次未产生段落结果', {
-          requestId: request.requestId,
-          code: payload?.error?.code ?? ERROR_CODES.OTHER,
-        });
-        cleanup(request);
-      }
-    },
-
-    /**
-     * 断线时把在途段落置为失败态。
-     * @param {string[]} pendingRequestIds
-     */
-    onDisconnect(pendingRequestIds) {
-      const ids = pendingRequestIds ?? [];
-      for (const requestId of ids) {
-        const request = requests.get(requestId);
-        if (!request) continue;
-        clearTimer(request);
-        renderer.showError(request.host, '与后台的连接已断开，请稍后重试');
-        cleanup(request);
-      }
-      if (ids.length > 0) {
-        log.warn('task.error', '连接断开，在途段落已中止', {
-          pending: ids.length,
-          code: ERROR_CODES.NETWORK,
-        });
-      }
-    },
-
-    /**
-     * 清除全部译文并取消在途请求。
-     * @returns {{ ok: true, data: { removed: number, cancelled: number } }}
-     */
-    clearAll() {
-      let cancelled = 0;
-      for (const request of [...requests.values()]) {
-        cancelRequest(request.requestId, request);
-        cancelled += 1;
-      }
-      requests.clear();
-      const removed = renderer.clearAll();
-      log.info('task.clear', '已清除全部译文', { removed, cancelled });
-      return { ok: true, data: { removed, cancelled } };
-    },
-
-    /**
-     * 页面卸载时取消在途请求；不主动删除页面上的译文。
-     */
-    dispose() {
-      for (const request of [...requests.values()]) {
-        clearTimer(request);
-        clearQueueTimer(request);
-        try {
-          bridge.cancelBatch(request.requestId);
-        } catch {
-          // 页面正在卸载，取消失败无需处理。
-        }
-      }
-      requests.clear();
-    },
+    start,
+    toggle,
+    clearAll,
+    dispose,
+    resume,
+    getStatus,
   };
 }

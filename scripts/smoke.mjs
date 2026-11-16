@@ -10,10 +10,11 @@
  *   S5  content 产物不含密钥、引擎与签名相关词
  *   S6  content 产物不出现 storage.sync / storage.local
  *   S7  清单文案中性（不写死引擎名）
- *   S8  入口注册契约：background 注册 onMessage/onConnect 与快捷键监听，content 连接 st-gateway，且均含 ST_LOG_CONFIG（P3 起）
+ *   S8  入口注册契约：background 注册 onMessage/onConnect 与快捷键监听并含 ST_ROUTE / ST_PAGE_SUBMIT（P6.1），
+ *       content 连接 st-gateway 并含 ST_START / ST_PAGE_SUBMIT（P6.1），且均含 ST_LOG_CONFIG（P3 起）
  *   S9  产物新鲜度：dist 不早于 src / public / scripts
  *   S10 dist 缺失或不完整时给出单条可操作提示
- *   S11 popup / options 页面骨架含 #root 与 module script
+ *   S11 popup / options 页面骨架含 #root 与 module script；testpage 含 #test-page 与 module script
  *   S12 关键产物存在、非空（P4 起 content.css 也必须非空）
  *
  * 运行：node scripts/smoke.mjs（需先 npm run build）。只读，不构建。
@@ -131,7 +132,7 @@ await test('S1 清单声明的入口文件齐全', async () => {
 
 // --------------------------------------------------------------- S2 HTML 引用
 await test('S2 HTML 引用的资源齐全', async () => {
-  const pages = ['popup/index.html', 'options/index.html'];
+  const pages = ['popup/index.html', 'options/index.html', 'testpage/index.html'];
   const missing = [];
   for (const page of pages) {
     const htmlPath = join(distDir, page);
@@ -221,6 +222,8 @@ await test('S8 入口注册：background 注册 onMessage/onConnect/commands，c
     'st-gateway',
     'ST_TRANSLATE_BATCH',
     'ST_TOGGLE',
+    'ST_ROUTE',
+    'ST_PAGE_SUBMIT',
     'ST_LOG_CONFIG',
   ]) {
     assert.equal(background.includes(token), true, `background.js 缺少入口注册 ${token}`);
@@ -230,6 +233,8 @@ await test('S8 入口注册：background 注册 onMessage/onConnect/commands，c
     'ST_PING',
     'ST_TRANSLATE_BATCH',
     'ST_TOGGLE',
+    'ST_START',
+    'ST_PAGE_SUBMIT',
     'ST_LOG_CONFIG',
     'data-st-translation',
   ]) {
@@ -270,11 +275,20 @@ await test('S9 产物不早于源码', async () => {
 });
 
 // ---------------------------------------------------------- S11 页面骨架
-await test('S11 popup / options 页面骨架完整', async () => {
-  for (const page of ['popup/index.html', 'options/index.html']) {
-    const html = await readFile(join(distDir, page), 'utf8');
-    assert.match(html, /id="root"/, `${page} 缺少 #root 挂载点`);
-    assert.match(html, /<script[^>]+type="module"[^>]+src=/, `${page} 缺少 module script`);
+await test('S11 popup / options / testpage 页面骨架完整', async () => {
+  const pages = [
+    { path: 'popup/index.html', root: 'id="root"', label: '#root 挂载点' },
+    { path: 'options/index.html', root: 'id="root"', label: '#root 挂载点' },
+    { path: 'testpage/index.html', root: 'id="test-page"', label: '#test-page 夹具容器' },
+  ];
+  for (const page of pages) {
+    const html = await readFile(join(distDir, page.path), 'utf8');
+    assert.equal(html.includes(page.root), true, `${page.path} 缺少 ${page.label}`);
+    assert.match(
+      html,
+      /<script[^>]+type="module"[^>]+src=/,
+      `${page.path} 缺少 module script`
+    );
   }
 });
 

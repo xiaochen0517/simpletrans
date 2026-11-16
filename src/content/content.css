@@ -2,8 +2,8 @@
  * D3 译文渲染样式
  *
  * 模块：页面注入（D）/ D3
- * 职责：译文内嵌在原文宿主末尾，继承宿主字体与颜色；加载/流式/完成/失败只做轻量状态区分。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）
+ * 职责：提交状态标记内嵌在原文宿主末尾，继承宿主字体与颜色；正在提交、已提交、提交失败只做轻量状态区分。
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为提交状态。
  *
  * 只匹配 data-st-* 标记；容器保持行内，换行由容器内部的 br 完成。
  */
@@ -28,9 +28,13 @@
   white-space: inherit;
 }
 
-[data-st-translation][data-st-state='loading'],
-[data-st-translation][data-st-state='streaming'] {
+[data-st-translation][data-st-state='submitting'] {
   opacity: 0.55;
+}
+
+[data-st-translation][data-st-state='submitted'] {
+  opacity: 0.7;
+  font-style: italic;
 }
 
 [data-st-translation][data-st-state='error'] {

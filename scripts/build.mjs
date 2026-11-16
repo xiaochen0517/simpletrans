@@ -4,7 +4,7 @@
  *
  * 三种产物必须用不同的输出格式，Vite 的单次 build 无法按 entry 指定 format，
  * 因此这里分三次调用：
- *   web        → popup / options（HTML + ESM）
+ *   web        → popup / options / testpage（HTML + ESM）
  *   background → Service Worker（ESM 单文件）
  *   content    → Content Script（IIFE 单文件 + content.css）
  *

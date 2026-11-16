@@ -4,7 +4,7 @@
  * 覆盖 ST_LIST_ENGINES 与 ST_TEST_ENGINE；A3 用 vi.mock 隔离，不联网。
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/shared/translate/adapter.js', () => {
   class TranslateError extends Error {
@@ -60,8 +60,11 @@ import {
   FAILURE_REASONS,
   MESSAGE_TYPES,
 } from '../../src/shared/protocol.js';
+import { MAX_CONTEXT_CHARS, MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
+import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 import { getOrCreateDefaultInstance, removeKey, writeKey } from '../../src/shared/config/instances.js';
-import { handleMessage, sendToTab } from '../../src/background/router.js';
+import { saveSettings } from '../../src/shared/settings.js';
+import { handleMessage, receivePageSubmit, sendToTab } from '../../src/background/router.js';
 import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
 import { __cache } from '../../src/shared/cache/store.js';
 
@@ -90,6 +93,11 @@ beforeEach(async () => {
 
   instance = await getOrCreateDefaultInstance();
   await writeKey(instance.id, 'sk-test');
+});
+
+afterEach(() => {
+  resetLogging();
+  vi.restoreAllMocks();
 });
 
 describe('A1 控制面：消息与发送方', () => {
@@ -300,11 +308,11 @@ describe('A1 标签页转发与按需注入', () => {
   );
 
   it('页面已就绪时直接发送，不注入', async () => {
-    chrome.tabs.__response = { ok: true, data: { action: 'translating' } };
+    chrome.tabs.__response = { ok: true, data: { action: 'submitted' } };
 
     const result = await sendToTab(7, message);
 
-    expect(result).toEqual({ ok: true, data: { action: 'translating' } });
+    expect(result).toEqual({ ok: true, data: { action: 'submitted' } });
     expect(chrome.tabs.__sent).toHaveLength(1);
     expect(chrome.tabs.__sent[0]).toMatchObject({ tabId: 7, message });
     expect(chrome.scripting.__calls).toEqual([]);
@@ -313,7 +321,7 @@ describe('A1 标签页转发与按需注入', () => {
   it('没有接收方时先注入样式再注入脚本，然后重发', async () => {
     chrome.tabs.__sendQueue = [
       { error: noReceiver },
-      { response: { ok: true, data: { action: 'translating' } } },
+      { response: { ok: true, data: { action: 'submitted' } } },
     ];
 
     const result = await sendToTab(9, message);
@@ -371,5 +379,445 @@ describe('A1 标签页转发与按需注入', () => {
     expect(result.ok).toBe(false);
     expect(result.error.reason).toBe(FAILURE_REASONS.NO_ACTIVE_TAB);
     expect(chrome.tabs.__sent).toEqual([]);
+  });
+});
+
+describe('A1 控制面：ST_ROUTE（P6.1）', () => {
+  /**
+   * @param {object} payload
+   * @returns {Promise<object>}
+   */
+  function route(payload) {
+    return handleMessage({ type: MESSAGE_TYPES.ROUTE, payload }, sender);
+  }
+
+  it('start 读取设置与活动标签页，向页面发 ST_START 并原样返回页面响应', async () => {
+    const pageResponse = { ok: true, data: { phase: 'submitted', total: 3 } };
+    chrome.tabs.__response = pageResponse;
+
+    const response = await route({ command: 'start', traceId: 't-route-1' });
+
+    expect(response).toEqual(pageResponse);
+    expect(chrome.tabs.__sent).toHaveLength(1);
+    expect(chrome.tabs.__sent[0]).toEqual({
+      tabId: 1,
+      message: {
+        type: MESSAGE_TYPES.START,
+        payload: {
+          targetLang: 'zh',
+          traceId: 't-route-1',
+        },
+      },
+    });
+    // P6.1 页面侧不建批，ST_START 不再携带 batch。
+    expect(chrome.tabs.__sent[0].message.payload).not.toHaveProperty('batch');
+    expect(chrome.scripting.__calls).toEqual([]);
+  });
+
+  it('start 没有 traceId 时载荷只有 targetLang', async () => {
+    chrome.tabs.__response = { ok: true, data: { phase: 'idle', total: 0 } };
+
+    await route({ command: 'start' });
+
+    expect(chrome.tabs.__sent[0].message.payload).toEqual({ targetLang: 'zh' });
+    expect(chrome.tabs.__sent[0].message.payload).not.toHaveProperty('batch');
+  });
+
+  it('clear 向页面发 ST_CLEAR 并返回清除结果', async () => {
+    const pageResponse = { ok: true, data: { removed: 3 } };
+    chrome.tabs.__response = pageResponse;
+
+    const response = await route({ command: 'clear', traceId: 't-route-clear' });
+
+    expect(response).toEqual(pageResponse);
+    expect(chrome.tabs.__sent).toHaveLength(1);
+    expect(chrome.tabs.__sent[0]).toEqual({
+      tabId: 1,
+      message: { type: MESSAGE_TYPES.CLEAR, payload: { traceId: 't-route-clear' } },
+    });
+  });
+
+  it('未知命令返回 OTHER / INVALID_MESSAGE，不查询标签页也不发送', async () => {
+    const query = vi.spyOn(chrome.tabs, 'query');
+
+    const response = await route({ command: 'pause' });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.OTHER);
+    expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+    expect(query).not.toHaveBeenCalled();
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('扩展停用时返回 CONFIG「扩展已停用」，不发送命令', async () => {
+    await saveSettings({ enabled: false });
+
+    const response = await route({ command: 'start' });
+
+    expect(response).toEqual({
+      ok: false,
+      error: { code: ERROR_CODES.CONFIG, message: '扩展已停用' },
+    });
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('没有活动标签页时返回 OTHER / NO_ACTIVE_TAB', async () => {
+    chrome.tabs.__queryResult = [];
+
+    const response = await route({ command: 'start' });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.OTHER);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_ACTIVE_TAB);
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('页面的 ok:false 错误码原样返回', async () => {
+    chrome.tabs.__response = {
+      ok: false,
+      error: { code: ERROR_CODES.CONFIG, message: '缺少密钥，请先在设置页保存密钥' },
+    };
+
+    const response = await route({ command: 'start' });
+
+    expect(response).toEqual({
+      ok: false,
+      error: { code: ERROR_CODES.CONFIG, message: '缺少密钥，请先在设置页保存密钥' },
+    });
+  });
+
+  it('页面未注入时先 insertCSS 再 executeScript 后重发一次', async () => {
+    const noReceiver = new Error(
+      'Could not establish connection. Receiving end does not exist.'
+    );
+    chrome.tabs.__sendQueue = [
+      { error: noReceiver },
+      { response: { ok: true, data: { phase: 'submitted', total: 1 } } },
+    ];
+
+    const response = await route({ command: 'start' });
+
+    expect(response.ok).toBe(true);
+    expect(chrome.scripting.__calls.map((call) => call.api)).toEqual([
+      'insertCSS',
+      'executeScript',
+    ]);
+    expect(chrome.tabs.__sent).toHaveLength(2);
+    expect(chrome.tabs.__sent[1].message.type).toBe(MESSAGE_TYPES.START);
+  });
+
+  it('注入失败时返回 INJECTION_FAILED', async () => {
+    chrome.tabs.__sendQueue = [
+      {
+        error: new Error('Could not establish connection. Receiving end does not exist.'),
+      },
+    ];
+    chrome.scripting.__error = new Error('Cannot access a chrome:// URL');
+
+    const response = await route({ command: 'start' });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.INJECTION_FAILED);
+    expect(chrome.tabs.__sent).toHaveLength(1);
+  });
+
+  it('注入后仍无接收方时返回 NO_RECEIVER', async () => {
+    const noReceiver = new Error(
+      'Could not establish connection. Receiving end does not exist.'
+    );
+    chrome.tabs.__sendQueue = [{ error: noReceiver }, { error: noReceiver }];
+
+    const response = await route({ command: 'clear' });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_RECEIVER);
+    expect(chrome.scripting.__calls).toHaveLength(2);
+  });
+
+  it('扩展外部发送方的 ST_ROUTE 被拒绝且不访问标签页', async () => {
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.ROUTE, payload: { command: 'start' } },
+      { id: 'other' }
+    );
+
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.OTHER);
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('读取设置失败返回 CONFIG 且不发送命令', async () => {
+    const originalGet = chrome.storage.sync.get.bind(chrome.storage.sync);
+    chrome.storage.sync.get = async (keys) => {
+      if (keys === 'settings') throw new Error('storage unavailable');
+      return originalGet(keys);
+    };
+
+    const response = await route({ command: 'start' });
+
+    expect(response).toEqual({
+      ok: false,
+      error: { code: ERROR_CODES.CONFIG, message: '读取设置失败' },
+    });
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+});
+
+describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
+  /**
+   * 一条合法的整页提交载荷。
+   * @returns {object}
+   */
+  function validPayload() {
+    return {
+      requestId: 's-1',
+      traceId: 't-recv',
+      scope: 'page',
+      targetLang: 'zh',
+      domain: 'example.com',
+      viewport: { width: 1280, height: 800 },
+      paragraphs: [
+        { index: 0, hostId: 'h1', text: 'Hello', context: '' },
+        { index: 1, hostId: 'h2', text: 'World', context: 'Hello' },
+      ],
+    };
+  }
+
+  /**
+   * @param {unknown} payload
+   * @param {{ id?: string, tab?: { id?: number } }} [from]
+   * @returns {Promise<object>}
+   */
+  function submitPage(payload, from = sender) {
+    return handleMessage({ type: MESSAGE_TYPES.PAGE_SUBMIT, payload }, from);
+  }
+
+  it('合法提交回执 accepted 与段数/字符数，不查缓存、不调用上游', async () => {
+    const response = await submitPage(validPayload());
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        accepted: true,
+        requestId: 's-1',
+        scope: 'page',
+        paragraphs: 2,
+        chars: 10,
+      },
+    });
+    expect(translate).not.toHaveBeenCalled();
+    expect(__cache.store.getMany).not.toHaveBeenCalled();
+    expect(__cache.store.set).not.toHaveBeenCalled();
+    expect(__cache.store.stats).not.toHaveBeenCalled();
+    expect(__cache.store.clear).not.toHaveBeenCalled();
+  });
+
+  it('receivePageSubmit 已导出，可直接校验与回执', () => {
+    const response = receivePageSubmit(validPayload(), { tab: { id: 7 } }, 't-direct');
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        accepted: true,
+        requestId: 's-1',
+        scope: 'page',
+        paragraphs: 2,
+        chars: 10,
+      },
+    });
+  });
+
+  it('scope 缺省为 page；scope=single 时只接受 1 段', async () => {
+    const page = await submitPage({ paragraphs: [{ text: 'Hi' }] });
+    expect(page.ok).toBe(true);
+    expect(page.data.scope).toBe('page');
+    expect(page.data.requestId).toBe(null);
+
+    const single = await submitPage({
+      scope: 'single',
+      requestId: 's-single',
+      paragraphs: [{ index: 0, hostId: 'h1', text: 'Hi' }],
+    });
+    expect(single).toEqual({
+      ok: true,
+      data: {
+        accepted: true,
+        requestId: 's-single',
+        scope: 'single',
+        paragraphs: 1,
+        chars: 2,
+      },
+    });
+
+    const tooMany = await submitPage({
+      scope: 'single',
+      paragraphs: [{ text: 'One' }, { text: 'Two' }],
+    });
+    expect(tooMany.ok).toBe(false);
+    expect(tooMany.error.reason).toBe(FAILURE_REASONS.INVALID_ITEMS);
+  });
+
+  it('scope 非法或 requestId 非法时返回 INVALID_MESSAGE', async () => {
+    const badScope = await submitPage({ scope: 'other', paragraphs: [{ text: 'Hi' }] });
+    expect(badScope.ok).toBe(false);
+    expect(badScope.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+
+    for (const requestId of [123, 's'.repeat(65)]) {
+      const badId = await submitPage({ requestId, paragraphs: [{ text: 'Hi' }] });
+      expect(badId.ok).toBe(false);
+      expect(badId.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+    }
+  });
+
+  it('context 恰好 400 字符、hostId 恰好 64 字符时接受', async () => {
+    const response = await submitPage({
+      paragraphs: [
+        {
+          text: 'Hi',
+          context: 'c'.repeat(MAX_CONTEXT_CHARS),
+          hostId: 'h'.repeat(64),
+        },
+      ],
+    });
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        accepted: true,
+        requestId: null,
+        scope: 'page',
+        paragraphs: 1,
+        chars: 2,
+      },
+    });
+  });
+
+  it('载荷不是对象时返回 INVALID_MESSAGE', async () => {
+    for (const payload of [null, 'text', 42, []]) {
+      const response = await submitPage(payload);
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe(ERROR_CODES.OTHER);
+      expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+    }
+  });
+
+  it('paragraphs 不是数组或为空时返回 INVALID_ITEMS', async () => {
+    for (const payload of [
+      {},
+      { paragraphs: undefined },
+      { paragraphs: 'x' },
+      { paragraphs: {} },
+      { paragraphs: [] },
+    ]) {
+      const response = await submitPage(payload);
+      expect(response.ok).toBe(false);
+      expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_ITEMS);
+    }
+  });
+
+  it('超过 5000 段返回 INVALID_ITEMS（需求 3.5）', async () => {
+    const paragraphs = Array.from({ length: MAX_PAGE_PARAGRAPHS + 1 }, (_, index) => ({
+      text: `T ${index}`,
+    }));
+
+    const response = await submitPage({ paragraphs });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_ITEMS);
+  });
+
+  it('每段 text 必须为非空字符串，否则返回 EMPTY_TEXT', async () => {
+    for (const text of ['', '   ', 123, null, undefined]) {
+      const response = await submitPage({ paragraphs: [{ text }] });
+      expect(response.ok).toBe(false);
+      expect(response.error.reason).toBe(FAILURE_REASONS.EMPTY_TEXT);
+    }
+  });
+
+  it('context 超过 400 字符返回 CONTEXT_TOO_LONG', async () => {
+    const response = await submitPage({
+      paragraphs: [{ text: 'Hi', context: 'c'.repeat(MAX_CONTEXT_CHARS + 1) }],
+    });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.CONTEXT_TOO_LONG);
+  });
+
+  it('context 不是字符串时返回 CONTEXT_TOO_LONG（需求 3.5）', async () => {
+    const response = await submitPage({ paragraphs: [{ text: 'Hi', context: 123 }] });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.CONTEXT_TOO_LONG);
+  });
+
+  it('hostId 不是字符串或超过 64 字符返回 INVALID_ITEMS', async () => {
+    for (const hostId of [123, 'h'.repeat(65)]) {
+      const response = await submitPage({ paragraphs: [{ text: 'Hi', hostId }] });
+      expect(response.ok).toBe(false);
+      expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_ITEMS);
+    }
+  });
+
+  it('禁止字段（含嵌套）返回 FORBIDDEN_FIELD', async () => {
+    const topLevel = await submitPage({ ...validPayload(), apiKey: 'sk-x' });
+    expect(topLevel.ok).toBe(false);
+    expect(topLevel.error.reason).toBe(FAILURE_REASONS.FORBIDDEN_FIELD);
+
+    const nested = await submitPage({
+      paragraphs: [{ text: 'Hi', model: 'deepseek-chat' }],
+    });
+    expect(nested.ok).toBe(false);
+    expect(nested.error.reason).toBe(FAILURE_REASONS.FORBIDDEN_FIELD);
+  });
+
+  it('扩展外部发送方的 ST_PAGE_SUBMIT 被拒绝', async () => {
+    const response = await submitPage(validPayload(), { id: 'other', tab: { id: 9 } });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.OTHER);
+  });
+
+  it('成功接收记录 page.received 与逐段 page.item，预览不超过 60 字', async () => {
+    initLogging({ context: 'background', level: 'info', sessionId: 's-test' });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const payload = {
+      requestId: 's-log',
+      scope: 'single',
+      paragraphs: [{ index: 0, hostId: 'h1', text: 'Secret paragraph one' }],
+    };
+    const chars = payload.paragraphs.reduce((sum, paragraph) => sum + paragraph.text.length, 0);
+
+    const response = receivePageSubmit(payload, { tab: { id: 7 } }, 't-recv');
+
+    expect(response.ok).toBe(true);
+    const lines = info.mock.calls.map((call) => String(call[0]));
+    const received = lines.find((entry) => entry.includes('page.received'));
+    expect(received).toBeTruthy();
+    expect(received).toContain('"scope":"single"');
+    expect(received).toContain('"requestId":"s-log"');
+    expect(received).toContain(`"paragraphs":${payload.paragraphs.length}`);
+    expect(received).toContain(`"chars":${chars}`);
+    expect(received).toContain('"tabId":7');
+    expect(received).not.toContain('Secret paragraph one');
+
+    const items = lines.filter((entry) => entry.includes('page.item'));
+    expect(items).toHaveLength(1);
+    expect(items[0]).toContain('"index":0');
+    expect(items[0]).toContain('"hostId":"h1"');
+    expect(items[0]).toContain('"textLength":20');
+    expect(items[0]).toContain('"preview":"Secret paragraph one"');
+
+    // 超过 60 字的段落只打印前 60 字。
+    const longText = 'A'.repeat(80);
+    receivePageSubmit(
+      { requestId: 's-long', paragraphs: [{ index: 0, text: longText }] },
+      { tab: { id: 7 } },
+      't-long'
+    );
+    const longItem = info.mock.calls
+      .map((call) => String(call[0]))
+      .filter((entry) => entry.includes('page.item'))
+      .at(-1);
+    expect(longItem).toContain(`"preview":"${'A'.repeat(60)}"`);
+    expect(longItem).not.toContain(longText);
   });
 });

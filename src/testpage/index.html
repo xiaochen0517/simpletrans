@@ -1,0 +1,421 @@
+<!doctype html>
+<!--
+  C6 翻译测试页
+  职责：提供固定英文内容与页内操作条，供人工验证整页提交、滚动增量、Ctrl 单段提交与显示原文；
+        页面静态导入 D 入口以加载页面注入运行时，不依赖清单注入。
+  实现阶段：P6.5
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SimpleTrans Translation Test Page</title>
+    <link rel="stylesheet" href="./testpage.css" />
+  </head>
+  <body>
+    <header class="test-toolbar" lang="zh-CN" data-simpletrans-ignore translate="no">
+      <strong class="test-toolbar-title">翻译测试页</strong>
+      <button id="test-start" type="button" class="test-button test-button-primary">
+        翻译整页
+      </button>
+      <button id="test-clear" type="button" class="test-button">显示原文</button>
+      <span id="test-status" class="test-status" role="status">就绪</span>
+      <span class="test-hint">悬停英文段落按 Ctrl 提交/隐藏标记；滚动后自动提交新段落；本操作条不参与翻译。</span>
+    </header>
+
+    <main id="test-page">
+      <h1>SimpleTrans Translation Test Page</h1>
+      <p class="lede">
+        A fixed English fixture for manual translation checks. The text, order, and
+        structure stay the same, so a failed check can be repeated against the same
+        page.
+      </p>
+      <p>
+        This page is bundled with the extension. It loads the page-injection runtime
+        itself because Chrome does not inject content scripts into extension pages.
+        The control bar above is part of the test harness and is excluded from
+        translation.
+      </p>
+      <p class="meta">Fixture version 1 · No network resources · English body · Last reviewed 2026-11-16</p>
+
+      <section id="overview" data-test-section>
+        <h2>Overview</h2>
+        <p>
+          The fixture is deliberately ordinary. It looks like a small documentation
+          page, not a product screen, because the goal is to observe translation
+          behavior rather than to test a visual design.
+        </p>
+        <p>
+          Every block below is visible on load. There are no cookie banners, no
+          recommendation feeds, no login prompts, and no lazy-loaded cards that could
+          change the paragraph count between two runs.
+        </p>
+      </section>
+
+      <section id="typography" data-test-section>
+        <h2>Typography</h2>
+        <h3>Inline formatting</h3>
+        <p>
+          Good translation tests need <strong>strong emphasis</strong>,
+          <em>subtle emphasis</em>, <small>small print</small>,
+          <mark>highlighted terms</mark>, and an
+          <abbr title="Application Programming Interface">API</abbr> label. Inline
+          code such as <code>npm run build</code> should survive as code, while a
+          <a href="#lists">link to the Lists section</a> stays a link.
+        </p>
+        <p>
+          Chemical notation like H<sub>2</sub>O and a footnote marker<sup>1</sup>
+          test subscript and superscript. A long sentence with a
+          <strong>bold phrase that contains <em>nested emphasis</em></strong> checks
+          that nested inline tags are not split into unrelated fragments.
+        </p>
+        <p>
+          A second paragraph checks wrapping at different widths. Translation should
+          keep the sentence readable, preserve the inline order, and avoid adding
+          extra blank lines around the inserted text.
+        </p>
+      </section>
+
+      <section id="lists" data-test-section>
+        <h2>Lists</h2>
+        <h3>Unordered list</h3>
+        <ul>
+          <li>Translate a short bullet without losing the list marker.</li>
+          <li>Keep a second bullet separate from the first one.</li>
+          <li>
+            <p>Support a nested list without merging parent and child text.</p>
+            <ul>
+              <li>Nested bullet one stays inside its own item.</li>
+              <li>Nested bullet two has a <strong>bold fragment</strong>.</li>
+            </ul>
+          </li>
+          <li>End with a normal bullet after the nested block.</li>
+        </ul>
+
+        <h3>Ordered list</h3>
+        <ol>
+          <li>Open the test page from the extension popup.</li>
+          <li>Start a whole-page translation.</li>
+          <li>Inspect a block, an inline phrase, and a table cell.</li>
+          <li>Clear the page and repeat the check.</li>
+        </ol>
+
+        <h3>Definition list</h3>
+        <dl>
+          <dt>Source language</dt>
+          <dd>The language of the page before translation.</dd>
+          <dt>Target language</dt>
+          <dd>The language requested in the extension settings.</dd>
+          <dt>Host</dt>
+          <dd>The element that receives the inline translation.</dd>
+        </dl>
+      </section>
+
+      <section id="tables" data-test-section>
+        <h2>Tables</h2>
+        <p>
+          Each table cell is a small translation unit. Headers, body cells, and the
+          caption should all remain attached to their own table structure.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <caption>Sample release plan</caption>
+            <thead>
+              <tr>
+                <th scope="col">Item</th>
+                <th scope="col">Owner</th>
+                <th scope="col">Status</th>
+                <th scope="col">Budget</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Translate a heading</td>
+                <td>Editorial</td>
+                <td>Ready</td>
+                <td>$120.00</td>
+              </tr>
+              <tr>
+                <td>Review a paragraph</td>
+                <td>Research</td>
+                <td>In progress</td>
+                <td>$86.50</td>
+              </tr>
+              <tr>
+                <td>Check table cells</td>
+                <td>Quality</td>
+                <td>Blocked</td>
+                <td>$45.00</td>
+              </tr>
+              <tr>
+                <td>Publish the result</td>
+                <td>Operations</td>
+                <td>Ready</td>
+                <td>$310.75</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="quotes-code" data-test-section>
+        <h2>Quotes and Code</h2>
+        <blockquote>
+          <p>
+            Translation is not a word-for-word substitution; it is a careful
+            reconstruction of meaning for a new reader.
+          </p>
+          <cite>— A note from the test fixture</cite>
+        </blockquote>
+        <pre><code>function greet(name) {
+  return `Hello, ${name}!`;
+}</code></pre>
+        <p>
+          Text with an explicit line break<br />
+          continues on the second line and keeps its punctuation.
+        </p>
+        <p>
+          A sentence with <code>inline code</code>, an ampersand (&amp;), and a pair
+          of parentheses (like these) checks mixed inline content.
+        </p>
+      </section>
+
+      <section id="controls" data-test-section>
+        <h2>Interface Controls</h2>
+        <p>
+          Static controls exercise labels, buttons, and form values. The extension
+          should translate labels and prose, but must skip input values,
+          placeholders, and option text.
+        </p>
+
+        <div class="cards">
+          <article class="card">
+            <h3>Review queue</h3>
+            <p>Three paragraphs are waiting for a second pass.</p>
+            <span class="badge">Ready</span>
+          </article>
+          <article class="card">
+            <h3>Style guide</h3>
+            <p>Keep terminology consistent across the page.</p>
+            <span class="badge badge-muted">Draft</span>
+          </article>
+          <article class="card">
+            <h3>Release notes</h3>
+            <p>Summarize the visible changes for the next check.</p>
+            <span class="badge">Planned</span>
+          </article>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="test-button test-button-primary">Save draft</button>
+          <button type="button" class="test-button">Preview changes</button>
+          <button type="button" class="test-button" disabled>Publish</button>
+        </div>
+
+        <form class="demo-form" action="#" method="get">
+          <div class="field">
+            <label for="name">Full name</label>
+            <input id="name" name="name" type="text" value="Ada Lovelace" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="search">Search the glossary</label>
+            <input id="search" name="search" type="search" placeholder="Search terms" />
+          </div>
+          <div class="field">
+            <label for="email">Contact email</label>
+            <input id="email" name="email" type="email" value="editor@example.com" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="notes">Review notes</label>
+            <textarea id="notes" name="notes" rows="3">Check the final paragraph for tone.</textarea>
+          </div>
+          <div class="field">
+            <label for="lang">Display language</label>
+            <select id="lang" name="lang">
+              <option>English</option>
+              <option>French</option>
+              <option>Japanese</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="volume">Preview volume</label>
+            <input id="volume" name="volume" type="range" min="0" max="10" value="6" />
+          </div>
+          <fieldset class="checks">
+            <legend>Notify me about</legend>
+            <label><input type="checkbox" checked /> New comments</label>
+            <label><input type="radio" name="digest" checked /> Daily digest</label>
+            <label><input type="radio" name="digest" /> Weekly digest</label>
+          </fieldset>
+          <div class="field">
+            <label for="locked">Locked field</label>
+            <input id="locked" type="text" value="Read-only value" disabled />
+          </div>
+        </form>
+      </section>
+
+      <section id="numbers" data-test-section>
+        <h2>Numbers and Punctuation</h2>
+        <p>
+          On March 14, 2026, the review starts at 09:30 AM and ends at 4:15 PM. The
+          budget is $1,234.56, the completion rate is 87.5%, and the office is 12 km
+          from the station. Call +1 555 0100 or write to editor@example.com; the
+          documentation is at https://example.com/docs?lang=en.
+        </p>
+        <p>
+          “Quoted text” and ‘single-quoted text’ test curly quotes. An em dash — like
+          this one — and an ellipsis … should remain intact. Use A &amp; B,
+          (parentheses), [brackets], and a slash / to check punctuation spacing.
+        </p>
+        <p>
+          ALL CAPS HEADINGS, Title Case Labels, and #translation hashtags each test a
+          different casing style. Acronyms such as HTTP, JSON, SDK, and URL must not
+          be expanded or reordered.
+        </p>
+        <p>
+          A sentence may contain a date (2026-11-16), a time range (09:30–10:15), a
+          measurement (1.5 L), a ratio (3:2), and a version (v2.4.1) without losing
+          the separators.
+        </p>
+      </section>
+
+      <section id="long-article" data-test-section>
+        <h2>Long Article</h2>
+        <p class="lede">
+          The sections below provide enough text to scroll, batch, and compare
+          viewport-first scheduling. They are intentionally repetitive in structure
+          and varied in vocabulary.
+        </p>
+
+        <h3>Why a fixed fixture matters</h3>
+        <p>
+          A translation check is only useful when the input is predictable. When the
+          source page changes between runs, a new heading, a cookie banner, or a
+          lazy-loaded card can alter paragraph counts and make a regression look like
+          a formatting bug. A fixed fixture removes that noise.
+        </p>
+        <p>
+          The page is intentionally plain. It uses system fonts, local CSS, and no
+          images, so a missing translation cannot be confused with a failed network
+          request. Every block is visible on load, and every section has a stable
+          identifier.
+        </p>
+
+        <h3>What the fixture covers</h3>
+        <p>
+          The fixture covers block and inline text. Headings, list items, table
+          cells, and paragraphs behave as block hosts; emphasized phrases, code,
+          links, and superscripts live inside them. A translation that appears in the
+          wrong host is easy to see here.
+        </p>
+        <p>
+          Form controls are included as deliberate negative cases. Their labels are
+          ordinary text and should translate. Values, placeholders, and option labels
+          are control state, not page copy, so they should stay in English.
+        </p>
+
+        <h3>Reading the results</h3>
+        <p>
+          Numbers and punctuation are part of the copy. Dates, prices, percentages,
+          phone numbers, and URLs should keep their shape while the surrounding
+          sentence is translated. Quotes and dashes should not acquire stray spaces
+          or turn into different characters.
+        </p>
+        <p>
+          The long article provides scroll and batching coverage. A whole-page run
+          should start with paragraphs near the viewport and continue as the reader
+          scrolls; repeating the run should not create duplicate translations for the
+          same host.
+        </p>
+
+        <h3>Repeating a failed check</h3>
+        <p>
+          A failed check should be repeatable. The fixture keeps its section
+          identifiers, paragraph order, and headings stable, so a tester can return
+          to the same block and compare the same host. If the cache makes a second
+          run instant, clear the cache before testing a fresh request.
+        </p>
+        <p>
+          The page does not try to force a cache miss. Caching is a product feature,
+          and the fixture should show both states honestly: a cached result may appear
+          immediately, while a fresh result shows the loading and streaming phases.
+        </p>
+
+        <h3>Keeping the fixture honest</h3>
+        <p>
+          When the fixture changes, the change should be deliberate. New copy belongs
+          in a new section or a reviewed replacement, not in a random edit that
+          silently changes the baseline. The section identifiers are part of the test
+          contract.
+        </p>
+        <p>
+          Finally, keep the fixture close to the product. It loads the same
+          page-injection entry as a normal page and uses the same task, renderer, and
+          cache; only the trigger differs. That is why the page is a useful manual
+          check rather than a separate mock.
+        </p>
+      </section>
+
+      <section id="non-translatable" data-test-section>
+        <h2>Non-translatable Cases</h2>
+        <p>
+          The marked values and blocks below should stay in English. They exercise
+          the skip rules in D1; a translated value or hidden block here is a
+          regression, not a success. The labels describing them are ordinary text
+          and may translate.
+        </p>
+        <p translate="no">
+          This paragraph is marked translate="no" and must stay English.
+        </p>
+        <p class="notranslate">
+          This paragraph carries the notranslate class and must stay English.
+        </p>
+        <div class="negative-box" data-simpletrans-ignore>
+          This box is marked data-simpletrans-ignore and must stay English.
+        </div>
+        <label for="neg-input">Input value</label>
+        <input id="neg-input" type="text" value="This input value must stay English" />
+        <label for="neg-placeholder">Placeholder only</label>
+        <input
+          id="neg-placeholder"
+          type="text"
+          placeholder="This placeholder must stay English"
+        />
+        <label for="neg-textarea">Textarea content</label>
+        <textarea id="neg-textarea" rows="2">This textarea content must stay English.</textarea>
+        <label for="neg-select">Option labels</label>
+        <select id="neg-select">
+          <option>This option must stay English</option>
+          <option>Second option</option>
+        </select>
+        <div class="editable" contenteditable="true" role="textbox" aria-label="Editable example">
+          This editable sentence must stay English while the field has focus.
+        </div>
+        <div hidden>
+          This hidden block must stay English because it is not visible.
+        </div>
+        <details>
+          <summary>Closed details summary</summary>
+          <p>This closed details body must stay English until the summary is opened.</p>
+        </details>
+        <p aria-hidden="true">
+          This paragraph is aria-hidden and must stay English even though it is visible.
+        </p>
+      </section>
+    </main>
+
+    <footer id="footer" data-test-section>
+      <h2>Footer</h2>
+      <p>
+        Use this page with the SimpleTrans popup or the Ctrl hover gesture. The
+        fixture is part of the extension test tooling, not a product surface.
+      </p>
+      <p>
+        <a href="#overview">Back to top</a> ·
+        <a href="#non-translatable">Skip cases</a> · Fixture version 1
+      </p>
+    </footer>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

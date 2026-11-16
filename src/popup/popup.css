@@ -1,8 +1,16 @@
 /*
  * B1/B2 弹窗样式
- * 职责：弹窗固定宽度，避免打开时尺寸跳动。
- * 实现阶段：P7（弹窗命令与状态显示）
+ * 职责：弹窗固定宽度且不横向溢出；窄窗口下按钮与提示文字可换行。
+ * 实现阶段：P6.1（最小整页入口）；P6.5（测试页入口分组）
  */
 .popup {
   width: 300px;
+  max-width: 100vw;
+  overflow-wrap: anywhere;
+}
+
+/* P6.5：测试页入口与翻译命令分组，避免误把导航当成翻译操作。 */
+.popup-test-page {
+  padding-top: 10px;
+  border-top: 1px solid #e5e7eb;
 }

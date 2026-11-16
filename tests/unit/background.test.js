@@ -92,7 +92,7 @@ describe('后台入口', () => {
     await importFresh('../../src/background/index.js');
     expect(chrome.commands.onCommand.listeners).toHaveLength(1);
 
-    chrome.tabs.__response = { ok: true, data: { action: 'translating' } };
+    chrome.tabs.__response = { ok: true, data: { action: 'submitted' } };
     chrome.commands.onCommand.emit('translate-paragraph');
 
     await vi.waitFor(() => expect(chrome.tabs.__sent).toHaveLength(1));

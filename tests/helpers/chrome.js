@@ -8,7 +8,7 @@
  *
  * P2 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
  * P3 补 storage.onChanged、getManifest、getURL；P4 补 commands.onCommand、tabs.query / sendMessage、
- * scripting.insertCSS / executeScript（记录调用顺序）。
+ * scripting.insertCSS / executeScript（记录调用顺序）；P6.5 补 tabs.create（打开测试页，记录创建参数）。
  */
 
 let portSequence = 0;
@@ -208,10 +208,16 @@ export function createChrome() {
     __queryResult: [{ id: 1, active: true }],
     /** sendMessage 收到的消息，按调用顺序记录。 */
     __sent: [],
+    /** create 收到的参数，按调用顺序记录。 */
+    __created: [],
     /** 按顺序消费的响应队列：{ response } 或 { error }；为空时退回 __response/__error。 */
     __sendQueue: [],
     __response: undefined,
     __error: null,
+    async create(createProperties = {}) {
+      tabs.__created.push({ ...createProperties });
+      return { id: 100, ...createProperties };
+    },
     async query() {
       return tabs.__queryResult.map((tab) => ({ ...tab }));
     },

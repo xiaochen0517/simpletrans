@@ -2,12 +2,17 @@
  * 段落提取
  *
  * 模块：页面注入（D）/ D1
- * 职责：从指针所在元素向上找最近的文字宿主（任意标签，含 span、button 等行内/交互标签），归一文本并登记宿主。
- * 依赖：无（纯 DOM 逻辑，P4 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）
+ * 职责：悬停时从指针所在元素向上找最近的文字宿主；整页翻译时按文档顺序枚举视口附近的段落级宿主，
+ *       记录上一段上下文并登记宿主，供 D5 统一提交。
+ * 依赖：公共数值（MAX_PAGE_PARAGRAPHS / SCAN_CHUNK_SIZE，P6.1 起）；日志由调用方经 E4 注入。
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加视口附近段落枚举 `collectParagraphs`。
  *
  * 约束：不读 storage、不发消息、不直接调用 console（日志由调用方经 E4 输出）。
+ *
+ * 规则见 docs/modules/D1-段落提取.md。
  */
+
+import { MAX_PAGE_PARAGRAPHS, SCAN_CHUNK_SIZE, VIEWPORT_MARGIN_RATIO } from '../../shared/constants.js';
 
 /** 宿主标记：值为 h1、h2…，由 D1 分配。 */
 export const HOST_ATTR = 'data-st-host';
@@ -17,6 +22,38 @@ export const TRANSLATION_ATTR = 'data-st-translation';
 
 /** 页面显式声明不翻译的忽略标记（保留给后续规则扩展）。 */
 export const IGNORE_ATTR = 'data-simpletrans-ignore';
+
+/** SVG 命名空间：内嵌 SVG 的 `tagName` 为小写（`svg`），不能只按大写标签名判断。 */
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+
+/** 整页扫描整棵子树跳过的标签：脚本、样式、媒体与表单值控件（按钮除外，按钮单独收集）。 */
+const SCAN_SKIP_TAGS = new Set([
+  'SCRIPT',
+  'STYLE',
+  'NOSCRIPT',
+  'TEMPLATE',
+  'CANVAS',
+  'IFRAME',
+  'OBJECT',
+  'EMBED',
+  'VIDEO',
+  'AUDIO',
+  'INPUT',
+  'TEXTAREA',
+  'SELECT',
+  'OPTION',
+  'OPTGROUP',
+]);
+
+/**
+ * 是否属于「整棵子树跳过」的标签（脚本、样式、媒体、表单值控件、内嵌 SVG）。
+ * @param {Element} element
+ * @returns {boolean}
+ */
+function isSkipTag(element) {
+  if (SCAN_SKIP_TAGS.has(element.tagName)) return true;
+  return element.namespaceURI === SVG_NAMESPACE;
+}
 
 /** 指针落在其中时不触发翻译、也不向上找宿主的表单与编辑控件。 */
 const FORM_CONTROL_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGROUP']);
@@ -206,6 +243,8 @@ export function extractText(element) {
     }
     if (node.nodeType !== 1) continue;
     if (node.hasAttribute?.(TRANSLATION_ATTR)) continue;
+    // 内嵌 SVG 的文字不参与段落文本；其 `tagName` 为小写，按命名空间判断。
+    if (node.namespaceURI === SVG_NAMESPACE) continue;
     // 按钮自身作为宿主时提取其文字；作为其它宿主的后代时仍跳过，避免按钮标签混入正文。
     if (TEXT_SKIP_TAGS.has(node.tagName) && !(node === element && node.tagName === 'BUTTON')) continue;
     const children = node.childNodes;
@@ -232,6 +271,7 @@ function isNoTranslate(element) {
  */
 export function isSkipped(element) {
   if (!element || element.nodeType !== 1) return true;
+  if (element.namespaceURI === SVG_NAMESPACE) return true;
   if (FORM_CONTROL_TAGS.has(element.tagName)) return true;
   const role = element.getAttribute?.('role');
   if (role === 'textbox' || role === 'combobox') return true;
@@ -349,4 +389,277 @@ export function ensureHost(element) {
   const id = `h${hostSequence}`;
   element.setAttribute(HOST_ATTR, id);
   return id;
+}
+
+/**
+ * 元素矩形是否与当前视口相交；宽高都为 0 的元素（隐藏或空盒）视为不可见。
+ * `marginRatio` 为视口上下各扩展的屏数，0 表示严格视口。
+ * @param {Element} element
+ * @param {number} [marginRatio]
+ * @returns {boolean}
+ */
+export function isElementInViewport(element, marginRatio = 0) {
+  if (!element || element.isConnected === false || typeof element.getBoundingClientRect !== 'function') {
+    return false;
+  }
+  let rect;
+  try {
+    rect = element.getBoundingClientRect();
+  } catch {
+    return false;
+  }
+  if (!rect || (rect.width === 0 && rect.height === 0)) return false;
+  const view = element.ownerDocument?.defaultView;
+  const width = Number(view?.innerWidth ?? 0);
+  const height = Number(view?.innerHeight ?? 0);
+  const margin = height * (Number.isFinite(marginRatio) ? Math.max(0, marginRatio) : 0);
+  return rect.bottom > -margin && rect.top < height + margin && rect.right > 0 && rect.left < width;
+}
+
+/**
+ * 元素是否与「当前视口上下各半屏」相交（P6.1 整页取段范围）。
+ * @param {Element} element
+ * @returns {boolean}
+ */
+export function isElementInNearViewport(element) {
+  return isElementInViewport(element, VIEWPORT_MARGIN_RATIO);
+}
+
+/**
+ * 默认为扫描让出主线程：优先 `requestIdleCallback`，不可用时退回 `setTimeout(0)`。
+ * @returns {Promise<void>}
+ */
+function defaultYield() {
+  if (typeof requestIdleCallback === 'function') {
+    return new Promise((resolve) => {
+      requestIdleCallback(() => resolve(), { timeout: 50 });
+    });
+  }
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+/**
+ * 把子元素逆序压栈，弹出顺序即文档顺序。
+ * @param {Element[]} stack
+ * @param {Element} element
+ */
+function pushChildren(stack, element) {
+  const children = element.children;
+  if (!children) return;
+  for (let index = children.length - 1; index >= 0; index -= 1) {
+    stack.push(children[index]);
+  }
+}
+
+/**
+ * 宿主末尾是否已有译文容器（已翻译或已标记，不再重复收集）。
+ * @param {Element} element
+ * @returns {boolean}
+ */
+function hasTranslationChild(element) {
+  const children = element.children;
+  if (!children) return false;
+  for (let index = 0; index < children.length; index += 1) {
+    if (children[index].hasAttribute?.(TRANSLATION_ATTR)) return true;
+  }
+  return false;
+}
+
+/**
+ * 元素自身是否被计算样式隐藏（祖先状态由遍历继承，不向上查找）。
+ * @param {Element} element
+ * @returns {boolean}
+ */
+function isHiddenSelf(element) {
+  const style = computedStyle(element);
+  if (!style) return false;
+  if (style.display === 'none') return true;
+  if (style.visibility === 'hidden' || style.visibility === 'collapse') return true;
+  return false;
+}
+
+/**
+ * 整页扫描是否整棵子树跳过：脚本/样式/媒体/表单值控件、页面声明不翻译、可编辑区、
+ * 译文容器与已翻译宿主、隐藏内容。
+ * @param {Element} element
+ * @returns {boolean}
+ */
+function shouldSkipSubtree(element) {
+  if (isSkipTag(element)) return true;
+  if (element.hasAttribute?.(TRANSLATION_ATTR)) return true;
+  if (element.hasAttribute?.('hidden')) return true;
+  if (element.getAttribute?.('aria-hidden') === 'true') return true;
+  if (String(element.getAttribute?.('translate') ?? '').toLowerCase() === 'no') return true;
+  if (element.classList?.contains('notranslate')) return true;
+  if (element.hasAttribute?.(IGNORE_ATTR)) return true;
+  const editable = element.getAttribute?.('contenteditable');
+  if (editable != null && editable !== 'false') return true;
+  if (element.isContentEditable === true) return true;
+  const role = element.getAttribute?.('role');
+  if (role === 'textbox' || role === 'combobox') return true;
+  if (hasTranslationChild(element)) return true;
+  if (isHiddenSelf(element)) return true;
+  return false;
+}
+
+/**
+ * 折叠的 `<details>`：只处理它的 `summary`，其余内容不扫描。
+ * @param {Element} element
+ * @returns {Element | null}
+ */
+function closedDetailsSummary(element) {
+  if (element.tagName !== 'DETAILS' || element.hasAttribute?.('open')) return null;
+  for (const child of element.children) {
+    if (child.tagName === 'SUMMARY') return child;
+  }
+  return null;
+}
+
+/**
+ * 段落级宿主的文本：不含块级子元素、归一后非空且至少含一个字母；不满足返回空串。
+ * @param {Element} element
+ * @param {Document} doc
+ * @returns {string}
+ */
+function paragraphText(element, doc) {
+  if (element === doc.body || element === doc.documentElement) return '';
+  if (hasBlockChild(element)) return '';
+  const text = normalizeText(extractText(element));
+  if (!text || !hasLetter(text)) return '';
+  return text;
+}
+
+/**
+ * 收集选中宿主内部的按钮：按钮文字不并入父段，按文档顺序单独成段。
+ * @param {Element} host
+ * @param {Array<{ index: number, text: string, context: string, host: Element }>} paragraphs
+ * @param {string} context
+ * @param {{ limit: number, inViewport: (host: Element) => boolean }} options
+ * @returns {string} 更新后的上一段文本
+ */
+function collectButtons(host, paragraphs, context, { limit, inViewport }) {
+  let lastText = context;
+  if (typeof host.querySelectorAll !== 'function') return lastText;
+  for (const button of host.querySelectorAll('button')) {
+    if (paragraphs.length >= limit) break;
+    if (shouldSkipSubtree(button) || hasBlockChild(button)) continue;
+    if (!inViewport(button)) continue;
+    const text = normalizeText(extractText(button));
+    if (!text || !hasLetter(text)) continue;
+    ensureHost(button);
+    paragraphs.push({ index: paragraphs.length, text, context: lastText, host: button });
+    lastText = text;
+  }
+  return lastText;
+}
+
+/**
+ * 枚举视口附近的段落：按文档顺序扫描，选出最外层可译文字宿主，记录上一段上下文。
+ *
+ * 只读 DOM 与计算样式；不改页面文字；给选中的宿主打 `data-st-host`。不做同文本合并：
+ * 每个宿主就是一个段落，去重与分批属于后台后续阶段。
+ *
+ * @param {{
+ *   root?: Element,
+ *   maxParagraphs?: number,
+ *   chunkSize?: number,
+ *   inViewport?: (host: Element) => boolean,
+ *   yieldToMain?: () => Promise<void>,
+ *   logger?: { debug: Function, info: Function, warn: Function } | null,
+ *   now?: () => number,
+ * }} [options]
+ * @returns {Promise<Array<{ index: number, text: string, context: string, host: Element }>>}
+ */
+export async function collectParagraphs({
+  root,
+  maxParagraphs = MAX_PAGE_PARAGRAPHS,
+  chunkSize = SCAN_CHUNK_SIZE,
+  inViewport = isElementInNearViewport,
+  yieldToMain = defaultYield,
+  logger = null,
+  now = () => Date.now(),
+} = {}) {
+  const doc = root?.ownerDocument ?? (typeof document !== 'undefined' ? document : null);
+  if (!doc || !doc.body) throw new Error('没有可用的页面文档');
+  const scanRoot = root ?? doc.body;
+  if (!scanRoot || scanRoot.nodeType !== 1) throw new Error('扫描根节点不可用');
+
+  const limit =
+    Number.isFinite(maxParagraphs) && maxParagraphs > 0
+      ? Math.floor(maxParagraphs)
+      : MAX_PAGE_PARAGRAPHS;
+  const chunk =
+    Number.isFinite(chunkSize) && chunkSize > 0 ? Math.floor(chunkSize) : SCAN_CHUNK_SIZE;
+  const visible = typeof inViewport === 'function' ? inViewport : isElementInNearViewport;
+
+  const startedAt = now();
+  /** @type {Array<{ index: number, text: string, context: string, host: Element }>} */
+  const paragraphs = [];
+  const stack = [scanRoot];
+  let lastText = '';
+  let skipped = 0;
+  let limited = false;
+  let sinceYield = 0;
+
+  logger?.debug?.('scan.start', '开始整页扫描', {});
+
+  while (stack.length > 0) {
+    if (sinceYield >= chunk) {
+      sinceYield = 0;
+      await yieldToMain();
+    }
+    sinceYield += 1;
+
+    const element = stack.pop();
+    if (!element || element.nodeType !== 1) continue;
+
+    try {
+      if (shouldSkipSubtree(element)) {
+        skipped += 1;
+        continue;
+      }
+      const summary = closedDetailsSummary(element);
+      if (summary) {
+        stack.push(summary);
+        skipped += 1;
+        continue;
+      }
+      const text = paragraphText(element, doc);
+      if (text) {
+        if (paragraphs.length >= limit) {
+          limited = true;
+          break;
+        }
+        if (!visible(element)) {
+          // 视口外的段落不收集，也不进入其后代（行内后代不可能比宿主更可见）。
+          skipped += 1;
+          continue;
+        }
+        ensureHost(element);
+        paragraphs.push({ index: paragraphs.length, text, context: lastText, host: element });
+        lastText = text;
+        lastText = collectButtons(element, paragraphs, lastText, { limit, inViewport: visible });
+        // 选中宿主后不再把它的后代作为独立段落。
+        continue;
+      }
+      pushChildren(stack, element);
+    } catch {
+      skipped += 1;
+      if (logger?.debug) {
+        logger.debug('scan.error', '读取元素失败，已跳过', {
+          tag: typeof element.tagName === 'string' ? element.tagName : null,
+        });
+      }
+    }
+  }
+
+  logger?.info?.('scan.done', '整页扫描完成', {
+    paragraphs: paragraphs.length,
+    skipped,
+    elapsedMs: Math.max(0, now() - startedAt),
+  });
+  if (limited) logger?.warn?.('scan.limit', '已达到单页段落上限，停止扫描', { max: limit });
+  return paragraphs;
 }

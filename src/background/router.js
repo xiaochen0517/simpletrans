@@ -2,11 +2,14 @@
  * A1 消息路由（控制面）
  *
  * 模块：后台服务（A）/ A1
- * 职责：处理设置页的一次性消息：引擎列表、测试翻译、缓存占用与清空；把结果回给调用方。
- * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A4（cache）、A2（gateway 的并发名额）。
- * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息。
+ * 职责：处理设置页与弹窗的一次性消息：引擎列表、测试翻译、缓存占用与清空、标签页命令转发、
+ *       页面注入的统一段落提交；把结果回给调用方。
+ * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A4（cache）、A2（gateway 的并发名额）、公共数值。
+ * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息；P6.1 增加 `ST_ROUTE` 转发与
+ *           `ST_PAGE_SUBMIT` 接收（校验、计数、逐段日志与回执，不调用网关）。
  *
- * P2 只落控制面；标签页转发（ST_ROUTE/ST_START/ST_TOGGLE/ST_CLEAR）随 P4/P7 落地。
+ * 标签页转发有两处入口：P4 的快捷键走 `ST_TOGGLE`（commands.js），P6.1 的弹窗走 `ST_ROUTE`
+ * 的 `start` / `clear`（本文件），两者共用 `sendToTab` 的补注入与错误归一。
  */
 
 import {
@@ -18,7 +21,7 @@ import {
   makeError,
   normalizeTraceId,
 } from '../shared/protocol.js';
-import { MAX_SEGMENT_CHARS } from '../shared/constants.js';
+import { MAX_CONTEXT_CHARS, MAX_PAGE_PARAGRAPHS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
 import { createLogger } from '../shared/log/logger.js';
 import { getKey, getOrCreateDefaultInstance, getPublicSettings } from '../shared/config/instances.js';
@@ -33,9 +36,24 @@ const log = createLogger('A1');
 /** 每个标签页同一时刻只允许一次补注入。 */
 const injecting = new Map();
 
+/** 后台逐段日志的预览长度（P6.1 人工核对）。 */
+const PREVIEW_CHARS = 60;
+
 /** Chrome 在目标页没有监听器时给出的错误特征。 */
 const NO_RECEIVER_PATTERN =
   /Receiving end does not exist|Could not establish connection|message port closed/i;
+
+/**
+ * 段落预览：连续空白合并、去首尾空白后截断；只用于 P6.1 人工核对。
+ * @param {string} value
+ * @returns {string}
+ */
+function previewText(value) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, PREVIEW_CHARS);
+}
 
 /**
  * 处理一条一次性消息。
@@ -66,6 +84,10 @@ export async function handleMessage(message, sender) {
       response = await cacheStats();
     } else if (message.type === MESSAGE_TYPES.CLEAR_CACHE) {
       response = await clearCache();
+    } else if (message.type === MESSAGE_TYPES.ROUTE) {
+      response = await routeCommand(message.payload, traceId);
+    } else if (message.type === MESSAGE_TYPES.PAGE_SUBMIT) {
+      response = receivePageSubmit(message.payload, sender, traceId);
     } else {
       const text = isKnownMessageType(message.type) ? '该消息暂未实现' : '无法识别的消息';
       response = failure(ERROR_CODES.OTHER, text, FAILURE_REASONS.INVALID_MESSAGE);
@@ -132,6 +154,150 @@ async function clearCache() {
   } catch {
     return failure(ERROR_CODES.OTHER, '清空缓存失败，请稍后重试');
   }
+}
+
+/**
+ * 弹窗命令转发：`start` 读取设置与默认实例后发 `ST_START`，`clear` 发 `ST_CLEAR`。
+ * @param {unknown} payload
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
+ */
+async function routeCommand(payload, traceId) {
+  const command = payload?.command;
+  if (command !== 'start' && command !== 'clear') {
+    log.warn('message.rejected', '未知的路由命令', {
+      command: typeof command === 'string' ? command : null,
+    });
+    return failure(ERROR_CODES.OTHER, '未知命令', FAILURE_REASONS.INVALID_MESSAGE);
+  }
+
+  let settings;
+  try {
+    settings = await getSettings();
+  } catch {
+    return failure(ERROR_CODES.CONFIG, '读取设置失败');
+  }
+  if (settings.enabled === false) return failure(ERROR_CODES.CONFIG, '扩展已停用');
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  } catch {
+    tabs = [];
+  }
+  const tab = Array.isArray(tabs) ? tabs.find((entry) => entry?.active) ?? tabs[0] : null;
+  if (!tab?.id) {
+    log.warn('message.rejected', '没有活动标签页', { reason: FAILURE_REASONS.NO_ACTIVE_TAB });
+    return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
+  }
+
+  log.withTrace(traceId).info('route.command', '处理路由命令', { command, tabId: tab.id });
+
+  if (command === 'clear') {
+    return sendToTab(tab.id, {
+      type: MESSAGE_TYPES.CLEAR,
+      payload: { ...(traceId ? { traceId } : {}) },
+    });
+  }
+
+  // P6.1 页面侧不建批，只把目标语言与日志标识传给页面。
+  return sendToTab(tab.id, {
+    type: MESSAGE_TYPES.START,
+    payload: {
+      targetLang: settings.targetLang,
+      ...(traceId ? { traceId } : {}),
+    },
+  });
+}
+
+/**
+ * 接收页面注入的统一段落提交：校验、计数、逐段打印预览并回执，不查缓存、不调用引擎。
+ * @param {unknown} payload
+ * @param {{ tab?: { id?: number } }} [sender]
+ * @param {string} [traceId]
+ * @returns {{ ok: true, data: object } | { ok: false, error: object }}
+ */
+export function receivePageSubmit(payload, sender, traceId) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return failure(ERROR_CODES.OTHER, '请求参数无效', FAILURE_REASONS.INVALID_MESSAGE);
+  }
+
+  const scope = payload.scope == null ? 'page' : payload.scope;
+  if (scope !== 'page' && scope !== 'single') {
+    return failure(ERROR_CODES.OTHER, '提交范围无效', FAILURE_REASONS.INVALID_MESSAGE);
+  }
+
+  const requestId = payload.requestId == null ? null : payload.requestId;
+  if (requestId != null && (typeof requestId !== 'string' || requestId.length > 64)) {
+    return failure(ERROR_CODES.OTHER, '请求标识无效', FAILURE_REASONS.INVALID_MESSAGE);
+  }
+
+  const paragraphs = payload.paragraphs;
+  if (!Array.isArray(paragraphs) || paragraphs.length < 1) {
+    return failure(ERROR_CODES.OTHER, '段落列表无效', FAILURE_REASONS.INVALID_ITEMS);
+  }
+  if (paragraphs.length > MAX_PAGE_PARAGRAPHS) {
+    return failure(
+      ERROR_CODES.OTHER,
+      `段落数量超过 ${MAX_PAGE_PARAGRAPHS} 段上限`,
+      FAILURE_REASONS.INVALID_ITEMS
+    );
+  }
+  if (scope === 'single' && paragraphs.length !== 1) {
+    return failure(ERROR_CODES.OTHER, '单段提交只能包含 1 段', FAILURE_REASONS.INVALID_ITEMS);
+  }
+
+  let chars = 0;
+  for (const raw of paragraphs) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return failure(ERROR_CODES.OTHER, '段落内容无效', FAILURE_REASONS.INVALID_ITEMS);
+    }
+    if (typeof raw.text !== 'string' || raw.text.trim() === '') {
+      return failure(ERROR_CODES.OTHER, '存在空段落', FAILURE_REASONS.EMPTY_TEXT);
+    }
+    if (raw.context != null) {
+      if (typeof raw.context !== 'string' || raw.context.length > MAX_CONTEXT_CHARS) {
+        return failure(
+          ERROR_CODES.OTHER,
+          `段落上下文无效或超过 ${MAX_CONTEXT_CHARS} 字符`,
+          FAILURE_REASONS.CONTEXT_TOO_LONG
+        );
+      }
+    }
+    if (raw.hostId != null && (typeof raw.hostId !== 'string' || raw.hostId.length > 64)) {
+      return failure(ERROR_CODES.OTHER, '段落标识无效', FAILURE_REASONS.INVALID_ITEMS);
+    }
+    chars += raw.text.length;
+  }
+
+  const forbidden = findForbiddenField(payload);
+  if (forbidden) {
+    return failure(ERROR_CODES.OTHER, '请求包含不允许的字段', FAILURE_REASONS.FORBIDDEN_FIELD);
+  }
+
+  const traceLog = log.withTrace(traceId);
+  traceLog.info('page.received', '后台已接收段落', {
+    scope,
+    requestId,
+    paragraphs: paragraphs.length,
+    chars,
+    tabId: sender?.tab?.id ?? null,
+  });
+  paragraphs.forEach((raw, index) => {
+    traceLog.info('page.item', '后台接收段落', {
+      scope,
+      requestId,
+      index,
+      hostId: raw.hostId ?? '',
+      textLength: raw.text.length,
+      preview: previewText(raw.text),
+    });
+  });
+
+  return {
+    ok: true,
+    data: { accepted: true, requestId, scope, paragraphs: paragraphs.length, chars },
+  };
 }
 
 /**

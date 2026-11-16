@@ -22,7 +22,7 @@ import { sendToTab } from '../../src/background/router.js';
 beforeEach(() => {
   installChrome();
   sendToTab.mockReset();
-  sendToTab.mockResolvedValue({ ok: true, data: { action: 'translating' } });
+  sendToTab.mockResolvedValue({ ok: true, data: { action: 'submitted' } });
 });
 
 describe('A1 快捷键命令', () => {
@@ -39,7 +39,7 @@ describe('A1 快捷键命令', () => {
   it('把 ST_TOGGLE 与 traceId 转发到活动标签页', async () => {
     const result = await handleCommand(COMMAND_TRANSLATE_PARAGRAPH);
 
-    expect(result).toEqual({ ok: true, data: { action: 'translating' } });
+    expect(result).toEqual({ ok: true, data: { action: 'submitted' } });
     expect(sendToTab).toHaveBeenCalledTimes(1);
     const [tabId, message] = sendToTab.mock.calls[0];
     expect(tabId).toBe(1);

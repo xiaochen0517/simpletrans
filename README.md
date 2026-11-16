@@ -2,7 +2,7 @@
 
 基于 React + Vite 的 Chrome 扩展（Manifest V3），把网页内容翻译成目标语言，并以双语对照方式显示。目标支持传统 MT 与 AI LLM 多引擎。
 
-> **当前状态：P0–P4 已完成**。后台已统一翻译出口，页面注入通过 `st-gateway` 长连接发批与收帧；页面已支持悬停单段翻译：任意文字标签可作为宿主，译文内嵌宿主末尾并按计算样式换行或空格分隔。设置页测试翻译经后台执行，并可调整日志级别。P5 起继续实现缓存、整页任务、弹窗与设置页。P0–P10 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
+> **当前状态：P0–P5 已完成，P6 进行中**（P6.1 已完成，验收 20261116；P6.5 待整体复验；P6.2–P6.4 待审核）。后台已统一翻译出口；页面注入的 Ctrl 单段与整页翻译统一走 `ST_PAGE_SUBMIT`，当前只提交并显示「正在提交 / 已提交 / 提交失败」，真实译文待 P6.4；整页首次提交当前视口附近段落，滚动后自动增量提交新段落。设置页测试翻译经后台执行，并可调整日志级别；弹窗可打开扩展内的英文翻译测试页。P0–P10 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
 
 ## 目录结构
 
@@ -17,22 +17,27 @@ src/
     commands.js        A1 快捷键入口（P4/P7）
     context-menu.js    A1 右键菜单入口（P7）
     gateway.js         A2 请求网关：校验、并发、取消、断线（P2）
-  popup/               工具栏弹窗（B，静态占位）
+  popup/               工具栏弹窗（B）
     index.html
     main.jsx
     Popup.jsx
     popup.css
+    open-test-page.js  B2 打开测试页（P6.5）
   options/             设置页（C，P2 最小测试表单经后台）
     index.html
     main.jsx
     Options.jsx
+  testpage/            翻译测试页（C，P6.5）
+    index.html         固定英文内容与页内操作条
+    main.js            加载 D 运行时、绑定页内操作条
+    testpage.css       测试页独立样式
   content/             页面注入（D）
-    index.js           入口：建立桥单例、处理业务帧与命令（P2/P4）
+    index.js           入口：建立桥单例、处理日志级别与命令（P2/P4/P6.1）
     bridge.js          D4 与后台通信：连接、心跳、重连（P2）
     hover.js           D2 悬停检测（P4）
-    task.js            D5 单段任务（P4）/ 状态上报与整页调度（P6）
-    dom/scanner.js     D1 任意标签宿主提取（P4）
-    dom/renderer.js    D3 译文渲染（P4）
+    task.js            D5 统一提交、页面会话与滚动增量（P6.1）
+    dom/scanner.js     D1 视口附近段落提取（P6.1）
+    dom/renderer.js    D3 提交状态渲染（P6.1）
     content.css        译文样式（P4）
   shared/              公共模块（E）与引擎/缓存目录
     protocol.js        E1 消息协议：错误码、消息名、失败原因
@@ -63,7 +68,7 @@ dist/                  构建产物（加载到 Chrome 的目录，已在 .gitig
 
 ## 构建为什么分三次
 
-Content Script **不是 ES Module**，产物必须是自包含单文件（IIFE）；而 Popup / Options
+Content Script **不是 ES Module**，产物必须是自包含单文件（IIFE）；而 Popup / Options / Testpage
 是 HTML 页面、Background 可以是 ESM。Vite 无法在一次构建里按入口指定 `format`，因此
 `scripts/build.mjs` 分别以 `web` / `background` / `content` 三种模式调用 Vite：
 
@@ -71,7 +76,7 @@ Content Script **不是 ES Module**，产物必须是自包含单文件（IIFE�
 | --- | --- | --- |
 | `content.js` + `content.css` | IIFE | 内联全部依赖，CSS 固定文件名 |
 | `background.js` | ESM | `type: module` |
-| `popup/` `options/` | ESM + HTML | React + Tailwind |
+| `popup/` `options/` `testpage/` | ESM + HTML | React + Tailwind（弹窗/设置页）；静态 HTML + 独立 CSS（测试页） |
 
 因此 content 可以放心 `import` `shared/protocol.js` 等纯模块，构建时会内联。
 
@@ -97,7 +102,7 @@ npm run gate    # 单元测试 → 构建 → 冒烟，一条命令跑完
 | 设置页 | 右键设置页 → 检查 |
 | 后台服务 | `chrome://extensions` → Service Worker → 检查 |
 
-级别调整后，后台、弹窗、设置页按各自打开/更新时机生效；已打开的网页需刷新或重连后生效。日志不含密钥、请求头/体、页面正文与完整 URL。需要跨刷新查看时，可在 DevTools Console 设置中勾选 Preserve log；扩展本身不保存日志。
+级别调整后，后台、弹窗、设置页按各自打开/更新时机生效；已打开的网页需刷新或重连后生效。日志不含密钥、请求头/体与完整 URL；P6.1 后台逐段 `page.item` 只输出 60 字预览，用于人工核对。需要跨刷新查看时，可在 DevTools Console 设置中勾选 Preserve log；扩展本身不保存日志。
 
 ## 在 Chrome 中加载
 
@@ -105,3 +110,4 @@ npm run gate    # 单元测试 → 构建 → 冒烟，一条命令跑完
 2. 打开右上角「开发者模式」
 3. 点击「加载已解压的扩展程序」，选择项目下的 `dist` 目录
 4. 修改代码后（`npm run dev` 会自动重新构建），在扩展页点击刷新按钮即可
+5. 翻译测试页：打开扩展弹窗，点击「打开测试页」，在新标签页中使用页内操作条或 Ctrl 进行人工提交验收；滚动长文区域可观察增量提交

@@ -6,7 +6,7 @@
  * 依赖：无（P1 起）。
  * 实现阶段：P1–P2
  *
- * P1 落地单段上限与 AI 超时；P2 补齐心跳、重连、并发、批量上限与批总超时。
+ * P1 落地单段上限与 AI 超时；P2 补齐心跳、重连、并发、批量上限与批总超时；P6.1 增加整页段落上限、扫描分片、视口附近余量与滚动防抖。
  */
 
 /** 单段字符上限（架构 5.3 载荷上限）。 */
@@ -58,3 +58,15 @@ export const AI_TIMEOUT_MS = Object.freeze({
   total: 120_000,
   batchTotal: 180_000,
 });
+
+/** 单页最多整页段落数（架构 5.3，P6.1 起）：一次提交最多包含这么多段。 */
+export const MAX_PAGE_PARAGRAPHS = 5_000;
+
+/** 整页扫描每处理多少个元素让出一次主线程（P6.1 起）。 */
+export const SCAN_CHUNK_SIZE = 500;
+
+/** 整页取段的视口上下扩展比例（屏数，P6.1 起）：上下各半屏。 */
+export const VIEWPORT_MARGIN_RATIO = 0.5;
+
+/** 滚动停止后等待多久再扫描并提交新段落（毫秒，P6.1 起）。 */
+export const SCROLL_SUBMIT_DEBOUNCE_MS = 200;

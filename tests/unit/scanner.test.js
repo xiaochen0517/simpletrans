@@ -2,24 +2,30 @@
 /**
  * D1 段落提取测试
  *
- * 用 jsdom 验证容器判定、跳过规则、文本归一与译文到宿主的映射；
+ * 用 jsdom 验证容器判定、跳过规则、文本归一、译文到宿主的映射（P4 契约不变），
+ * 以及 P6.1 的视口段落枚举：文档顺序、最外层宿主、按钮单独成段、跳过规则、
+ * 只收集视口内段落、不做同文本合并、上下文、5000 上限、分片让出与日志。
  * 不加载真实 chrome，不联网。
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HOST_ATTR,
   TRANSLATION_ATTR,
+  collectParagraphs,
   ensureHost,
   extractText,
   findContainer,
   hasLetter,
   isBlockHost,
+  isElementInViewport,
+  isElementInNearViewport,
   isHidden,
   isSkipped,
   normalizeText,
   resolveAt,
 } from '../../src/content/dom/scanner.js';
+import { MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
 
 /**
  * @param {string} html
@@ -31,8 +37,16 @@ function mount(html) {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   document.head.innerHTML = '';
   document.body.innerHTML = '';
+  window.innerWidth = 1000;
+  window.innerHeight = 800;
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('D1 文本归一', () => {
@@ -232,5 +246,500 @@ describe('D1 宿主登记与译文映射', () => {
     expect(isBlockHost(document.getElementById('blockSpan'))).toBe(true);
     expect(isBlockHost(document.getElementById('inlineDiv'))).toBe(false);
     expect(isBlockHost(document.getElementById('blockP'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P6.1 视口段落枚举
+// ---------------------------------------------------------------------------
+
+/** 让扫描不做真实等待。 */
+async function noYield() {}
+
+/**
+ * 执行视口扫描；默认注入「全部在视口内」，避免 jsdom 的零尺寸矩形导致空结果。
+ * @param {object} [options]
+ * @returns {Promise<Array<{ index: number, text: string, context: string, host: Element }>>}
+ */
+function scan(options = {}) {
+  return collectParagraphs({ yieldToMain: noYield, inViewport: () => true, ...options });
+}
+
+/**
+ * @param {Array<{ text: string }>} paragraphs
+ * @returns {string[]}
+ */
+function textsOf(paragraphs) {
+  return paragraphs.map((paragraph) => paragraph.text);
+}
+
+/**
+ * @param {Array<{ host: Element }>} paragraphs
+ * @returns {Element[]}
+ */
+function hostsOf(paragraphs) {
+  return paragraphs.map((paragraph) => paragraph.host);
+}
+
+/**
+ * 给元素一个自定义矩形，模拟真实布局。
+ * @param {Element} element
+ * @param {{ top?: number, left?: number, width?: number, height?: number }} rect
+ */
+function stubRect(element, rect) {
+  const top = rect.top ?? 0;
+  const left = rect.left ?? 0;
+  const width = rect.width ?? 0;
+  const height = rect.height ?? 0;
+  element.getBoundingClientRect = () => ({
+    x: left,
+    y: top,
+    top,
+    left,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON() {},
+  });
+}
+
+describe('D1 视口扫描（P6.1）：顺序与宿主', () => {
+  it('从 body 按文档顺序返回 {index,text,context,host}，index 从 0 递增', async () => {
+    mount(
+      '<h1 id="h1">Title</h1>' +
+        '<div id="wrap"><p id="p1">First</p><span id="s1">Second</span><p id="p2">Third</p></div>' +
+        '<ul><li id="li">Fourth</li></ul>'
+    );
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Title', 'First', 'Second', 'Third', 'Fourth']);
+    expect(paragraphs.map((paragraph) => paragraph.index)).toEqual([0, 1, 2, 3, 4]);
+    expect(paragraphs[0]).toEqual({
+      index: 0,
+      text: 'Title',
+      context: '',
+      host: document.getElementById('h1'),
+    });
+    expect(paragraphs[4].host).toBe(document.getElementById('li'));
+    expect(paragraphs.map((paragraph) => paragraph.context)).toEqual([
+      '',
+      'Title',
+      'First',
+      'Second',
+      'Third',
+    ]);
+  });
+
+  it('p 内的行内标签并入同一段，span 不再单独成段', async () => {
+    mount('<p id="p">Hello <span id="span">world</span> <strong>now</strong></p>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Hello world now']);
+    expect(hostsOf(paragraphs)).toEqual([document.getElementById('p')]);
+    expect(paragraphs[0].host).not.toBe(document.getElementById('span'));
+  });
+
+  it('嵌套块级取内层，外层容器不把裸文字当成段落', async () => {
+    mount('<div id="outer">Bare text <p id="inner">Inner text</p></div>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Inner text']);
+    expect(hostsOf(paragraphs)).toEqual([document.getElementById('inner')]);
+  });
+
+  it('宿主内的按钮文字单独成段，文档顺序且父段不含按钮文字', async () => {
+    mount('<p id="p">Press <button id="b">Go</button> now</p>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Press now', 'Go']);
+    expect(paragraphs.map((paragraph) => paragraph.index)).toEqual([0, 1]);
+    expect(hostsOf(paragraphs)).toEqual([
+      document.getElementById('p'),
+      document.getElementById('b'),
+    ]);
+    expect(paragraphs[1].context).toBe('Press now');
+  });
+
+  it('多个按钮按文档顺序单独成段，并依次更新上下文', async () => {
+    mount('<p id="p">Ask <button id="b1">Yes</button> or <button id="b2">No</button> now</p>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Ask or now', 'Yes', 'No']);
+    expect(paragraphs.map((paragraph) => paragraph.context)).toEqual(['', 'Ask or now', 'Yes']);
+    expect(hostsOf(paragraphs)).toEqual([
+      document.getElementById('p'),
+      document.getElementById('b1'),
+      document.getElementById('b2'),
+    ]);
+  });
+
+  it('纯数字、纯符号与纯 emoji 不成段', async () => {
+    mount('<p>12345</p><p>!!!</p><p>😀</p><p id="keep">Keep</p>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Keep']);
+  });
+
+  it('返回的宿主都带 data-st-host，重复扫描复用同一个 id', async () => {
+    mount('<p id="a">Alpha</p><p id="b">Beta</p>');
+    expect(MAX_PAGE_PARAGRAPHS).toBe(5000);
+
+    const first = await scan();
+    const ids = first.map((paragraph) => paragraph.host.getAttribute(HOST_ATTR));
+    expect(ids).toHaveLength(2);
+    for (const id of ids) expect(id).toMatch(/^h\d+$/);
+
+    const second = await scan();
+    expect(second.map((paragraph) => paragraph.host.getAttribute(HOST_ATTR))).toEqual(ids);
+  });
+
+  it('可以指定扫描根节点，只返回该子树内的段落', async () => {
+    mount('<p id="out">Outside</p><section id="in"><p id="inside">Inside</p></section>');
+
+    const paragraphs = await scan({ root: document.getElementById('in') });
+
+    expect(textsOf(paragraphs)).toEqual(['Inside']);
+    expect(hostsOf(paragraphs)).toEqual([document.getElementById('inside')]);
+  });
+});
+
+describe('D1 视口扫描（P6.1）：跳过规则', () => {
+  it('跳过脚本、样式、媒体、表单值控件与可编辑区整棵子树', async () => {
+    mount(
+      '<p id="keep">Keep this</p>' +
+        '<script>bad()</script>' +
+        '<style>.x{}</style>' +
+        '<noscript>No script</noscript>' +
+        '<template>Template text</template>' +
+        '<canvas>Canvas text</canvas>' +
+        '<iframe>Frame text</iframe>' +
+        '<object>Object text</object>' +
+        '<embed />' +
+        '<video>Video text</video>' +
+        '<audio>Audio text</audio>' +
+        '<textarea>Area text</textarea>' +
+        '<input value="Input value" />' +
+        '<select><option>Option text</option></select>' +
+        '<div id="editable" contenteditable="true">Edit me</div>' +
+        '<div role="textbox">Role textbox</div>' +
+        '<div role="combobox">Role combobox</div>'
+    );
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Keep this']);
+  });
+
+  it('contenteditable="false" 不算可编辑，可以成段', async () => {
+    mount('<div id="editable" contenteditable="false">Not editable</div>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Not editable']);
+    expect(hostsOf(paragraphs)).toEqual([document.getElementById('editable')]);
+  });
+
+  it('跳过 svg 整棵子树', async () => {
+    mount('<p id="keep">Keep this</p><svg><text id="svgText">Svg text</text></svg>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Keep this']);
+  });
+
+  it('跳过 hidden、aria-hidden、display:none、visibility:hidden / collapse 与折叠 details', async () => {
+    mount(
+      '<p id="keep">Keep visible</p>' +
+        '<p hidden>Hidden attr</p>' +
+        '<p aria-hidden="true">Aria hidden</p>' +
+        '<p style="display:none">Display none</p>' +
+        '<p style="visibility:hidden">Visibility hidden</p>' +
+        '<p style="visibility:collapse">Visibility collapse</p>' +
+        '<div style="display:none"><p>Nested hidden</p></div>' +
+        '<details><summary id="summary">Folded title</summary><p>Folded body</p></details>'
+    );
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Keep visible', 'Folded title']);
+    expect(hostsOf(paragraphs)).toEqual([document.getElementById('keep'), document.getElementById('summary')]);
+  });
+
+  it('展开的 details 内容正常扫描', async () => {
+    mount('<details open><summary>Open title</summary><p id="body">Open body</p></details>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Open title', 'Open body']);
+  });
+
+  it('跳过 translate=no、.notranslate 与 data-simpletrans-ignore 子树', async () => {
+    mount(
+      '<p id="keep">Keep translated</p>' +
+        '<p translate="no">Declared no</p>' +
+        '<p class="notranslate">Class no</p>' +
+        '<p data-simpletrans-ignore>Ignored</p>' +
+        '<div translate="no"><p>Nested declared no</p></div>' +
+        '<p id="fresh">Fresh</p>'
+    );
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Keep translated', 'Fresh']);
+  });
+
+  it('跳过译文容器子树与已带译文容器的宿主', async () => {
+    mount(
+      '<p id="keep">Keep translated</p>' +
+        `<section id="wrap"><div ${TRANSLATION_ATTR}><p>Nested translation</p></div></section>` +
+        `<p id="done">Already done <font ${TRANSLATION_ATTR} data-st-for="h1">译文</font></p>` +
+        '<p id="fresh">Fresh text</p>'
+    );
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Keep translated', 'Fresh text']);
+    expect(hostsOf(paragraphs)).toEqual([document.getElementById('keep'), document.getElementById('fresh')]);
+  });
+});
+
+describe('D1 视口扫描（P6.1）：视口、上下文与去重', () => {
+  it('只收集 inViewport(host) 为真的段落，视口外的段落不收集', async () => {
+    mount('<p id="a">Alpha</p><p id="b">Beta</p><p id="c">Gamma</p>');
+    const visible = new Set([document.getElementById('a'), document.getElementById('c')]);
+    const inViewport = vi.fn((host) => visible.has(host));
+
+    const paragraphs = await scan({ inViewport });
+
+    expect(textsOf(paragraphs)).toEqual(['Alpha', 'Gamma']);
+    expect(hostsOf(paragraphs)).toEqual([document.getElementById('a'), document.getElementById('c')]);
+    expect(inViewport).toHaveBeenCalledWith(document.getElementById('a'));
+    expect(inViewport).toHaveBeenCalledWith(document.getElementById('b'));
+    expect(inViewport).toHaveBeenCalledWith(document.getElementById('c'));
+  });
+
+  it('视口外的段落不更新下一段的上下文', async () => {
+    mount('<p id="a">Alpha</p><p id="b">Beta</p><p id="c">Gamma</p>');
+    const visible = new Set([document.getElementById('a'), document.getElementById('c')]);
+
+    const paragraphs = await scan({ inViewport: (host) => visible.has(host) });
+
+    expect(textsOf(paragraphs)).toEqual(['Alpha', 'Gamma']);
+    expect(paragraphs[0].context).toBe('');
+    // Beta 不在视口内：不收集，也不作为 Gamma 的上下文。
+    expect(paragraphs[1].context).toBe('Alpha');
+  });
+
+  it('同文本不合并：每个宿主各占一个 index 并各自提交', async () => {
+    mount('<p id="a">Same text</p><p id="b">Other text</p><p id="c">  Same   text  </p>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Same text', 'Other text', 'Same text']);
+    expect(paragraphs.map((paragraph) => paragraph.index)).toEqual([0, 1, 2]);
+    expect(paragraphs.map((paragraph) => paragraph.context)).toEqual(['', 'Same text', 'Other text']);
+    expect(hostsOf(paragraphs)).toEqual([
+      document.getElementById('a'),
+      document.getElementById('b'),
+      document.getElementById('c'),
+    ]);
+  });
+
+  it('jsdom 中默认视口判定为不可见，不注入 inViewport 时不收集（需求 4.5）', async () => {
+    mount('<p>Any paragraph</p>');
+
+    const paragraphs = await collectParagraphs({ yieldToMain: noYield });
+
+    expect(paragraphs).toEqual([]);
+  });
+});
+
+describe('D1 视口扫描（P6.1）：上限、分片、日志与异常', () => {
+  it('达到 maxParagraphs 后停止扫描，并记录 scan.limit', async () => {
+    mount('<p>A one</p><p>B two</p><p>C three</p><p>D four</p>');
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+
+    const paragraphs = await scan({ maxParagraphs: 3, logger });
+
+    expect(textsOf(paragraphs)).toEqual(['A one', 'B two', 'C three']);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'scan.limit',
+      expect.any(String),
+      expect.objectContaining({ max: 3 })
+    );
+  });
+
+  it('默认单页上限为 5000 段', async () => {
+    const parts = [];
+    for (let index = 0; index < MAX_PAGE_PARAGRAPHS + 1; index += 1) {
+      parts.push(`<p>Text ${index}</p>`);
+    }
+    mount(parts.join(''));
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+
+    const paragraphs = await scan({ logger });
+
+    expect(paragraphs).toHaveLength(MAX_PAGE_PARAGRAPHS);
+    expect(paragraphs[0].text).toBe('Text 0');
+    expect(paragraphs[MAX_PAGE_PARAGRAPHS - 1].text).toBe(`Text ${MAX_PAGE_PARAGRAPHS - 1}`);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'scan.limit',
+      expect.any(String),
+      expect.objectContaining({ max: MAX_PAGE_PARAGRAPHS })
+    );
+  });
+
+  it('每处理 chunkSize 个元素让出一次主线程，结果不受分片影响', async () => {
+    mount(
+      '<p>T one</p><p>T two</p><p>T three</p><p>T four</p><p>T five</p><p>T six</p>'
+    );
+    const yieldToMain = vi.fn(async () => {});
+
+    const paragraphs = await collectParagraphs({
+      chunkSize: 3,
+      inViewport: () => true,
+      yieldToMain,
+    });
+
+    expect(textsOf(paragraphs)).toEqual([
+      'T one',
+      'T two',
+      'T three',
+      'T four',
+      'T five',
+      'T six',
+    ]);
+    // body + 6 个段落 = 7 个元素；弹到第 4、7 个元素前各让出一次。
+    expect(yieldToMain).toHaveBeenCalledTimes(2);
+  });
+
+  it('元素数小于 chunkSize 时不让出主线程', async () => {
+    mount('<p>Only one</p>');
+    const yieldToMain = vi.fn(async () => {});
+
+    await collectParagraphs({ chunkSize: 10, inViewport: () => true, yieldToMain });
+
+    expect(yieldToMain).not.toHaveBeenCalled();
+  });
+
+  it('注入 logger 与 now 时输出 scan.start / scan.done 并带段落数、跳过数与耗时', async () => {
+    mount('<p>Logged</p>');
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+    const now = vi.fn().mockReturnValueOnce(1000).mockReturnValueOnce(1060);
+
+    await collectParagraphs({ logger, now, inViewport: () => true, yieldToMain: noYield });
+
+    expect(now).toHaveBeenCalledTimes(2);
+    expect(logger.debug).toHaveBeenCalledWith('scan.start', expect.any(String), {});
+    expect(logger.info).toHaveBeenCalledWith(
+      'scan.done',
+      expect.any(String),
+      expect.objectContaining({ paragraphs: 1, skipped: 0, elapsedMs: 60 })
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('不传 logger 时不记录日志，也不抛错', async () => {
+    mount('<p>Quiet</p>');
+
+    const paragraphs = await scan();
+
+    expect(textsOf(paragraphs)).toEqual(['Quiet']);
+  });
+
+  it('单个元素读取异常时记录 scan.error（debug）并继续扫描，日志不含文本', async () => {
+    mount(
+      '<p id="before">Before text</p>' +
+        '<div id="bad">Bad secret text</div>' +
+        '<p id="after">After text</p>'
+    );
+    Object.defineProperty(document.getElementById('bad'), 'classList', {
+      configurable: true,
+      get() {
+        throw new Error('读取失败');
+      },
+    });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+
+    const paragraphs = await scan({ logger });
+
+    expect(textsOf(paragraphs)).toEqual(['Before text', 'After text']);
+    expect(logger.debug).toHaveBeenCalledWith('scan.error', expect.any(String), { tag: 'DIV' });
+    expect(JSON.stringify(logger.debug.mock.calls)).not.toContain('Bad secret text');
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('没有 document 时抛错', async () => {
+    vi.stubGlobal('document', undefined);
+
+    await expect(collectParagraphs()).rejects.toThrow();
+  });
+
+  it('根节点不可用时抛错', async () => {
+    mount('<p>Any</p>');
+
+    await expect(collectParagraphs({ root: {} })).rejects.toThrow();
+  });
+});
+
+describe('D1 视口判定（P6.1）', () => {
+  it('矩形与视口相交时为真，部分可见也算', () => {
+    mount('<p id="a">A</p><p id="b">B</p>');
+    const a = document.getElementById('a');
+    const b = document.getElementById('b');
+    stubRect(a, { top: 10, left: 10, width: 100, height: 20 });
+    stubRect(b, { top: -10, left: 10, width: 100, height: 20 });
+
+    expect(isElementInViewport(a)).toBe(true);
+    expect(isElementInViewport(b)).toBe(true);
+  });
+
+  it('完全在视口外、零尺寸与已脱离文档时为假', () => {
+    mount('<p id="above">Above</p><p id="right">Right</p><p id="empty">Empty</p>');
+    const above = document.getElementById('above');
+    const right = document.getElementById('right');
+    const empty = document.getElementById('empty');
+    stubRect(above, { top: -100, left: 10, width: 100, height: 20 });
+    stubRect(right, { top: 10, left: 2000, width: 100, height: 20 });
+    stubRect(empty, { top: 10, left: 10, width: 0, height: 0 });
+    const detached = document.createElement('p');
+    detached.textContent = 'Detached';
+
+    expect(isElementInViewport(above)).toBe(false);
+    expect(isElementInViewport(right)).toBe(false);
+    expect(isElementInViewport(empty)).toBe(false);
+    expect(isElementInViewport(detached)).toBe(false);
+    expect(isElementInViewport(null)).toBe(false);
+  });
+
+  it('视口上下各半屏范围：半屏内为真，超过半屏为假', () => {
+    mount('<p id="above">Above</p><p id="below">Below</p><p id="far">Far</p>');
+    const above = document.getElementById('above');
+    const below = document.getElementById('below');
+    const far = document.getElementById('far');
+    stubRect(above, { top: -300, left: 10, width: 100, height: 20 });
+    stubRect(below, { top: 1100, left: 10, width: 100, height: 20 });
+    stubRect(far, { top: 1300, left: 10, width: 100, height: 20 });
+
+    // 严格视口看不到上下半屏外的内容。
+    expect(isElementInViewport(above)).toBe(false);
+    expect(isElementInViewport(below)).toBe(false);
+
+    // 上下各半屏（800 × 0.5 = 400）内的段落算「视口附近」。
+    expect(isElementInViewport(above, 0.5)).toBe(true);
+    expect(isElementInViewport(below, 0.5)).toBe(true);
+    expect(isElementInNearViewport(above)).toBe(true);
+    expect(isElementInNearViewport(below)).toBe(true);
+
+    // 超过半屏的段落不收集。
+    expect(isElementInNearViewport(far)).toBe(false);
+    expect(isElementInViewport(far, 0.5)).toBe(false);
   });
 });

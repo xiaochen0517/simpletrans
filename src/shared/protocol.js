@@ -5,7 +5,8 @@
  * 职责：定义扩展内部的统一错误码、错误分类标志、消息名、端口名与载荷校验辅助，作为后台、弹窗、设置页与页面注入的协议来源。
  * 依赖：无（P1 起）。
  * 实现阶段：P1–P5（错误码在 P1 落地；消息名、端口名与报文在 P2 落地；`traceId` 在 P3；
- *           `normalizeDomain` 与两条缓存消息在 P5 落地，见 docs/modules/E1-消息协议.md）
+ *           `normalizeDomain` 与两条缓存消息在 P5 落地；`ST_ROUTE` / `ST_START` / `ST_TOGGLE` /
+ *           `ST_PAGE_SUBMIT` 在 P6.1 落地，见 docs/modules/E1-消息协议.md）
  */
 
 /** 统一错误码。分类依据见项目架构 6.8。 */
@@ -63,10 +64,11 @@ export const PORT_NAME = 'st-gateway';
  */
 export const MESSAGE_TYPES = Object.freeze({
   // 控制面：一次性消息
-  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发（P7）
-  START: 'ST_START', // 后台 → 页面注入：开始整页任务（P4/P7）
-  TOGGLE: 'ST_TOGGLE', // 后台 → 页面注入：切换当前段（P4）
-  CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部译文（P4）
+  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发（P6.1 start / clear）
+  START: 'ST_START', // 后台 → 页面注入：开始整页取段并提交（P6.1）
+  PAGE_SUBMIT: 'ST_PAGE_SUBMIT', // 页面注入 → 后台：统一提交段落（P6.1，scope=page/single；后台校验、计数、逐段日志并回执）
+  TOGGLE: 'ST_TOGGLE', // 后台 → 页面注入：提交/隐藏当前段（P6.1）；动作值 submitted / hidden / submitting / no-target / failed
+  CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部标记与译文（P4）；响应 removed（P6.1）
   LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表（P2）
   TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译（P2）
   CACHE_STATS: 'ST_CACHE_STATS', // 设置页 → 后台：读取缓存占用（P5）
