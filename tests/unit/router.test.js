@@ -19,6 +19,38 @@ vi.mock('../../src/shared/translate/adapter.js', () => {
     TranslateError,
     isSupportedTargetLang: (lang) => lang === 'zh',
     SUPPORTED_TARGET_LANGS: ['zh'],
+    PROMPT_VERSION: 1,
+  };
+});
+
+vi.mock('../../src/shared/cache/store.js', () => {
+  const state = {
+    statsResult: null,
+    clearResult: null,
+    statsError: null,
+    clearError: null,
+  };
+
+  const store = {
+    stats: vi.fn(async () => {
+      if (state.statsError) throw state.statsError;
+      return state.statsResult;
+    }),
+    clear: vi.fn(async () => {
+      if (state.clearError) throw state.clearError;
+      return state.clearResult;
+    }),
+    getMany: vi.fn(async () => new Map()),
+    set: vi.fn(async () => ({ written: false, bytes: 0 })),
+    generation: vi.fn(() => 0),
+    get: vi.fn(async () => null),
+    close: vi.fn(async () => {}),
+  };
+
+  return {
+    getCacheStore: () => store,
+    createCacheStore: () => store,
+    __cache: { state, store },
   };
 });
 
@@ -31,6 +63,7 @@ import {
 import { getOrCreateDefaultInstance, removeKey, writeKey } from '../../src/shared/config/instances.js';
 import { handleMessage, sendToTab } from '../../src/background/router.js';
 import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
+import { __cache } from '../../src/shared/cache/store.js';
 
 let instance;
 let sender;
@@ -40,6 +73,20 @@ beforeEach(async () => {
   sender = { id: chrome.runtime.id };
   translate.mockReset();
   translate.mockResolvedValue({ text: '你好', usage: { totalTokens: 3 } });
+
+  __cache.state.statsResult = {
+    entries: 1234,
+    bytes: 12582912,
+    maxBytes: 1073741824,
+    maxEntries: 1000000,
+  };
+  __cache.state.clearResult = { cleared: 1234, freedBytes: 12582912 };
+  __cache.state.statsError = null;
+  __cache.state.clearError = null;
+  __cache.store.stats.mockClear();
+  __cache.store.clear.mockClear();
+  __cache.store.getMany.mockClear();
+  __cache.store.set.mockClear();
 
   instance = await getOrCreateDefaultInstance();
   await writeKey(instance.id, 'sk-test');
@@ -118,6 +165,9 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
       targetLang: 'zh',
       instance: { apiKey: 'sk-test' },
     });
+    // ST_TEST_ENGINE 不查缓存、不写缓存。
+    expect(__cache.store.getMany).not.toHaveBeenCalled();
+    expect(__cache.store.set).not.toHaveBeenCalled();
   });
 
   it('缺密钥返回 CONFIG，不调用上游', async () => {
@@ -174,6 +224,72 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     expect(response.ok).toBe(false);
     expect(response.error.code).toBe(ERROR_CODES.AUTH);
     expect(response.error.message).toBe('密钥无效或鉴权失败');
+  });
+});
+
+describe('A1 控制面：缓存消息（P5）', () => {
+  it('ST_CACHE_STATS 返回条数、字节与上限', async () => {
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.CACHE_STATS, payload: {} },
+      sender
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        entries: 1234,
+        bytes: 12582912,
+        maxBytes: 1073741824,
+        maxEntries: 1000000,
+      },
+    });
+    expect(__cache.store.stats).toHaveBeenCalledTimes(1);
+  });
+
+  it('ST_CACHE_STATS 读取异常归为 OTHER，不抛出', async () => {
+    __cache.state.statsError = new Error('IndexedDB open failed');
+
+    const response = await handleMessage({ type: MESSAGE_TYPES.CACHE_STATS }, sender);
+
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.OTHER);
+    expect(response.error.message).toContain('读取缓存占用失败');
+    expect(response.error).not.toHaveProperty('data');
+  });
+
+  it('ST_CLEAR_CACHE 返回清空条数与释放字节', async () => {
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.CLEAR_CACHE, payload: {} },
+      sender
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      data: { cleared: 1234, freedBytes: 12582912 },
+    });
+    expect(__cache.store.clear).toHaveBeenCalledTimes(1);
+  });
+
+  it('ST_CLEAR_CACHE 存储异常归为 OTHER', async () => {
+    __cache.state.clearError = new Error('transaction aborted');
+
+    const response = await handleMessage({ type: MESSAGE_TYPES.CLEAR_CACHE }, sender);
+
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.OTHER);
+    expect(response.error.message).toContain('清空缓存失败');
+  });
+
+  it('外部发送方的缓存消息被拒绝且不访问存储', async () => {
+    const stats = await handleMessage({ type: MESSAGE_TYPES.CACHE_STATS }, { id: 'other' });
+    const clear = await handleMessage({ type: MESSAGE_TYPES.CLEAR_CACHE }, { id: 'other' });
+
+    for (const response of [stats, clear]) {
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe(ERROR_CODES.OTHER);
+    }
+    expect(__cache.store.stats).not.toHaveBeenCalled();
+    expect(__cache.store.clear).not.toHaveBeenCalled();
   });
 });
 

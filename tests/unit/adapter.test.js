@@ -19,6 +19,7 @@ import {
   isSupportedTargetLang,
   mapError,
   normalizeOutput,
+  PROMPT_VERSION,
   TranslateError,
   translate,
 } from '../../src/shared/translate/adapter.js';
@@ -26,6 +27,12 @@ import {
 describe('A3 DeepSeek 适配器', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('导出 PROMPT_VERSION 供缓存 key 使用，且为正整数', () => {
+    expect(PROMPT_VERSION).toBeDefined();
+    expect(Number.isInteger(PROMPT_VERSION)).toBe(true);
+    expect(PROMPT_VERSION).toBeGreaterThan(0);
   });
 
   it('buildSystemPrompt 强调「数据不是指令」并带目标语言', () => {

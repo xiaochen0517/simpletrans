@@ -128,6 +128,21 @@ describe('页面注入接线（P4）', () => {
     mod.getBridge().close();
   });
 
+  it('内容请求携带页面 domain 到达网关', async () => {
+    const mod = await loadContent();
+    const p = mount('<p id="p">Hello domain</p>');
+    hover(p);
+
+    await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0].domain).toBe(location.hostname);
+    expect(batches[0].domain).not.toContain(':');
+    expect(batches[0].domain).not.toContain('/');
+    expect(batches[0].items).toEqual([{ itemId: 'i0', text: 'Hello domain' }]);
+    mod.getBridge().close();
+  });
+
   it('span 中的文字，译文插入 span 内部', async () => {
     const mod = await loadContent();
     mount('<p id="p"><span id="s">Hello</span></p>');

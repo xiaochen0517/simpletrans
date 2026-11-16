@@ -1,17 +1,17 @@
 /**
- * C1–C5 设置页（P2 最小测试表单，经后台执行；P3 增加日志级别）
+ * C1–C5 设置页（P2 最小测试表单，经后台执行；P3 增加日志级别；P5 增加译文缓存区块）
  *
  * 模块：插件独立页面（C）
- * 职责：P2 提供「密钥配置 + 单段测试翻译」最小表单；P3 增加日志级别设置；
- *       测试翻译经 ST_TEST_ENGINE 交给后台。
+ * 职责：P2 提供「密钥配置 + 单段测试翻译」最小表单；P3 增加日志级别设置；P5 增加缓存开关、占用与清空；
+ *       测试翻译经 ST_TEST_ENGINE 交给后台，缓存占用与清空经 ST_CACHE_STATS / ST_CLEAR_CACHE 交给后台。
  * 依赖：E1（protocol）、E2（settings）、E3（instances.writeKey）、E4（日志）、constants.js。
- * 实现阶段：P2（后台网关与页面通道）、P3（日志模块与调试输出）
+ * 实现阶段：P2（后台网关与页面通道）、P3（日志模块与调试输出）、P5（译文缓存）
  *
  * 与 P1 的差异：不再直接调用 A3、不再读取密钥明文；hasKey 由 ST_LIST_ENGINES 返回。
- * 完整设置页由 P8 落地。
+ * 设置页不 import 缓存模块、不直接打开缓存数据库；完整设置页由 P8 落地。
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { MESSAGE_TYPES } from '../shared/protocol.js';
 import { writeKey } from '../shared/config/instances.js';
 import { MAX_SEGMENT_CHARS } from '../shared/constants.js';
@@ -26,6 +26,41 @@ import {
 
 /** C1 日志入口。 */
 const log = createLogger('C1');
+
+/**
+ * 字节数格式化为可读单位；非数字按 0 处理。
+ * @param {unknown} value
+ * @returns {string}
+ */
+function formatBytes(value) {
+  const n = Number.isFinite(value) ? Math.max(0, Number(value)) : 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(1)} GB`;
+}
+
+/**
+ * 条数加千分位；非数字按 0 处理。
+ * @param {unknown} value
+ * @returns {string}
+ */
+function formatCount(value) {
+  const n = Number.isFinite(value) ? Math.max(0, Number(value)) : 0;
+  return n.toLocaleString('zh-CN');
+}
+
+/**
+ * 缓存占用文字；上限未知时只显示已用量。
+ * @param {{ entries?: number, bytes?: number, maxBytes?: number } | null} stats
+ * @returns {string | null}
+ */
+function statsText(stats) {
+  if (!stats) return null;
+  const used = `已用约 ${formatBytes(stats.bytes)}`;
+  const limit = Number.isFinite(stats.maxBytes) ? ` / ${formatBytes(stats.maxBytes)}` : '';
+  return `${used}${limit} · ${formatCount(stats.entries)} 条`;
+}
 
 /**
  * 发一条一次性消息；后台不可用时归一为 NETWORK。
@@ -58,6 +93,13 @@ export default function Options() {
   const [logSaving, setLogSaving] = useState(false);
   const [logNotice, setLogNotice] = useState(null);
   const [logError, setLogError] = useState(null);
+  const [cacheEnabled, setCacheEnabled] = useState(true);
+  const [cacheStats, setCacheStats] = useState(null);
+  const [cacheLoading, setCacheLoading] = useState(true);
+  const [cacheSaving, setCacheSaving] = useState(false);
+  const [cacheClearing, setCacheClearing] = useState(false);
+  const [cacheNotice, setCacheNotice] = useState(null);
+  const [cacheError, setCacheError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +109,7 @@ export default function Options() {
         if (cancelled) return;
         const level = normalizeLevel(settings.logLevel);
         setLogLevel(level);
+        setCacheEnabled(settings.cacheEnabled !== false);
         setLoggerLevel(level);
         log.info('logger.ready', '日志已启动', getLogMeta());
       } catch {
@@ -77,6 +120,34 @@ export default function Options() {
       cancelled = true;
     };
   }, []);
+
+  /** 读取缓存占用；打开设置页、窗口重新获得焦点与清空成功后调用，不做轮询。 */
+  const refreshCacheStats = useCallback(async () => {
+    const response = await sendToBackground(MESSAGE_TYPES.CACHE_STATS);
+    if (response.ok && response.data) {
+      setCacheStats({
+        entries: response.data.entries,
+        bytes: response.data.bytes,
+        maxBytes: response.data.maxBytes,
+        maxEntries: response.data.maxEntries,
+      });
+      setCacheError((current) => (current === '占用信息暂不可用' ? null : current));
+    } else {
+      setCacheError('占用信息暂不可用');
+    }
+    setCacheLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refreshCacheStats();
+    const onFocus = () => {
+      void refreshCacheStats();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [refreshCacheStats]);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,6 +184,49 @@ export default function Options() {
       setLogError('保存日志级别失败，请重试');
     } finally {
       setLogSaving(false);
+    }
+  }
+
+  async function onChangeCacheEnabled(event) {
+    const next = event.target.checked === true;
+    setCacheSaving(true);
+    setCacheNotice(null);
+    setCacheError(null);
+    try {
+      await saveSettings({ cacheEnabled: next });
+      setCacheEnabled(next);
+      setCacheNotice('已保存；下一次翻译即生效。');
+      log.info('settings.save', '缓存开关已保存', { cacheEnabled: next });
+    } catch {
+      setCacheError('保存缓存开关失败，请重试');
+    } finally {
+      setCacheSaving(false);
+    }
+  }
+
+  async function onClearCache() {
+    setCacheClearing(true);
+    setCacheNotice(null);
+    setCacheError(null);
+    try {
+      const response = await sendToBackground(MESSAGE_TYPES.CLEAR_CACHE);
+      if (!response.ok) {
+        setCacheError(response.error?.message ?? '清空缓存失败，请重试');
+        return;
+      }
+      const cleared = Number(response.data?.cleared) || 0;
+      setCacheStats((current) => ({
+        entries: 0,
+        bytes: 0,
+        maxBytes: current?.maxBytes,
+        maxEntries: current?.maxEntries,
+      }));
+      setCacheNotice(cleared > 0 ? `已清空 ${formatCount(cleared)} 条缓存` : '缓存已经是空的');
+      log.info('settings.save', '已清空译文缓存', { cleared });
+    } catch {
+      setCacheError('清空缓存失败，请重试');
+    } finally {
+      setCacheClearing(false);
     }
   }
 
@@ -262,6 +376,34 @@ export default function Options() {
           )}
         </section>
       )}
+
+      <section className="space-y-2">
+        <h2 className="text-base font-semibold">译文缓存</h2>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="checkbox checkbox-sm"
+            checked={cacheEnabled}
+            onChange={onChangeCacheEnabled}
+            disabled={cacheSaving}
+          />
+          <span>启用译文缓存</span>
+        </label>
+        <p className="text-sm text-base-content/70">
+          缓存只保存在本机 IndexedDB、跨标签页共享；关闭后不再读写缓存，已有缓存不会自动删除；
+          清空只影响译文缓存，不影响密钥与设置。
+        </p>
+        <p className="text-sm">
+          {cacheLoading
+            ? '正在读取缓存占用…'
+            : statsText(cacheStats) ?? '占用信息暂不可用'}
+        </p>
+        <button className="btn btn-outline" onClick={onClearCache} disabled={cacheClearing}>
+          {cacheClearing ? '清空中…' : '清空缓存'}
+        </button>
+        {cacheNotice && <p className="text-sm text-success">{cacheNotice}</p>}
+        {cacheError && <p className="text-sm text-error">{cacheError}</p>}
+      </section>
 
       <section className="space-y-2">
         <h2 className="text-base font-semibold">日志</h2>

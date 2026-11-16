@@ -21,6 +21,12 @@ const log = createLogger('A3');
 /** 目标语言显示名（P2 仅中文；多语言映射后续补充）。 */
 const LANG_NAMES = Object.freeze({ zh: '中文' });
 
+/**
+ * 提示词与输出归一版本。
+ * 系统提示词、输出归一规则或语言映射变化时递增；A4 缓存 key 会纳入该值，旧条目随之失效。
+ */
+export const PROMPT_VERSION = 1;
+
 /** 当前支持的目标语言（网关与控制面共用，避免两处各写一份）。 */
 export const SUPPORTED_TARGET_LANGS = Object.freeze(Object.keys(LANG_NAMES));
 

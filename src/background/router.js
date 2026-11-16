@@ -2,9 +2,9 @@
  * A1 消息路由（控制面）
  *
  * 模块：后台服务（A）/ A1
- * 职责：处理设置页的一次性消息：引擎列表与测试翻译；把结果回给调用方。
- * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A2（gateway 的并发名额）。
- * 实现阶段：P2（后台网关与页面通道）
+ * 职责：处理设置页的一次性消息：引擎列表、测试翻译、缓存占用与清空；把结果回给调用方。
+ * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A4（cache）、A2（gateway 的并发名额）。
+ * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息。
  *
  * P2 只落控制面；标签页转发（ST_ROUTE/ST_START/ST_TOGGLE/ST_CLEAR）随 P4/P7 落地。
  */
@@ -23,6 +23,7 @@ import { getSettings } from '../shared/settings.js';
 import { createLogger } from '../shared/log/logger.js';
 import { getKey, getOrCreateDefaultInstance, getPublicSettings } from '../shared/config/instances.js';
 import { validateInstance } from '../shared/config/registry.js';
+import { getCacheStore } from '../shared/cache/store.js';
 import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
 import { normalizeConcurrency, withUpstreamSlot } from './gateway.js';
 
@@ -61,6 +62,10 @@ export async function handleMessage(message, sender) {
       response = await listEngines();
     } else if (message.type === MESSAGE_TYPES.TEST_ENGINE) {
       response = await testEngine(message.payload);
+    } else if (message.type === MESSAGE_TYPES.CACHE_STATS) {
+      response = await cacheStats();
+    } else if (message.type === MESSAGE_TYPES.CLEAR_CACHE) {
+      response = await clearCache();
     } else {
       const text = isKnownMessageType(message.type) ? '该消息暂未实现' : '无法识别的消息';
       response = failure(ERROR_CODES.OTHER, text, FAILURE_REASONS.INVALID_MESSAGE);
@@ -102,6 +107,30 @@ async function listEngines() {
     };
   } catch (error) {
     return failure(ERROR_CODES.OTHER, `读取引擎列表失败：${error?.message ?? error}`);
+  }
+}
+
+/**
+ * 读取缓存占用；失败归为 OTHER，设置页显示「占用信息暂不可用」。
+ * @returns {Promise<{ ok: true, data: object } | { ok: false, error: object }>}
+ */
+async function cacheStats() {
+  try {
+    return { ok: true, data: await getCacheStore().stats() };
+  } catch {
+    return failure(ERROR_CODES.OTHER, '读取缓存占用失败，请稍后重试');
+  }
+}
+
+/**
+ * 清空译文缓存；只作用于 `simpletrans-cache`，不影响密钥与设置。
+ * @returns {Promise<{ ok: true, data: object } | { ok: false, error: object }>}
+ */
+async function clearCache() {
+  try {
+    return { ok: true, data: await getCacheStore().clear() };
+  } catch {
+    return failure(ERROR_CODES.OTHER, '清空缓存失败，请稍后重试');
   }
 }
 

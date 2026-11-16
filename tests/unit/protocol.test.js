@@ -7,6 +7,7 @@ import {
   ERROR_CODES,
   ERROR_FLAGS,
   FAILURE_REASONS,
+  MAX_DOMAIN_CHARS,
   MESSAGE_TYPES,
   PORT_NAME,
   errorInfo,
@@ -14,6 +15,7 @@ import {
   isKnownCode,
   isKnownMessageType,
   makeError,
+  normalizeDomain,
   normalizeTraceId,
 } from '../../src/shared/protocol.js';
 
@@ -120,5 +122,103 @@ describe('E1 消息名与载荷校验', () => {
     expect(normalizeTraceId('x'.repeat(65))).toBeUndefined();
     expect(normalizeTraceId(42)).toBeUndefined();
     expect(normalizeTraceId(null)).toBeUndefined();
+  });
+});
+
+describe('E1 缓存消息名（P5）', () => {
+  it('两条缓存消息名与架构 4.6 一致', () => {
+    expect(MESSAGE_TYPES.CACHE_STATS).toBe('ST_CACHE_STATS');
+    expect(MESSAGE_TYPES.CLEAR_CACHE).toBe('ST_CLEAR_CACHE');
+  });
+
+  it('两条缓存消息被 isKnownMessageType 识别，未知消息仍不识别', () => {
+    expect(isKnownMessageType('ST_CACHE_STATS')).toBe(true);
+    expect(isKnownMessageType('ST_CLEAR_CACHE')).toBe(true);
+    expect(isKnownMessageType('ST_CACHE_STATS_EXTRA')).toBe(false);
+    expect(isKnownMessageType('ST_CLEAR_CACHE_V2')).toBe(false);
+  });
+});
+
+describe('E1 域名归一（P5）', () => {
+  it('MAX_DOMAIN_CHARS 为 253', () => {
+    expect(MAX_DOMAIN_CHARS).toBe(253);
+  });
+
+  it('去首尾空白、转小写并去掉末尾的点', () => {
+    expect(normalizeDomain('  WWW.Example.COM.  ')).toBe('www.example.com');
+    expect(normalizeDomain('example.com.')).toBe('example.com');
+    expect(normalizeDomain('example.com...')).toBe('example.com');
+    expect(normalizeDomain('\tEXAMPLE.com\n')).toBe('example.com');
+  });
+
+  it('接受正常 IPv4、多级域名与单标签 hostname', () => {
+    expect(normalizeDomain('192.168.0.1')).toBe('192.168.0.1');
+    expect(normalizeDomain('127.0.0.1')).toBe('127.0.0.1');
+    expect(normalizeDomain('sub.example.co.uk')).toBe('sub.example.co.uk');
+    expect(normalizeDomain('localhost')).toBe('localhost');
+    expect(normalizeDomain('example.com')).toBe('example.com');
+  });
+
+  it('拒绝带协议、端口、路径、查询串与锚点的值', () => {
+    const invalid = [
+      'https://example.com',
+      'http://example.com/path',
+      '//example.com',
+      'example.com:8080',
+      'example.com:443',
+      'example.com/path',
+      'example.com?x=1',
+      'example.com#top',
+      'user@example.com',
+    ];
+    for (const value of invalid) {
+      expect(normalizeDomain(value), value).toBe('');
+    }
+  });
+
+  it('拒绝非法字符、空标签与连字符边界', () => {
+    const invalid = [
+      'exa mple.com',
+      'exa_mple.com',
+      'example..com',
+      '.example.com',
+      '-example.com',
+      'example-.com',
+      'example.com-',
+      '例子.中国',
+      'example.com/例子',
+      'example.com%20',
+    ];
+    // 末尾的点合法（归一后去掉），其余非法。
+    expect(normalizeDomain('example.com.')).toBe('example.com');
+    for (const value of invalid) {
+      expect(normalizeDomain(value), value).toBe('');
+    }
+  });
+
+  it('非字符串、空串与纯空白返回空串', () => {
+    for (const value of [undefined, null, 42, true, {}, [], () => 'example.com']) {
+      expect(normalizeDomain(value)).toBe('');
+    }
+    expect(normalizeDomain('')).toBe('');
+    expect(normalizeDomain('   ')).toBe('');
+    expect(normalizeDomain('.')).toBe('');
+  });
+
+  it('253 字符以内接受，超过 MAX_DOMAIN_CHARS 拒绝', () => {
+    const label63 = 'a'.repeat(63);
+    const maxLength = `${label63}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`;
+    expect(maxLength).toHaveLength(MAX_DOMAIN_CHARS);
+    expect(normalizeDomain(maxLength)).toBe(maxLength);
+
+    const tooLong = `${label63}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(62)}`;
+    expect(tooLong).toHaveLength(MAX_DOMAIN_CHARS + 1);
+    expect(normalizeDomain(tooLong)).toBe('');
+  });
+
+  it('单段标签最长 63 字符，64 字符拒绝', () => {
+    const label63 = `${'a'.repeat(63)}.com`;
+    expect(normalizeDomain(label63)).toBe(label63);
+    expect(normalizeDomain(`${'a'.repeat(64)}.com`)).toBe('');
   });
 });

@@ -35,6 +35,6 @@
       "description": "翻译当前段落（备用快捷键；页面内按 Ctrl 单键也可触发）"
     }
   },
-  "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
+  "permissions": ["storage", "unlimitedStorage", "activeTab", "scripting", "contextMenus"],
   "host_permissions": ["https://api.deepseek.com/*"]
 }

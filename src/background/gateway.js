@@ -2,10 +2,10 @@
  * A2 请求网关
  *
  * 模块：后台服务（A）/ A2
- * 职责：接收页面注入的批次请求，校验载荷、控制全局并发与每连接在途数量、调用 A3 并转发增量与定稿；
+ * 职责：接收页面注入的批次请求，校验载荷、控制全局并发与每连接在途数量、查缓存、调用 A3 并转发增量与定稿；
  *       处理取消、断线与批超时；不保存任务状态，不写 storage。
- * 依赖：A3（adapter）、E1（protocol）、E2（settings）、E3（instances/registry）、constants.js（P2 起）。
- * 实现阶段：P2（后台网关与页面通道）
+ * 依赖：A3（adapter）、A4（cache）、E1（protocol）、E2（settings）、E3（instances/registry）、constants.js（P2 起）。
+ * 实现阶段：P2（后台网关与页面通道）；P5 增加按段查缓存、命中帧与成功后写缓存。
  */
 
 import {
@@ -15,6 +15,7 @@ import {
   PORT_NAME,
   findForbiddenField,
   makeError,
+  normalizeDomain,
   normalizeTraceId,
 } from '../shared/protocol.js';
 import {
@@ -33,7 +34,14 @@ import { createLogger, getLogLevel, setLogLevel } from '../shared/log/logger.js'
 import { normalizeLevel } from '../shared/log/levels.js';
 import { getInstances, getKey } from '../shared/config/instances.js';
 import { validateInstance } from '../shared/config/registry.js';
-import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
+import { buildCacheKey } from '../shared/cache/key.js';
+import { getCacheStore } from '../shared/cache/store.js';
+import {
+  isSupportedTargetLang,
+  PROMPT_VERSION,
+  translate,
+  TranslateError,
+} from '../shared/translate/adapter.js';
 
 /** 网关日志入口。 */
 const log = createLogger('A2');
@@ -405,6 +413,49 @@ async function beginBatch(conn, payload) {
     return;
   }
 
+  // 缓存读取在实例与密钥检查之后、批次创建之前：命中仍要求已配置可用密钥。
+  const cacheEnabled = settings.cacheEnabled !== false;
+  const cacheDomain = normalizeDomain(payload.domain);
+  const cacheGeneration = cacheEnabled ? getCacheStore().generation() : 0;
+  let cacheKeys = null;
+  let cacheEntries = new Map();
+
+  if (cacheEnabled) {
+    try {
+      cacheKeys = await Promise.all(
+        normalized.map((item) =>
+          buildCacheKey({
+            engineType: instance.type,
+            model: instance.model,
+            sourceLang: settings.sourceLang ?? 'auto',
+            targetLang,
+            promptVersion: PROMPT_VERSION,
+            context: item.context ?? '',
+            text: item.text,
+          })
+        )
+      );
+    } catch (error) {
+      cacheKeys = null;
+      log.warn('cache.error', '缓存 key 计算失败，本批不参与缓存', {
+        requestId,
+        reason: error?.name ?? 'Error',
+      });
+    }
+
+    if (cacheKeys) {
+      try {
+        cacheEntries = await getCacheStore().getMany(cacheKeys);
+      } catch (error) {
+        cacheEntries = new Map();
+        log.warn('cache.error', '缓存读取失败，本批按未命中处理', {
+          requestId,
+          reason: error?.name ?? 'Error',
+        });
+      }
+    }
+  }
+
   const batch = {
     requestId,
     traceId,
@@ -412,8 +463,9 @@ async function beginBatch(conn, payload) {
     cancelled: false,
     timedOut: false,
     finished: false,
-    items: normalized.map((item) => ({
+    items: normalized.map((item, index) => ({
       ...item,
+      cacheKey: cacheKeys ? cacheKeys[index] : null,
       state: 'pending',
       settled: false,
       started: false,
@@ -422,6 +474,14 @@ async function beginBatch(conn, payload) {
     done: 0,
     failed: 0,
     cancelledCount: 0,
+    cacheEnabled,
+    cacheKeys,
+    cacheEntries,
+    cacheGeneration,
+    cacheDomain,
+    cacheHits: 0,
+    cacheMisses: 0,
+    cacheWrites: 0,
     deadlineTimer: null,
   };
 
@@ -457,6 +517,33 @@ async function runBatch(batch, { targetLang, instance, apiKey, limit }) {
   for (const item of batch.items) {
     if (batch.finished) return;
     if (item.settled || item.state !== 'pending') continue;
+
+    const cached = item.cacheKey ? batch.cacheEntries.get(item.cacheKey) : null;
+    if (cached) {
+      // 命中：ST_ITEM_START → ST_ITEM_DONE，不发增量，不占上游名额，不调用 A3。
+      const started = send(batch.conn, {
+        type: MESSAGE_TYPES.ITEM_START,
+        payload: { requestId: batch.requestId, itemId: item.itemId },
+      });
+      if (!started) return;
+
+      batch.cacheHits += 1;
+      settle(batch, item, 'done', { notify: true, text: cached.text, usage: null });
+      log.withTrace(batch.traceId).debug('cache.hit', '缓存命中，跳过上游', {
+        requestId: batch.requestId,
+        itemId: item.itemId,
+        bytes: cached.bytes,
+      });
+      continue;
+    }
+
+    if (batch.cacheEnabled && batch.cacheKeys) {
+      batch.cacheMisses += 1;
+      log.withTrace(batch.traceId).debug('cache.miss', '缓存未命中', {
+        requestId: batch.requestId,
+        itemId: item.itemId,
+      });
+    }
 
     item.state = 'inflight';
     const controller = new AbortController();
@@ -511,6 +598,7 @@ async function runBatch(batch, { targetLang, instance, apiKey, limit }) {
           text: result.text,
           usage: result.usage ?? null,
         });
+        writeCacheEntry(batch, item, result);
       }
     } catch (error) {
       if (item.settled) continue;
@@ -535,6 +623,37 @@ async function runBatch(batch, { targetLang, instance, apiKey, limit }) {
   }
 
   finishBatch(batch);
+}
+
+/**
+ * 定稿后异步写缓存：只在 A3 成功且译文非空时调用，写入不阻塞定稿帧。
+ * 写入失败只记日志（store 内部已记录 cache.error / cache.quota），不改变该段结果。
+ * @param {object} batch
+ * @param {object} item
+ * @param {{ text?: string }} result
+ */
+function writeCacheEntry(batch, item, result) {
+  if (!batch.cacheEnabled || !item.cacheKey) return;
+  const text = typeof result?.text === 'string' ? result.text : '';
+  if (text.trim() === '') return;
+
+  batch.cacheWrites += 1;
+  void getCacheStore()
+    .set(item.cacheKey, text, {
+      generation: batch.cacheGeneration,
+      domain: batch.cacheDomain,
+    })
+    .then((outcome) => {
+      if (!outcome?.written) return;
+      log.withTrace(batch.traceId).debug('cache.write', '已写入缓存', {
+        requestId: batch.requestId,
+        itemId: item.itemId,
+        bytes: outcome.bytes,
+      });
+    })
+    .catch(() => {
+      // 写入失败不影响翻译结果；详细原因已由 A4 记录。
+    });
 }
 
 /**
@@ -629,6 +748,9 @@ function finishBatch(batch) {
     done: batch.done,
     failed: batch.failed,
     cancelled: batch.cancelledCount,
+    cacheHits: batch.cacheHits ?? 0,
+    cacheMisses: batch.cacheMisses ?? 0,
+    cacheWrites: batch.cacheWrites ?? 0,
   });
 }
 

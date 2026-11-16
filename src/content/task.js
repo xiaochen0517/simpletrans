@@ -4,7 +4,7 @@
  * 模块：页面注入（D）/ D5（任务调度属流程机制，见项目架构 6.2）
  * 职责：串联宿主提取、单段请求与渲染；维护在途批次、合并增量、处理取消与断线。
  * 依赖：D1（文本与宿主）、D3（渲染）、D4（桥）、E1、公共数值、E4（P4 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P5 起批次携带页面 `domain`（只作为缓存元数据）。
  *
  * P4 只做悬停单段：一次触发一个批次，不在页面侧缓存译文，不写 storage.session；
  * 整页任务、状态镜像、重试与备用切换留到 P6/P7/P9。
@@ -15,6 +15,7 @@ import {
   FAILURE_REASONS,
   MESSAGE_TYPES,
   makeError,
+  normalizeDomain,
 } from '../shared/protocol.js';
 import { DISPLAY_UPDATE_THROTTLE_MS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
 import { createLogger } from '../shared/log/logger.js';
@@ -28,6 +29,19 @@ const ITEM_ID = 'i0';
 
 /** 补注入后等待后台连接的最长时间；超时后显示失败，不无限加载。 */
 const QUEUE_TIMEOUT_MS = 5_000;
+
+/**
+ * 当前页面 hostname，只作为缓存元数据随批次上报；取不到时为空串。
+ * 只取 hostname，不带协议、端口、路径与查询串。
+ * @returns {string}
+ */
+function currentDomain() {
+  try {
+    return normalizeDomain(typeof location !== 'undefined' ? location.hostname : '');
+  } catch {
+    return '';
+  }
+}
 
 /**
  * @param {string} action
@@ -169,6 +183,7 @@ export function createTask({
       bridge.postBatch({
         requestId: request.requestId,
         ...(request.traceId ? { traceId: request.traceId } : {}),
+        domain: currentDomain(),
         items: [{ itemId: ITEM_ID, text: request.text }],
       });
     } catch (error) {

@@ -4,7 +4,8 @@
  * 模块：公共模块（E）/ E1
  * 职责：定义扩展内部的统一错误码、错误分类标志、消息名、端口名与载荷校验辅助，作为后台、弹窗、设置页与页面注入的协议来源。
  * 依赖：无（P1 起）。
- * 实现阶段：P1–P2（错误码在 P1 落地；消息名、端口名与报文在 P2 落地，见 docs/modules/E1-消息协议.md）
+ * 实现阶段：P1–P5（错误码在 P1 落地；消息名、端口名与报文在 P2 落地；`traceId` 在 P3；
+ *           `normalizeDomain` 与两条缓存消息在 P5 落地，见 docs/modules/E1-消息协议.md）
  */
 
 /** 统一错误码。分类依据见项目架构 6.8。 */
@@ -68,6 +69,8 @@ export const MESSAGE_TYPES = Object.freeze({
   CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部译文（P4）
   LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表（P2）
   TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译（P2）
+  CACHE_STATS: 'ST_CACHE_STATS', // 设置页 → 后台：读取缓存占用（P5）
+  CLEAR_CACHE: 'ST_CLEAR_CACHE', // 设置页 → 后台：清空缓存（P5）
 
   // 数据面：长连接
   PING: 'ST_PING',
@@ -180,4 +183,23 @@ export function normalizeTraceId(value) {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 && trimmed.length <= 64 ? trimmed : undefined;
+}
+
+/** 域名（hostname）字符串上限。 */
+export const MAX_DOMAIN_CHARS = 253;
+
+/** 合法 hostname：若干标签，每段 1–63 字符，只允许字母、数字与连字符。 */
+const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * 归一页面 hostname：小写、去首尾空白与末尾点；带协议、端口、路径或非法字符时返回空串。
+ * 内容侧与网关共用同一规则；只作为缓存来源元数据，不参与缓存 key 与命中判断。
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function normalizeDomain(value) {
+  if (typeof value !== 'string') return '';
+  const lower = value.trim().toLowerCase().replace(/\.+$/, '');
+  if (lower === '' || lower.length > MAX_DOMAIN_CHARS) return '';
+  return HOSTNAME_PATTERN.test(lower) ? lower : '';
 }

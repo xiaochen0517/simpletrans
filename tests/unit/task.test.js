@@ -60,6 +60,7 @@ beforeEach(() => {
 
 afterEach(() => {
   task.dispose();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -316,6 +317,43 @@ describe('D5 连接就绪前排队', () => {
 
     expect(renderer.getState(p)).toBe('error');
     expect(translationOf(p).textContent).toContain('重新加载');
+  });
+});
+
+describe('D5 批次域名（P5）', () => {
+  it('批次携带当前页面的小写 hostname，且 domain 只在批次级', () => {
+    vi.stubGlobal('location', { hostname: 'Example.COM.' });
+    const p = mount('<p id="p">Hello world</p>');
+
+    task.toggle(p);
+
+    const batch = bridge.batches[0];
+    expect(batch.domain).toBe('example.com');
+    expect(batch.items).toEqual([{ itemId: 'i0', text: 'Hello world' }]);
+    expect(batch.items[0]).not.toHaveProperty('domain');
+  });
+
+  it('页面 URL 带端口与路径时只提交 hostname', () => {
+    window.history.replaceState({}, '', '/deep/path?q=1');
+    const p = mount('<p id="p">Hello path</p>');
+
+    task.toggle(p);
+
+    expect(bridge.batches[0].domain).toBe(location.hostname);
+    expect(bridge.batches[0].domain).not.toContain(':');
+    expect(bridge.batches[0].domain).not.toContain('/');
+  });
+
+  it('没有 location 时 domain 为空串，请求仍正常提交', () => {
+    vi.stubGlobal('location', undefined);
+    const p = mount('<p id="p">Hello nowhere</p>');
+
+    const result = task.toggle(p);
+
+    expect(result).toEqual({ ok: true, data: { action: 'translating' } });
+    expect(bridge.batches).toHaveLength(1);
+    expect(bridge.batches[0].domain).toBe('');
+    expect(bridge.batches[0].items).toEqual([{ itemId: 'i0', text: 'Hello nowhere' }]);
   });
 });
 

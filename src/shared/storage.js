@@ -9,12 +9,11 @@
  * P1 只提供分区读写与存储键常量；`chrome` 仅在函数体内访问，便于测试用 stub 替换。
  */
 
-/** 存储键常量（分区见项目架构 5.4）。 */
+/** 存储键常量（分区见项目架构 5.4；译文缓存放 IndexedDB，不占存储键）。 */
 export const STORAGE_KEYS = Object.freeze({
   settings: 'settings', // storage.sync：普通设置
   instances: 'engineInstances', // storage.sync：引擎实例列表（不含密钥）
   preferred: 'preferredEngine', // storage.sync：首选/备用引擎
-  cachePrefix: 'cache:', // storage.local：译文缓存前缀
   keyPrefix: 'engineKey:', // storage.local/sync：密钥前缀（分区由 keyStorage 决定）
 });
 
