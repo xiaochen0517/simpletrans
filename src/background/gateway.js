@@ -2,11 +2,13 @@
  * A2 请求网关
  *
  * 模块：后台服务（A）/ A2
- * 职责：接收页面注入的批次请求，校验载荷、控制全局并发与每连接在途数量、查缓存、调用 A3 并转发增量与定稿；
- *       处理取消、断线与批超时；不保存任务状态，不写 storage。
+ * 职责：接收页面注入的批次请求与统一段落提交，校验载荷、控制全局并发与每连接在途数量、查缓存、调用 A3
+ *       并转发增量与定稿；处理取消、断线与批超时；不保存任务状态，不写 storage。
  * 依赖：A3（adapter）、A4（cache）、E1（protocol）、E2（settings）、E3（instances/registry）、constants.js（P2 起）。
  * 实现阶段：P2（后台网关与页面通道）；P5 增加按段查缓存、命中帧与成功后写缓存；
- *           P6.2 缓存 key 升 v2（提示词哈希、思考强度与批量编码版本），并发改读实例 `maxConcurrency`。
+ *           P6.2 缓存 key 升 v2（提示词哈希、思考强度与批量编码版本），并发改读实例 `maxConcurrency`；
+ *           P6.3 增加 `ST_PAGE_SUBMIT` 入口：一次缓存预取、命中回显、唯一 key 分组、
+ *           按 `batchMaxChars` / `batchSize` 切批、`inFlightByKey` 在途复用与临时逐 group 执行器。
  */
 
 import {
@@ -37,7 +39,10 @@ import {
   getOrCreateDefaultInstance,
 } from '../shared/config/instances.js';
 import {
+  DEFAULT_BATCH_MAX_CHARS,
   DEFAULT_MAX_CONCURRENCY,
+  normalizeBatchSize,
+  normalizePositiveInt,
   normalizeReasoningEffort,
   validateInstance,
 } from '../shared/config/registry.js';
@@ -50,8 +55,17 @@ import { hashPrompt, PROMPT_VERSION } from '../shared/translate/prompt.js';
 /** 网关日志入口。 */
 const log = createLogger('A2');
 
-/** 已连接端口：Port → { port, batches, disconnected, logConfigSent }。只在内存中存在。 */
+/** 已连接端口：Port → { port, tabId, batches, submissions, disconnected, logConfigSent }。只在内存中存在。 */
 const connections = new Map();
+
+/** 标签页 id → 最新的 st-gateway 连接；一次性提交按它路由结果帧。 */
+const tabConnections = new Map();
+
+/** 在途共享执行：分组键 → shared。跨提交、跨连接复用，只在当前 Service Worker 内存中。 */
+const inFlightByKey = new Map();
+
+/** 无 requestId 的提交用内部键占位，避免两次匿名提交互相覆盖。 */
+let anonymousSubmissionSeq = 0;
 
 /** 全局上游并发信号量。 */
 let activeSlots = 0;
@@ -127,13 +141,40 @@ export function handleConnect(port) {
     return null;
   }
 
-  const conn = { port, batches: new Map(), disconnected: false, logConfigSent: false };
+  const tabId = Number.isInteger(port.sender?.tab?.id) ? port.sender.tab.id : null;
+  const previous = tabId == null ? null : tabConnections.get(tabId);
+  const conn = {
+    port,
+    tabId,
+    batches: new Map(),
+    submissions: new Map(),
+    disconnected: false,
+    logConfigSent: false,
+  };
   connections.set(port, conn);
-  log.info('gateway.connect', '网关已连接', { tabId: port.sender?.tab?.id ?? null });
+  if (tabId != null) {
+    tabConnections.set(tabId, conn);
+    if (previous && previous !== conn && !previous.disconnected) {
+      log.info('gateway.replace', '同一标签页建立新连接，关闭旧连接', { tabId });
+      cleanupConnection(previous);
+    }
+  }
+  log.info('gateway.connect', '网关已连接', { tabId });
 
   port.onMessage.addListener((message) => onMessage(conn, message));
   port.onDisconnect.addListener(() => cleanupConnection(conn));
   return conn;
+}
+
+/**
+ * 按标签页查找当前可用的网关连接；一次性提交没有 port，只能按 `sender.tab.id` 路由。
+ * @param {unknown} tabId
+ * @returns {object | null}
+ */
+export function findConnectionByTab(tabId) {
+  if (!Number.isInteger(tabId)) return null;
+  const conn = tabConnections.get(tabId);
+  return conn && !conn.disconnected ? conn : null;
 }
 
 /**
@@ -785,6 +826,12 @@ function finishBatch(batch) {
  */
 function cancelBatch(conn, payload) {
   const requestId = payload?.requestId;
+  const submission = conn.submissions.get(requestId);
+  if (submission) {
+    cancelSubmission(submission);
+    return;
+  }
+
   const batch = conn.batches.get(requestId);
   if (!batch || batch.finished) return;
 
@@ -806,6 +853,12 @@ function cancelBatch(conn, payload) {
  * @param {unknown} payload
  */
 function cancelItem(conn, payload) {
+  const submission = conn.submissions.get(payload?.requestId);
+  if (submission) {
+    cancelItemOfSubmission(submission, payload?.itemId);
+    return;
+  }
+
   const batch = conn.batches.get(payload?.requestId);
   if (!batch || batch.finished) return;
 
@@ -857,7 +910,24 @@ function cleanupConnection(conn) {
   if (conn.disconnected) return;
   conn.disconnected = true;
   connections.delete(conn.port);
-  log.info('gateway.disconnect', '网关已断开', { pendingBatches: conn.batches.size });
+  if (conn.tabId != null && tabConnections.get(conn.tabId) === conn) {
+    tabConnections.delete(conn.tabId);
+  }
+  log.info('gateway.disconnect', '网关已断开', {
+    pendingBatches: conn.batches.size,
+    pendingSubmissions: conn.submissions.size,
+  });
+
+  for (const submission of [...conn.submissions.values()]) {
+    submission.finished = true;
+    if (submission.deadlineTimer) clearTimeout(submission.deadlineTimer);
+    for (const item of submission.items) {
+      if (item.settled) continue;
+      detachItem(submission, item);
+      item.settled = true;
+    }
+  }
+  conn.submissions.clear();
 
   for (const batch of conn.batches.values()) {
     batch.finished = true;
@@ -912,4 +982,798 @@ function rejectBatch(conn, requestId, code, message, reason) {
       error: makeError(code, message, reason),
     },
   });
+}
+
+/* ------------------------------------------------------------------------- *
+ * P6.3 页面提交：缓存预取、命中回显、唯一 key 分组、切批与临时执行器
+ * ------------------------------------------------------------------------- */
+
+/**
+ * 按「单批段数」与「批次最大字符数」以段（group）为单位切批；绝不拆段。
+ * 单段超过字符上限时单独成批并标记 `oversize`，只用于日志计数。
+ * @param {Array<{ text: string }>} groups
+ * @param {{ batchSize?: unknown, batchMaxChars?: unknown }} [options]
+ * @returns {Array<{ groups: object[], chars: number, oversize: boolean, state: string }>}
+ */
+export function splitBatches(groups, { batchSize, batchMaxChars } = {}) {
+  const size = normalizeBatchSize(batchSize);
+  const maxChars = normalizePositiveInt(batchMaxChars, DEFAULT_BATCH_MAX_CHARS);
+  const batches = [];
+  let current = [];
+  let chars = 0;
+
+  const flush = () => {
+    if (current.length === 0) return;
+    batches.push({
+      groups: current,
+      chars,
+      oversize: current.some((group) => group.text.length > maxChars),
+      state: 'pending',
+    });
+    current = [];
+    chars = 0;
+  };
+
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const length = group.text.length;
+    if (current.length > 0 && (current.length >= size || chars + length > maxChars)) flush();
+    current.push(group);
+    chars += length;
+    if (current.length >= size) flush();
+  }
+  flush();
+  return batches;
+}
+
+/**
+ * 归一提交段落：`hostId` 兼作结果帧 `itemId`；缺失时补一个页面用不到的占位 id。
+ * @param {Array<{ hostId?: string, text: string }>} paragraphs
+ */
+function normalizeSubmitItems(paragraphs) {
+  return paragraphs.map((paragraph, index) => ({
+    index,
+    itemId:
+      typeof paragraph.hostId === 'string' && paragraph.hostId !== ''
+        ? paragraph.hostId
+        : `p-${index}`,
+    text: paragraph.text,
+    cacheKey: null,
+    groupKey: null,
+    group: null,
+    subscriber: null,
+    state: 'pending',
+    settled: false,
+  }));
+}
+
+/**
+ * 接收一次页面提交：读取设置/实例/密钥 → 计算 key → 一次预取缓存 → 命中回显 →
+ * 未命中分组切批 → 临时执行器逐 group 执行。初始化失败时逐段发 `ST_ITEM_ERROR`，
+ * 再发 `ST_BATCH_DONE(ok:false)`，避免页面停在「已提交」。
+ *
+ * @param {{
+ *   requestId?: string | null,
+ *   traceId?: string,
+ *   scope?: 'page' | 'single',
+ *   targetLang?: string,
+ *   domain?: string,
+ *   viewport?: { width?: number, height?: number },
+ *   paragraphs?: Array<{ hostId?: string, text: string }>,
+ *   tabId?: number,
+ * }} input
+ * @returns {Promise<{ accepted: true } | { accepted: false, error: object }>}
+ */
+export async function acceptPageSubmit({
+  requestId = null,
+  traceId,
+  scope = 'page',
+  targetLang,
+  domain,
+  paragraphs = [],
+  tabId,
+} = {}) {
+  const conn = findConnectionByTab(tabId);
+  if (!conn) {
+    return {
+      accepted: false,
+      error: makeError(
+        ERROR_CODES.NETWORK,
+        '页面通道未连接，请刷新后重试',
+        FAILURE_REASONS.NOT_CONNECTED
+      ),
+    };
+  }
+  if (requestId != null && conn.submissions.has(requestId)) {
+    return {
+      accepted: false,
+      error: makeError(ERROR_CODES.OTHER, '请求编号重复', FAILURE_REASONS.DUPLICATE_REQUEST),
+    };
+  }
+
+  const submissionKey = requestId ?? `anon-${(anonymousSubmissionSeq += 1)}`;
+
+  const traceLog = log.withTrace(traceId);
+  const items = normalizeSubmitItems(Array.isArray(paragraphs) ? paragraphs : []);
+  // 单段超限的段落不进入分组与批次，直接以 TEXT_TOO_LONG 失败，其余照常翻译。
+  const oversizedItems = items.filter((item) => item.text.length > MAX_SEGMENT_CHARS);
+  const activeItems = items.filter((item) => item.text.length <= MAX_SEGMENT_CHARS);
+  const rejectInit = (code, message, reason) => {
+    rejectSubmission(conn, { requestId, traceId, items }, code, message, reason);
+    return { accepted: true };
+  };
+
+  let settings;
+  try {
+    settings = await getSettings();
+  } catch {
+    return rejectInit(ERROR_CODES.CONFIG, '读取设置失败');
+  }
+  if (settings.enabled === false) return rejectInit(ERROR_CODES.CONFIG, '扩展已停用');
+
+  const target = targetLang ?? settings.targetLang;
+  if (!isSupportedTargetLang(target)) {
+    return rejectInit(ERROR_CODES.OTHER, '不支持的目标语言', FAILURE_REASONS.UNSUPPORTED_LANG);
+  }
+
+  let instance;
+  let apiKey;
+  try {
+    const list = await getInstances();
+    instance = Array.isArray(list) ? list[0] : null;
+    if (!instance || !validateInstance(instance).ok) {
+      return rejectInit(ERROR_CODES.CONFIG, '没有可用的引擎配置');
+    }
+    apiKey = await getKey(instance.id);
+  } catch {
+    return rejectInit(ERROR_CODES.CONFIG, '读取引擎配置失败');
+  }
+  if (!apiKey) {
+    return rejectInit(ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥');
+  }
+
+  // key 与缓存：缓存关闭也计算 key，用于同 key 分组与在途复用。
+  const cacheEnabled = settings.cacheEnabled !== false;
+  const cacheDomain = normalizeDomain(domain);
+  const cacheGeneration = cacheEnabled ? getCacheStore().generation() : 0;
+  const reasoningEffort = normalizeReasoningEffort(instance.reasoningEffort);
+
+  let promptHash = null;
+  try {
+    promptHash = await hashPrompt(instance.systemPrompt);
+  } catch (error) {
+    log.warn('cache.error', '提示词哈希计算失败，本次提交不参与缓存', {
+      requestId,
+      reason: error?.name ?? 'Error',
+    });
+  }
+
+  let keys = null;
+  let keyOk = Boolean(promptHash);
+  if (keyOk) {
+    try {
+      keys = await Promise.all(
+        activeItems.map((item) =>
+          buildCacheKey({
+            engineType: instance.type,
+            model: instance.model,
+            sourceLang: settings.sourceLang ?? 'auto',
+            targetLang: target,
+            promptVersion: PROMPT_VERSION,
+            batchEncodingVersion: BATCH_ENCODING_VERSION,
+            reasoningEffort,
+            promptHash,
+            context: '',
+            text: item.text,
+          })
+        )
+      );
+    } catch (error) {
+      keys = null;
+      keyOk = false;
+      log.warn('cache.error', '缓存 key 计算失败，本次提交不参与缓存', {
+        requestId,
+        reason: error?.name ?? 'Error',
+      });
+    }
+  }
+
+  activeItems.forEach((item, index) => {
+    item.cacheKey = keyOk ? keys[index] : null;
+    item.groupKey = item.cacheKey ?? `fallback:${item.text}`;
+  });
+
+  // 唯一 key 分组：同一 key 的多个段落合并为一个 group，只执行一次。
+  const groups = new Map();
+  for (const item of activeItems) {
+    let group = groups.get(item.groupKey);
+    if (!group) {
+      group = {
+        key: item.groupKey,
+        cacheKey: item.cacheKey,
+        text: item.text,
+        items: [],
+        cacheEntry: null,
+        shared: null,
+        state: 'pending',
+      };
+      groups.set(item.groupKey, group);
+    }
+    group.items.push(item);
+    item.group = group;
+  }
+
+  // 一次预取全部唯一 key：空数组不查缓存；读取失败按全部未命中处理。
+  let cacheEntries = new Map();
+  const uniqueKeys = [...new Set([...groups.values()].map((group) => group.cacheKey).filter(Boolean))];
+  if (cacheEnabled && keyOk && uniqueKeys.length > 0) {
+    try {
+      cacheEntries = await getCacheStore().getMany(uniqueKeys);
+    } catch (error) {
+      cacheEntries = new Map();
+      log.warn('cache.error', '缓存读取失败，本次提交按未命中处理', {
+        requestId,
+        reason: error?.name ?? 'Error',
+      });
+    }
+  }
+  for (const group of groups.values()) {
+    const entry = group.cacheKey ? cacheEntries.get(group.cacheKey) : null;
+    if (entry) {
+      group.cacheEntry = entry;
+      group.state = 'cache-hit';
+    }
+  }
+
+  const missGroups = [...groups.values()].filter((group) => group.state !== 'cache-hit');
+  const batchSize = normalizeBatchSize(instance.batchSize);
+  const batchMaxChars = normalizePositiveInt(instance.batchMaxChars, DEFAULT_BATCH_MAX_CHARS);
+  const batches = splitBatches(missGroups, { batchSize, batchMaxChars });
+  const limit = normalizeConcurrency(instance.maxConcurrency);
+
+  const submission = {
+    requestId,
+    submissionKey,
+    traceId,
+    scope,
+    conn,
+    tabId,
+    targetLang: target,
+    domain: cacheDomain,
+    items,
+    groups,
+    batches,
+    plan: {
+      cacheEnabled,
+      cacheKeys: keyOk ? uniqueKeys.length : 0,
+      cacheEntries: cacheEntries.size,
+      generation: cacheGeneration,
+      domain: cacheDomain,
+      batchSize,
+      batchMaxChars,
+    },
+    done: 0,
+    failed: 0,
+    cancelledCount: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    cacheWrites: 0,
+    dedupeHits: 0,
+    dedupeShared: 0,
+    dedupeJoined: 0,
+    finished: false,
+    cancelled: false,
+    timedOut: false,
+    deadlineTimer: null,
+  };
+
+  for (const group of groups.values()) {
+    if (group.items.length <= 1) continue;
+    submission.dedupeHits += group.items.length - 1;
+    traceLog.debug('dedupe.merge', '同一提交内同 key 段落合并', {
+      requestId,
+      items: group.items.length,
+    });
+  }
+
+  conn.submissions.set(submissionKey, submission);
+  submission.deadlineTimer = setTimeout(() => onSubmissionTimeout(submission), AI_TIMEOUT_MS.batchTotal);
+
+  traceLog.debug('batch.plan', '页面提交批次计划', {
+    requestId,
+    items: items.length,
+    groups: groups.size,
+    batches: batches.length,
+    batchSize,
+    batchMaxChars,
+    batchChars: batches.reduce((sum, batch) => sum + batch.chars, 0),
+    oversizeBatches: batches.filter((batch) => batch.oversize).length,
+    cacheEnabled,
+    cacheHits: [...groups.values()].filter((group) => group.state === 'cache-hit').length,
+    cacheMisses: missGroups.length,
+  });
+  traceLog.info('batch.start', '开始处理页面提交', {
+    requestId,
+    scope,
+    items: items.length,
+    batches: batches.length,
+    cacheHits: [...groups.values()].filter((group) => group.state === 'cache-hit').length,
+  });
+
+  // 超长段落直接失败，不进入分组、批次与缓存；其余段落按部分成功处理。
+  for (const item of oversizedItems) {
+    settleItem(submission, item, 'failed', {
+      notify: true,
+      code: ERROR_CODES.OTHER,
+      message: `单段超过 ${MAX_SEGMENT_CHARS} 字符`,
+      reason: FAILURE_REASONS.TEXT_TOO_LONG,
+    });
+  }
+
+  // 命中项立即回显；按页面顺序发帧，允许与未命中项的帧交错。
+  for (const group of groups.values()) {
+    if (group.state === 'cache-hit') fanOutCacheHit(submission, group);
+  }
+
+  if (cacheEnabled && keyOk) {
+    for (const group of missGroups) {
+      submission.cacheMisses += 1;
+      traceLog.debug('cache.miss', '缓存未命中', { requestId, items: group.items.length });
+    }
+  }
+
+  const context = {
+    targetLang: target,
+    instance,
+    apiKey,
+    limit,
+    cacheEnabled,
+    cacheGeneration,
+    domain: cacheDomain,
+  };
+
+  // 临时执行器：逐 group 单段 translate；批次信息先记录，供日志与 P6.4 队列对接。
+  for (const batch of batches) {
+    for (const group of batch.groups) {
+      if (group.items.every((item) => item.settled)) continue;
+      const existing = inFlightByKey.get(group.key);
+      if (existing) {
+        subscribeGroup(submission, group, existing, { owner: false });
+        traceLog.debug('dedupe.join', '订阅已有共享请求', { requestId, items: group.items.length });
+        continue;
+      }
+      const shared = createShared(submission, group, context);
+      subscribeGroup(submission, group, shared, { owner: true });
+      traceLog.debug('dedupe.owner', '创建共享请求', {
+        requestId,
+        items: group.items.length,
+        subscribers: shared.subscribers.size,
+      });
+      void runShared(shared);
+    }
+  }
+
+  finishIfAllSettled(submission);
+  return { accepted: true };
+}
+
+/**
+ * 初始化失败：逐段发 `ST_ITEM_ERROR`，再发 `ST_BATCH_DONE(ok:false)`。
+ * @param {object} conn
+ * @param {{ requestId?: string | null, traceId?: string, items: object[] }} submission
+ * @param {string} code
+ * @param {string} message
+ * @param {string} [reason]
+ */
+function rejectSubmission(conn, { requestId = null, traceId, items = [] }, code, message, reason) {
+  log.withTrace(traceId).warn('batch.reject', '页面提交初始化失败', {
+    requestId,
+    code,
+    ...(reason ? { reason } : {}),
+  });
+
+  for (const item of items) {
+    send(conn, {
+      type: MESSAGE_TYPES.ITEM_ERROR,
+      payload: {
+        requestId,
+        itemId: item.itemId,
+        code,
+        message,
+        ...(reason ? { reason } : {}),
+      },
+    });
+  }
+
+  send(conn, {
+    type: MESSAGE_TYPES.BATCH_DONE,
+    payload: {
+      requestId,
+      ok: false,
+      done: 0,
+      failed: items.length,
+      cancelled: 0,
+      error: makeError(code, message, reason),
+    },
+  });
+}
+
+/**
+ * 缓存命中回显：每个 item 都发 START → DONE，`usage` 为 null，不占执行器名额。
+ * @param {object} submission
+ * @param {object} group
+ */
+function fanOutCacheHit(submission, group) {
+  const text = typeof group.cacheEntry?.text === 'string' ? group.cacheEntry.text : '';
+  for (const item of group.items) {
+    if (item.settled) continue;
+    if (!send(submission.conn, {
+      type: MESSAGE_TYPES.ITEM_START,
+      payload: { requestId: submission.requestId, itemId: item.itemId },
+    })) {
+      return;
+    }
+    item.state = 'loading';
+    submission.cacheHits += 1;
+    log.withTrace(submission.traceId).debug('cache.hit', '缓存命中，跳过上游', {
+      requestId: submission.requestId,
+      itemId: item.itemId,
+      bytes: group.cacheEntry?.bytes ?? null,
+    });
+    settleItem(submission, item, 'done', { notify: true, text, usage: null });
+  }
+}
+
+/**
+ * 创建一次共享执行；同一个 key 在 `inFlightByKey` 里只保留一个。
+ * @param {object} submission
+ * @param {object} group
+ * @param {object} context
+ */
+function createShared(submission, group, context) {
+  const shared = {
+    key: group.key,
+    cacheKey: group.cacheKey,
+    text: group.text,
+    targetLang: context.targetLang,
+    instance: context.instance,
+    apiKey: context.apiKey,
+    limit: context.limit,
+    cacheEnabled: context.cacheEnabled,
+    cacheGeneration: context.cacheGeneration,
+    domain: context.domain,
+    controller: new AbortController(),
+    subscribers: new Set(),
+    owner: null,
+    state: 'running',
+    startedAt: Date.now(),
+    ownerSubmission: submission,
+  };
+  inFlightByKey.set(group.key, shared);
+  return shared;
+}
+
+/**
+ * 订阅一个共享执行：每个订阅 item 都先收到 `ST_ITEM_START`。
+ * @param {object} submission
+ * @param {object} group
+ * @param {object} shared
+ * @param {{ owner: boolean }} options
+ */
+function subscribeGroup(submission, group, shared, { owner }) {
+  group.shared = shared;
+  group.state = owner ? 'owner' : 'subscribed';
+  for (const item of group.items) {
+    if (item.settled || submission.conn.disconnected) continue;
+    const subscriber = { submission, item };
+    item.subscriber = subscriber;
+    item.state = 'loading';
+    shared.subscribers.add(subscriber);
+    if (owner && !shared.owner) shared.owner = subscriber;
+    if (!owner) submission.dedupeJoined += 1;
+    send(submission.conn, {
+      type: MESSAGE_TYPES.ITEM_START,
+      payload: { requestId: submission.requestId, itemId: item.itemId },
+    });
+  }
+  if (owner) submission.dedupeShared += 1;
+}
+
+/**
+ * 临时执行器：在实例 `maxConcurrency` 名额内做一次单段 `translate`，
+ * 增量只发给 owner，定稿后 fan-out 给全部订阅者并写一次缓存。
+ * @param {object} shared
+ */
+async function runShared(shared) {
+  let result;
+  try {
+    result = await withUpstreamSlot(
+      () =>
+        translate({
+          text: shared.text,
+          targetLang: shared.targetLang,
+          instance: { ...shared.instance, apiKey: shared.apiKey },
+          signal: shared.controller.signal,
+          onDelta: (delta) => {
+            const owner = shared.owner;
+            if (!owner || owner.item.settled || typeof delta !== 'string') return;
+            send(owner.submission.conn, {
+              type: MESSAGE_TYPES.ITEM_DELTA,
+              payload: {
+                requestId: owner.submission.requestId,
+                itemId: owner.item.itemId,
+                delta,
+              },
+            });
+          },
+        }),
+      shared.limit
+    );
+  } catch (error) {
+    if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
+    // 全部订阅者已取消：中断来自主动 abort，不再结算。
+    if (shared.state === 'cancelled') return;
+    shared.state = 'failed';
+    const code =
+      error instanceof TranslateError
+        ? error.code
+        : error?.code === ERROR_CODES.CANCELLED
+          ? ERROR_CODES.CANCELLED
+          : ERROR_CODES.OTHER;
+    log.withTrace(shared.ownerSubmission?.traceId).warn('dedupe.error', '共享请求失败', {
+      requestId: shared.ownerSubmission?.requestId ?? null,
+      code,
+      subscribers: shared.subscribers.size,
+    });
+    for (const subscriber of [...shared.subscribers]) {
+      settleItem(subscriber.submission, subscriber.item, 'failed', {
+        notify: true,
+        code,
+        message: error?.message ?? '翻译失败',
+      });
+    }
+    return;
+  }
+
+  if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
+  if (shared.state === 'cancelled') return;
+  shared.state = 'done';
+
+  const text = typeof result?.text === 'string' ? result.text : '';
+  // 先计入写入数再 fan-out，让同一次提交的 batch.done 能看到本次写入；实际写入仍异步。
+  const shouldWrite = shared.cacheEnabled && shared.cacheKey && text.trim() !== '';
+  if (shouldWrite && shared.ownerSubmission) shared.ownerSubmission.cacheWrites += 1;
+
+  for (const subscriber of [...shared.subscribers]) {
+    settleItem(subscriber.submission, subscriber.item, 'done', {
+      notify: true,
+      text,
+      usage: subscriber === shared.owner ? (result?.usage ?? null) : null,
+    });
+  }
+
+  if (shouldWrite) writeSharedCache(shared, text);
+}
+
+/**
+ * 成功定稿后按 group 写一次缓存；失败只记日志，不影响已发出的定稿帧。
+ * @param {object} shared
+ * @param {string} text
+ */
+function writeSharedCache(shared, text) {
+  const submission = shared.ownerSubmission;
+  void getCacheStore()
+    .set(shared.cacheKey, text, {
+      generation: shared.cacheGeneration,
+      domain: shared.domain,
+    })
+    .then((outcome) => {
+      if (!outcome?.written) return;
+      log.withTrace(submission?.traceId).debug('cache.write', '已写入缓存', {
+        requestId: submission?.requestId ?? null,
+        bytes: outcome.bytes,
+      });
+    })
+    .catch(() => {
+      // 写入失败不影响翻译结果；详细原因已由 A4 记录。
+    });
+}
+
+/**
+ * 结算一段：更新计数、发帧并在全部结算后结束提交。
+ * @param {object} submission
+ * @param {object} item
+ * @param {'done'|'failed'|'cancelled'} outcome
+ * @param {{ notify?: boolean, text?: string, usage?: unknown, code?: string, message?: string, reason?: string }} [options]
+ * @returns {boolean}
+ */
+function settleItem(submission, item, outcome, options = {}) {
+  if (!submission || !item || item.settled) return false;
+  item.settled = true;
+  item.state = outcome;
+  item.subscriber = null;
+
+  if (outcome === 'done') submission.done += 1;
+  else if (outcome === 'failed') submission.failed += 1;
+  else submission.cancelledCount += 1;
+
+  if (outcome === 'failed') {
+    log.withTrace(submission.traceId).warn('item.error', '段落翻译失败', {
+      requestId: submission.requestId,
+      itemId: item.itemId,
+      code: options.code ?? ERROR_CODES.OTHER,
+      ...(options.reason ? { reason: options.reason } : {}),
+    });
+  } else if (outcome === 'cancelled') {
+    log.withTrace(submission.traceId).debug('item.cancel', '段落已取消', {
+      requestId: submission.requestId,
+      itemId: item.itemId,
+    });
+  }
+
+  if (options.notify !== false) notifyItem(submission, item, outcome, options);
+  finishIfAllSettled(submission);
+  return true;
+}
+
+/**
+ * 给页面发单段终态帧；连接已断开或提交已结束时不再发。
+ * @param {object} submission
+ * @param {object} item
+ * @param {'done'|'failed'|'cancelled'} outcome
+ * @param {object} options
+ */
+function notifyItem(submission, item, outcome, options) {
+  const conn = submission.conn;
+  if (!conn || conn.disconnected || submission.finished) return;
+  const base = { requestId: submission.requestId, itemId: item.itemId };
+
+  if (outcome === 'done') {
+    send(conn, {
+      type: MESSAGE_TYPES.ITEM_DONE,
+      payload: { ...base, text: options.text ?? '', usage: options.usage ?? null },
+    });
+    return;
+  }
+
+  if (outcome === 'failed') {
+    send(conn, {
+      type: MESSAGE_TYPES.ITEM_ERROR,
+      payload: {
+        ...base,
+        code: options.code ?? ERROR_CODES.OTHER,
+        message: options.message ?? '翻译失败',
+        ...(options.reason ? { reason: options.reason } : {}),
+      },
+    });
+    return;
+  }
+
+  send(conn, {
+    type: MESSAGE_TYPES.ITEM_ERROR,
+    payload: { ...base, code: ERROR_CODES.CANCELLED, message: '翻译已取消' },
+  });
+}
+
+/**
+ * @param {object} submission
+ */
+function finishIfAllSettled(submission) {
+  if (submission.finished) return;
+  if (!submission.items.every((item) => item.settled)) return;
+  finishSubmission(submission);
+}
+
+/**
+ * 结束一次提交：发 `ST_BATCH_DONE` 并记录计数。
+ * @param {object} submission
+ */
+function finishSubmission(submission) {
+  if (submission.finished) return;
+  submission.finished = true;
+  if (submission.deadlineTimer) clearTimeout(submission.deadlineTimer);
+  submission.conn?.submissions?.delete(submission.submissionKey ?? submission.requestId);
+
+  send(submission.conn, {
+    type: MESSAGE_TYPES.BATCH_DONE,
+    payload: {
+      requestId: submission.requestId,
+      ok: submission.failed === 0 && submission.cancelledCount === 0,
+      done: submission.done,
+      failed: submission.failed,
+      cancelled: submission.cancelledCount,
+    },
+  });
+
+  log.withTrace(submission.traceId).info('batch.done', '批次结束', {
+    requestId: submission.requestId,
+    done: submission.done,
+    failed: submission.failed,
+    cancelled: submission.cancelledCount,
+    cacheHits: submission.cacheHits,
+    cacheMisses: submission.cacheMisses,
+    cacheWrites: submission.cacheWrites,
+    dedupeHits: submission.dedupeHits,
+    dedupeShared: submission.dedupeShared,
+    dedupeJoined: submission.dedupeJoined,
+    uniqueGroups: submission.groups.size,
+    batches: submission.batches.length,
+  });
+}
+
+/**
+ * 取消整个提交：未结算 item 不发帧，只清理订阅；无订阅者的 shared 立即 abort。
+ * @param {object} submission
+ */
+function cancelSubmission(submission) {
+  if (!submission || submission.finished) return;
+  submission.cancelled = true;
+  for (const item of submission.items) {
+    if (item.settled) continue;
+    detachItem(submission, item);
+    settleItem(submission, item, 'cancelled', { notify: false });
+  }
+  finishIfAllSettled(submission);
+}
+
+/**
+ * 取消单段：只移除本提交的订阅，不影响其它提交/连接。
+ * @param {object} submission
+ * @param {unknown} itemId
+ */
+function cancelItemOfSubmission(submission, itemId) {
+  const item = submission.items.find((entry) => entry.itemId === itemId);
+  if (!item || item.settled) return;
+  detachItem(submission, item);
+  settleItem(submission, item, 'cancelled', { notify: false });
+  finishIfAllSettled(submission);
+}
+
+/**
+ * 从共享执行上摘掉一个订阅；订阅集合为空时 abort 并删除在途表。
+ * @param {object} submission
+ * @param {object} item
+ */
+function detachItem(submission, item) {
+  const shared = item.group?.shared;
+  if (!shared) {
+    item.subscriber = null;
+    return;
+  }
+
+  if (item.subscriber) shared.subscribers.delete(item.subscriber);
+  if (shared.owner === item.subscriber) shared.owner = null;
+  item.subscriber = null;
+
+  if (shared.subscribers.size === 0 && shared.state === 'running') {
+    shared.state = 'cancelled';
+    try {
+      shared.controller.abort();
+    } catch {
+      // abort 失败不影响清理。
+    }
+    if (inFlightByKey.get(shared.key) === shared) inFlightByKey.delete(shared.key);
+    log.withTrace(submission.traceId).debug('dedupe.abort', '无订阅者，取消共享请求', {
+      requestId: submission.requestId,
+    });
+  }
+}
+
+/**
+ * 提交超时：未结算段落以 NETWORK / BATCH_TIMEOUT 失败，并从共享执行摘除。
+ * @param {object} submission
+ */
+function onSubmissionTimeout(submission) {
+  if (submission.finished) return;
+  submission.timedOut = true;
+  for (const item of submission.items) {
+    if (item.settled) continue;
+    detachItem(submission, item);
+    settleItem(submission, item, 'failed', {
+      notify: true,
+      code: ERROR_CODES.NETWORK,
+      message: '翻译超时',
+      reason: FAILURE_REASONS.BATCH_TIMEOUT,
+    });
+  }
+  finishIfAllSettled(submission);
 }

@@ -2,7 +2,7 @@
  * C6 翻译测试页夹具结构测试（P6.5）
  *
  * 直接读取并解析 `src/testpage/index.html`，验证它是一份稳定、离线、可翻译的固定夹具：
- * - 语言、`main` 与页内操作条（含两个模拟开关）的骨架；
+ * - 语言、`main` 与页内操作条（两个按钮、无模拟开关）的骨架；
  * - 十个区块的 id、`data-test-section`、`<h2>` 与顺序；
  * - 必需的前端 HTML 类型；正文英文、操作条中文且不参与翻译；
  * - 资源本地化与页内锚点；
@@ -140,18 +140,19 @@ describe('C6 翻译测试页夹具（P6.5）', () => {
     expect(order).toEqual(SECTION_IDS);
   });
 
-  it('操作条包含「模拟慢速」「模拟失败」两个开关', () => {
+  it('操作条只有「翻译整页 / 显示原文」，不含模拟开关', () => {
     const toolbar = document.querySelector('header[data-simpletrans-ignore]');
-    const slow = document.getElementById('test-mode-slow');
-    const fail = document.getElementById('test-mode-fail');
+    const start = document.getElementById('test-start');
+    const clear = document.getElementById('test-clear');
 
-    for (const toggle of [slow, fail]) {
-      expect(toggle).not.toBeNull();
-      expect(toggle.tagName).toBe('INPUT');
-      expect(toggle.getAttribute('type')).toBe('checkbox');
-      expect(toolbar.contains(toggle)).toBe(true);
-      expect(toggle.hasAttribute('checked')).toBe(false);
+    for (const button of [start, clear]) {
+      expect(button).not.toBeNull();
+      expect(button.tagName).toBe('BUTTON');
+      expect(toolbar.contains(button)).toBe(true);
     }
+    expect(document.getElementById('test-mode-slow')).toBeNull();
+    expect(document.getElementById('test-mode-fail')).toBeNull();
+    expect(toolbar.querySelectorAll('input')).toHaveLength(0);
   });
 
   it('真实包含需求列出的 HTML 类型', () => {

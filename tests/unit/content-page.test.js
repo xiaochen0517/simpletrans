@@ -666,97 +666,195 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 结果回显（假数据）
+// ---------------------------------------------------------------------------
+// 结果回显（后台帧）
 // ---------------------------------------------------------------------------
 
-describe('页面注入结果回显（P6.1）', () => {
-  it('整页提交后逐段回显：已提交 → 翻译中 → 定稿，内容带段落 id', async () => {
-    await loadContent();
-    document.body.innerHTML = '<p id="a">Hello</p><p id="b">World</p>';
+/**
+ * 构造一条后台结果帧。
+ * @param {string} type
+ * @param {string} requestId
+ * @param {string} itemId
+ * @param {object} [payload]
+ */
+function frame(type, requestId, itemId, payload = {}) {
+  return { type, payload: { requestId, itemId, ...payload } };
+}
 
+describe('页面注入结果回显（P6.3）', () => {
+  it('整页提交后逐段回显：已提交 → 翻译中 → 流式 → 定稿', async () => {
+    const mod = await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p><p id="b">World</p>';
     await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+
     const a = document.getElementById('a');
     const b = document.getElementById('b');
-    const itemId = a.getAttribute(HOST_ATTR);
+    const requestId = submissions[0].requestId;
+    const itemA = a.getAttribute(HOST_ATTR);
+    const itemB = b.getAttribute(HOST_ATTR);
     expect(rendererTextOf(a)).toBe('已提交，等待翻译');
     expect(rendererTextOf(b)).toBe('已提交，等待翻译');
 
-    await vi.advanceTimersByTimeAsync(80);
+    const task = mod.getTask();
+    expect(task.applyResultFrame(frame(MESSAGE_TYPES.ITEM_START, requestId, itemA))).toBe(true);
     expect(translationOf(a).getAttribute('data-st-state')).toBe('loading');
     expect(rendererTextOf(a)).toBe('翻译中…');
 
+    task.applyResultFrame(frame(MESSAGE_TYPES.ITEM_DELTA, requestId, itemA, { delta: '你好，' }));
     await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(a).getAttribute('data-st-state')).toBe('streaming');
+    expect(rendererTextOf(a)).toBe('你好，');
+
+    task.applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemA, { text: '你好，世界', usage: null })
+    );
+    task.applyResultFrame(frame(MESSAGE_TYPES.ITEM_START, requestId, itemB));
+    task.applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemB, { text: '世界', usage: null })
+    );
+
     expect(translationOf(a).getAttribute('data-st-state')).toBe('done');
-    expect(rendererTextOf(a)).toBe(`【模拟 ${itemId}】Hello`);
+    expect(rendererTextOf(a)).toBe('你好，世界');
     expect(translationOf(b).getAttribute('data-st-state')).toBe('done');
+    expect(rendererTextOf(b)).toBe('世界');
   });
 
-  it('长段落按增量刷新，定稿前能看到流式文本', async () => {
-    await loadContent();
-    const long = 'A'.repeat(60);
-    document.body.innerHTML = `<p id="a">${long}</p>`;
-
+  it('没有增量时 START → DONE 也能直接显示译文', async () => {
+    const mod = await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p>';
     await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+
     const host = document.getElementById('a');
+    const requestId = submissions[0].requestId;
     const itemId = host.getAttribute(HOST_ATTR);
 
-    await vi.advanceTimersByTimeAsync(80);
-    expect(translationOf(host).getAttribute('data-st-state')).toBe('loading');
+    mod.getTask().applyResultFrame(frame(MESSAGE_TYPES.ITEM_START, requestId, itemId));
+    mod.getTask().applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '你好', usage: null })
+    );
 
-    await vi.advanceTimersByTimeAsync(80);
-    expect(rendererTextOf(host)).toBe('翻译中…');
-
-    await vi.advanceTimersByTimeAsync(80);
-    expect(translationOf(host).getAttribute('data-st-state')).toBe('streaming');
-    expect(rendererTextOf(host)).toHaveLength(20);
-
-    await vi.advanceTimersByTimeAsync(160);
     expect(translationOf(host).getAttribute('data-st-state')).toBe('done');
-    expect(rendererTextOf(host)).toBe(`【模拟 ${itemId}】${long}`);
+    expect(rendererTextOf(host)).toBe('你好');
   });
 
-  it('模拟失败模式显示「翻译失败」，页面会话保持 submitted', async () => {
+  it('失败帧显示「翻译失败」，页面会话保持 submitted', async () => {
     const mod = await loadContent();
-    mod.getTask().setResultMode('fail');
     document.body.innerHTML = '<p id="a">Hello</p>';
-
     await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
-    await vi.advanceTimersByTimeAsync(80);
 
     const host = document.getElementById('a');
+    const requestId = submissions[0].requestId;
+    const itemId = host.getAttribute(HOST_ATTR);
+    const task = mod.getTask();
+
+    task.applyResultFrame(frame(MESSAGE_TYPES.ITEM_START, requestId, itemId));
+    task.applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_ERROR, requestId, itemId, { code: 'NETWORK', message: '网络错误' })
+    );
+
     expect(translationOf(host).getAttribute('data-st-state')).toBe('error');
-    expect(rendererTextOf(host)).toBe('翻译失败：模拟失败');
-    expect(mod.getTask().getStatus().phase).toBe('submitted');
+    expect(rendererTextOf(host)).toBe('翻译失败：网络错误');
+    expect(task.getStatus().phase).toBe('submitted');
   });
 
-  it('Ctrl 单段提交后同样进入回显', async () => {
-    await loadContent();
+  it('Ctrl 单段提交后同样收到后台帧', async () => {
+    const mod = await loadContent();
     const p = mount('<p id="p">Hello</p>');
     hover(p);
 
     await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
-    const itemId = p.getAttribute(HOST_ATTR);
     expect(rendererTextOf(p)).toBe('已提交，等待翻译');
 
-    await vi.advanceTimersByTimeAsync(80);
-    expect(translationOf(p).getAttribute('data-st-state')).toBe('loading');
+    const requestId = submissions[0].requestId;
+    const itemId = p.getAttribute(HOST_ATTR);
+    mod
+      .getTask()
+      .applyResultFrame(
+        frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '你好', usage: null })
+      );
 
-    await vi.advanceTimersByTimeAsync(80);
     expect(translationOf(p).getAttribute('data-st-state')).toBe('done');
-    expect(rendererTextOf(p)).toBe(`【模拟 ${itemId}】Hello`);
+    expect(rendererTextOf(p)).toBe('你好');
   });
 
   it('流式进行中「显示原文」后不再出现新字符', async () => {
-    await loadContent();
+    const mod = await loadContent();
     document.body.innerHTML = `<p id="a">${'A'.repeat(60)}</p>`;
     await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
-    await vi.advanceTimersByTimeAsync(160);
+
+    const host = document.getElementById('a');
+    const requestId = submissions[0].requestId;
+    const itemId = host.getAttribute(HOST_ATTR);
+    const task = mod.getTask();
+
+    task.applyResultFrame(frame(MESSAGE_TYPES.ITEM_START, requestId, itemId));
+    task.applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_DELTA, requestId, itemId, { delta: '流式第一段' })
+    );
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('streaming');
 
     const response = await sendToContent({ type: MESSAGE_TYPES.CLEAR, payload: {} });
     expect(response.ok).toBe(true);
     expect(document.querySelector(`[${TRANSLATION_ATTR}]`)).toBe(null);
 
-    await vi.advanceTimersByTimeAsync(1000);
+    task.applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '不应出现' })
+    );
     expect(document.querySelector(`[${TRANSLATION_ATTR}]`)).toBe(null);
+  });
+
+  it('提交失败时段落标错并清理临时提交，迟到帧不再显示', async () => {
+    submitReply = () => ({
+      ok: false,
+      error: { code: 'NETWORK', message: '页面通道未连接，请刷新后重试' },
+    });
+    const mod = await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p>';
+
+    const response = await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.NETWORK);
+
+    const host = document.getElementById('a');
+    const itemId = host.getAttribute(HOST_ATTR);
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('error');
+    expect(rendererTextOf(host)).toBe('提交失败：页面通道未连接，请刷新后重试');
+
+    const requestId = submissions[0].requestId;
+    mod
+      .getTask()
+      .applyResultFrame(frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '迟到' }));
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('error');
+    expect(rendererTextOf(host)).toBe('提交失败：页面通道未连接，请刷新后重试');
+  });
+
+  it('后台经长连接推送的 ST_ITEM_* 帧由 D4 转发给 D5，ST_BATCH_DONE 不改段落状态', async () => {
+    await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p>';
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+
+    const host = document.getElementById('a');
+    const requestId = submissions[0].requestId;
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    serverPort.postMessage(frame(MESSAGE_TYPES.ITEM_START, requestId, itemId));
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('loading');
+
+    serverPort.postMessage(frame(MESSAGE_TYPES.ITEM_DELTA, requestId, itemId, { delta: '你' }));
+    await vi.advanceTimersByTimeAsync(80);
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('streaming');
+    expect(rendererTextOf(host)).toBe('你');
+
+    serverPort.postMessage(frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '你好' }));
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('done');
+    expect(rendererTextOf(host)).toBe('你好');
+
+    serverPort.postMessage({
+      type: MESSAGE_TYPES.BATCH_DONE,
+      payload: { requestId, ok: true, done: 1, failed: 0, cancelled: 0 },
+    });
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('done');
+    expect(rendererTextOf(host)).toBe('你好');
   });
 });

@@ -8,7 +8,8 @@
  *
  * P2 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
  * P3 补 storage.onChanged、getManifest、getURL；P4 补 commands.onCommand、tabs.query / sendMessage、
- * scripting.insertCSS / executeScript（记录调用顺序）；P6.5 补 tabs.create（打开测试页，记录创建参数）。
+ * scripting.insertCSS / executeScript（记录调用顺序）；P6.5 补 tabs.create（打开测试页，记录创建参数）；
+ * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`。
  */
 
 let portSequence = 0;
@@ -176,7 +177,9 @@ export function createChrome() {
       return `chrome-extension://${runtime.id}/${String(path).replace(/^\/+/, '')}`;
     },
     connect(options = {}) {
-      const { client, server } = makePortPair(options.name ?? '', { id: runtime.id });
+      // 生产代码只传 name；测试可额外传 sender，模拟页面注入的 sender.tab。
+      const sender = options.sender ?? { id: runtime.id };
+      const { client, server } = makePortPair(options.name ?? '', sender);
       onConnect.emit(server);
       return client;
     },

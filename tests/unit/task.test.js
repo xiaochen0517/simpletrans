@@ -114,49 +114,19 @@ function acceptedSubmit() {
 }
 
 /**
- * 用注入的扫描、提交与结果来源重建任务。
- * @param {{ scan?: Function, submit?: Function, inViewport?: Function, logger?: object, resultsFactory?: Function }} [deps]
+ * 用注入的扫描、提交重建任务。
+ * @param {{ scan?: Function, submit?: Function, inViewport?: Function, logger?: object }} [deps]
  * @returns {ReturnType<typeof createTask>}
  */
-function pageTask({
-  scan = async () => [],
-  submit = acceptedSubmit(),
-  inViewport,
-  logger,
-  resultsFactory,
-} = {}) {
+function pageTask({ scan = async () => [], submit = acceptedSubmit(), inViewport, logger } = {}) {
   task = createTask({
     renderer,
     submit,
     scan,
     ...(inViewport ? { inViewport } : {}),
     ...(logger ? { logger } : {}),
-    ...(resultsFactory ? { resultsFactory } : {}),
   });
   return task;
-}
-
-/**
- * 记录调用的结果来源桩：不自己造帧，用例直接调用 `task.applyResultFrame`。
- * @returns {{ start: Function, cancelAll: Function, setMode: Function, getMode: Function, starts: object[], cancels: number }}
- */
-function resultSourceStub() {
-  const source = {
-    starts: [],
-    cancels: 0,
-    mode: 'normal',
-    start: vi.fn((submission) => {
-      source.starts.push(submission);
-    }),
-    cancelAll: vi.fn(() => {
-      source.cancels += 1;
-    }),
-    setMode: vi.fn((mode) => {
-      source.mode = mode;
-    }),
-    getMode: vi.fn(() => source.mode),
-  };
-  return source;
 }
 
 /**
@@ -169,6 +139,13 @@ function resultSourceStub() {
  */
 function frameOf(type, requestId, itemId, extra = {}) {
   return { type, payload: { requestId, itemId, ...extra } };
+}
+
+/**
+ * 推进若干微任务，等异步提交步骤走到「已登记、等待回执」。
+ */
+async function flushMicrotasks() {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
 /**
@@ -826,30 +803,25 @@ describe('D5 统一提交（P6.1）：Ctrl 单段', () => {
 // 结果回显
 // ---------------------------------------------------------------------------
 
-describe('D5 结果回显（P6.1）', () => {
+describe('D5 结果回显（P6.3）', () => {
   /**
-   * 启动一次整页提交，返回宿主、提交桩、结果来源与 requestId。
+   * 启动一次整页提交，返回宿主与 requestId。
    * @param {string[]} [texts]
-   * @returns {Promise<{ hosts: Element[], submit: import('vitest').Mock, source: object, requestId: string }>}
+   * @returns {Promise<{ hosts: Element[], submit: import('vitest').Mock, requestId: string }>}
    */
   async function startPage(texts = ['Hello', 'World']) {
     const hosts = mountTexts(texts);
     const submit = acceptedSubmit();
-    const source = resultSourceStub();
     pageTask({
       scan: async () => paragraphsOf(hosts, texts),
       submit,
-      resultsFactory: () => source,
     });
     await task.start({ targetLang: 'zh' });
-    return { hosts, submit, source, requestId: submit.mock.calls[0][0].requestId };
+    return { hosts, submit, requestId: submit.mock.calls[0][0].requestId };
   }
 
-  it('提交成功后把提交记录交给结果来源，START/DELTA/DONE 落到对应段落', async () => {
-    const { hosts, source, requestId } = await startPage();
-    expect(source.starts).toHaveLength(1);
-    expect(source.starts[0].requestId).toBe(requestId);
-    expect(source.starts[0].items.size).toBe(2);
+  it('提交成功后按后台帧回显：START/DELTA/DONE 落到对应段落', async () => {
+    const { hosts, requestId } = await startPage();
 
     const [first, second] = hosts;
     const firstId = first.getAttribute(HOST_ATTR);
@@ -860,31 +832,30 @@ describe('D5 结果回显（P6.1）', () => {
     expect(renderer.getState(second)).toBe('submitted');
 
     expect(
-      task.applyResultFrame(
-        frameOf(MESSAGE_TYPES.ITEM_DELTA, requestId, firstId, { delta: '【模拟 ' })
-      )
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DELTA, requestId, firstId, { delta: '你好' }))
     ).toBe(true);
     await vi.advanceTimersByTimeAsync(DISPLAY_UPDATE_THROTTLE_MS);
     expect(renderer.getState(first)).toBe('streaming');
-    expect(textOf(first)).toBe('【模拟 ');
+    expect(textOf(first)).toBe('你好');
 
     expect(
       task.applyResultFrame(
-        frameOf(MESSAGE_TYPES.ITEM_DELTA, requestId, firstId, { delta: `${firstId}】Hello` })
+        frameOf(MESSAGE_TYPES.ITEM_DELTA, requestId, firstId, { delta: '，世界' })
       )
     ).toBe(true);
     await vi.advanceTimersByTimeAsync(DISPLAY_UPDATE_THROTTLE_MS);
-    expect(textOf(first)).toBe(`【模拟 ${firstId}】Hello`);
+    expect(textOf(first)).toBe('你好，世界');
 
     expect(
       task.applyResultFrame(
         frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, firstId, {
-          text: `【模拟 ${firstId}】Hello world`,
+          text: '你好，世界',
+          usage: null,
         })
       )
     ).toBe(true);
     expect(renderer.getState(first)).toBe('done');
-    expect(textOf(first)).toBe(`【模拟 ${firstId}】Hello world`);
+    expect(textOf(first)).toBe('你好，世界');
     expect(renderer.getState(second)).toBe('submitted');
   });
 
@@ -897,12 +868,10 @@ describe('D5 结果回显（P6.1）', () => {
     expect(renderer.getState(host)).toBe('loading');
 
     expect(
-      task.applyResultFrame(
-        frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: `【模拟 ${itemId}】Hello` })
-      )
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '你好' }))
     ).toBe(true);
     expect(renderer.getState(host)).toBe('done');
-    expect(textOf(host)).toBe(`【模拟 ${itemId}】Hello`);
+    expect(textOf(host)).toBe('你好');
   });
 
   it('ITEM_ERROR 显示「翻译失败：」并保持页面会话', async () => {
@@ -916,12 +885,12 @@ describe('D5 结果回显（P6.1）', () => {
       task.applyResultFrame(
         frameOf(MESSAGE_TYPES.ITEM_ERROR, requestId, itemId, {
           code: ERROR_CODES.NETWORK,
-          message: '模拟失败',
+          message: '网络错误',
         })
       )
     ).toBe(true);
     expect(renderer.getState(host)).toBe('error');
-    expect(textOf(host)).toBe('翻译失败：模拟失败');
+    expect(textOf(host)).toBe('翻译失败：网络错误');
     expect(task.getStatus().phase).toBe('submitted');
   });
 
@@ -934,7 +903,9 @@ describe('D5 结果回显（P6.1）', () => {
       task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, 's-unknown', itemId, { text: 'x' }))
     ).toBe(false);
     expect(
-      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, 'hunknown-1', { text: 'x' }))
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, 'hunknown-1', { text: 'x' })
+      )
     ).toBe(false);
     expect(task.applyResultFrame({ type: MESSAGE_TYPES.LOG_CONFIG, payload: {} })).toBe(false);
     expect(task.applyResultFrame(null)).toBe(false);
@@ -990,13 +961,12 @@ describe('D5 结果回显（P6.1）', () => {
     expect(textOf(host)).toBe('定稿');
   });
 
-  it('清除与卸载会停止结果来源并丢弃在途帧', async () => {
-    const { hosts, source, requestId } = await startPage(['Hello']);
+  it('清除与卸载后丢弃在途帧', async () => {
+    const { hosts, requestId } = await startPage(['Hello']);
     const host = hosts[0];
     const itemId = host.getAttribute(HOST_ATTR);
 
     task.clearAll();
-    expect(source.cancels).toBeGreaterThanOrEqual(1);
     expect(
       task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: 'x' }))
     ).toBe(false);
@@ -1004,58 +974,102 @@ describe('D5 结果回显（P6.1）', () => {
 
     await task.start({ targetLang: 'zh' });
     task.dispose();
-    expect(source.cancels).toBeGreaterThanOrEqual(2);
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: 'x' }))
+    ).toBe(false);
   });
 
-  it('setResultMode 转交给结果来源并返回生效模式', async () => {
-    const { source } = await startPage(['Hello']);
-
-    expect(task.setResultMode('fail')).toBe('fail');
-    expect(source.setMode).toHaveBeenCalledWith('fail');
-  });
-
-  it('提交失败时不启动结果来源', async () => {
+  it('提交失败时段落标错并清理临时提交，迟到帧不再显示', async () => {
     const hosts = mountTexts(['Hello']);
-    const source = resultSourceStub();
     pageTask({
       scan: async () => paragraphsOf(hosts, ['Hello']),
       submit: vi.fn(async () => ({
         ok: false,
         error: { code: ERROR_CODES.NETWORK, message: '离线' },
       })),
-      resultsFactory: () => source,
     });
 
-    await task.start({ targetLang: 'zh' });
+    const response = await task.start({ targetLang: 'zh' });
 
-    expect(source.start).not.toHaveBeenCalled();
-    expect(source.starts).toHaveLength(0);
+    expect(response.ok).toBe(false);
+    expect(task.getStatus().phase).toBe('error');
+    const host = hosts[0];
+    expect(renderer.getState(host)).toBe('error');
+    expect(textOf(host)).toBe('提交失败：离线');
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_DONE, 's-late', host.getAttribute(HOST_ATTR), { text: '迟到' })
+      )
+    ).toBe(false);
+    expect(renderer.getState(host)).toBe('error');
   });
 
-  it('滚动增量提交的结果也登记到结果来源，并能落到新增段落', async () => {
+  it('提交前先登记临时提交，早到的命中帧可路由并保持', async () => {
+    const hosts = mountTexts(['Hello']);
+    let resolveSubmit;
+    const submit = vi.fn(
+      (payload) =>
+        new Promise((resolve) => {
+          resolveSubmit = () =>
+            resolve({
+              ok: true,
+              data: {
+                accepted: true,
+                requestId: payload.requestId,
+                scope: payload.scope,
+                paragraphs: payload.paragraphs.length,
+                chars: 0,
+              },
+            });
+        })
+    );
+    pageTask({ scan: async () => paragraphsOf(hosts, ['Hello']), submit });
+
+    const starting = task.start({ targetLang: 'zh' });
+    await flushMicrotasks();
+
+    const requestId = submit.mock.calls[0][0].requestId;
+    const host = hosts[0];
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    // 回执还没到，后台命中帧先到：仍能按 requestId + itemId 路由。
+    expect(
+      task.applyResultFrame(
+        frameOf(MESSAGE_TYPES.ITEM_START, requestId, itemId, { fromCache: true })
+      )
+    ).toBe(true);
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '你好' }))
+    ).toBe(true);
+    expect(renderer.getState(host)).toBe('done');
+    expect(textOf(host)).toBe('你好');
+
+    resolveSubmit();
+    await starting;
+
+    expect(task.getStatus()).toEqual({ phase: 'submitted', total: 1 });
+    expect(renderer.getState(host)).toBe('done');
+    expect(textOf(host)).toBe('你好');
+  });
+
+  it('滚动增量提交的结果也按新 requestId 落到新增段落', async () => {
     const hosts = mountTexts(['A', 'B']);
     let scanned = paragraphsOf(hosts, ['A', 'B']);
     const submit = acceptedSubmit();
-    const source = resultSourceStub();
-    pageTask({ scan: async () => scanned, submit, resultsFactory: () => source });
+    pageTask({ scan: async () => scanned, submit });
 
     await task.start({ targetLang: 'zh' });
-    expect(source.starts).toHaveLength(1);
 
     const [extra] = appendTexts(['C'], 2);
     scanned = paragraphsOf([...hosts, extra], ['A', 'B', 'C']);
     await scrollAndWait();
 
-    expect(source.starts).toHaveLength(2);
     const requestId = submit.mock.calls[1][0].requestId;
     const itemId = extra.getAttribute(HOST_ATTR);
-    expect(source.starts[1].requestId).toBe(requestId);
     expect(
-      task.applyResultFrame(
-        frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: `【模拟 ${itemId}】C` })
-      )
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '丙' }))
     ).toBe(true);
-    expect(textOf(extra)).toBe(`【模拟 ${itemId}】C`);
+    expect(textOf(extra)).toBe('丙');
   });
 });
 

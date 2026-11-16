@@ -7,7 +7,8 @@
  * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A4（cache）、A2（gateway 的并发名额）、公共数值。
  * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息；P6.1 增加 `ST_ROUTE` 转发与
  *           `ST_PAGE_SUBMIT` 接收（校验、计数、逐段日志与回执，不调用网关）；本轮移除段落上下文校验；
- *           P6.2 `ST_LIST_ENGINES` 返回完整实例参数，测试翻译改按实例 `maxConcurrency` 取并发名额。
+ *           P6.2 `ST_LIST_ENGINES` 返回完整实例参数，测试翻译改按实例 `maxConcurrency` 取并发名额；
+ *           P6.3 `ST_PAGE_SUBMIT` 校验后按 `sender.tab.id` 转交 A2，回执不再等待翻译完成。
  *
  * 标签页转发有两处入口：P4 的快捷键走 `ST_TOGGLE`（commands.js），P6.1 的弹窗走 `ST_ROUTE`
  * 的 `start` / `clear`（本文件），两者共用 `sendToTab` 的补注入与错误归一。
@@ -29,7 +30,7 @@ import { getKey, getOrCreateDefaultInstance, getPublicSettings } from '../shared
 import { validateInstance } from '../shared/config/registry.js';
 import { getCacheStore } from '../shared/cache/store.js';
 import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
-import { normalizeConcurrency, withUpstreamSlot } from './gateway.js';
+import { normalizeConcurrency, withUpstreamSlot, acceptPageSubmit, findConnectionByTab } from './gateway.js';
 
 /** A1 日志入口。 */
 const log = createLogger('A1');
@@ -37,24 +38,9 @@ const log = createLogger('A1');
 /** 每个标签页同一时刻只允许一次补注入。 */
 const injecting = new Map();
 
-/** 后台逐段日志的预览长度（P6.1 人工核对）。 */
-const PREVIEW_CHARS = 60;
-
 /** Chrome 在目标页没有监听器时给出的错误特征。 */
 const NO_RECEIVER_PATTERN =
   /Receiving end does not exist|Could not establish connection|message port closed/i;
-
-/**
- * 段落预览：连续空白合并、去首尾空白后截断；只用于 P6.1 人工核对。
- * @param {string} value
- * @returns {string}
- */
-function previewText(value) {
-  return String(value ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, PREVIEW_CHARS);
-}
 
 /**
  * 处理一条一次性消息。
@@ -88,7 +74,7 @@ export async function handleMessage(message, sender) {
     } else if (message.type === MESSAGE_TYPES.ROUTE) {
       response = await routeCommand(message.payload, traceId);
     } else if (message.type === MESSAGE_TYPES.PAGE_SUBMIT) {
-      response = receivePageSubmit(message.payload, sender, traceId);
+      response = await receivePageSubmit(message.payload, sender, traceId);
     } else {
       const text = isKnownMessageType(message.type) ? '该消息暂未实现' : '无法识别的消息';
       response = failure(ERROR_CODES.OTHER, text, FAILURE_REASONS.INVALID_MESSAGE);
@@ -217,13 +203,15 @@ async function routeCommand(payload, traceId) {
 }
 
 /**
- * 接收页面注入的统一段落提交：校验、计数、逐段打印预览并回执，不查缓存、不调用引擎。
+ * 接收页面注入的统一段落提交：形状校验通过后按 `sender.tab.id` 把提交转交 A2。
+ * A2 负责缓存预取、命中回显、分组切批与临时执行；A1 只等到「提交已创建」，
+ * 不等待翻译完成，也不因缓存未命中而阻塞回执。
  * @param {unknown} payload
  * @param {{ tab?: { id?: number } }} [sender]
  * @param {string} [traceId]
- * @returns {{ ok: true, data: object } | { ok: false, error: object }}
+ * @returns {Promise<{ ok: true, data: object } | { ok: false, error: object }>}
  */
-export function receivePageSubmit(payload, sender, traceId) {
+export async function receivePageSubmit(payload, sender, traceId) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return failure(ERROR_CODES.OTHER, '请求参数无效', FAILURE_REASONS.INVALID_MESSAGE);
   }
@@ -272,24 +260,54 @@ export function receivePageSubmit(payload, sender, traceId) {
     return failure(ERROR_CODES.OTHER, '请求包含不允许的字段', FAILURE_REASONS.FORBIDDEN_FIELD);
   }
 
+  const tabId = sender?.tab?.id;
+  if (findConnectionByTab(tabId) == null) {
+    log.warn('message.rejected', '页面通道未连接', {
+      requestId,
+      tabId: tabId ?? null,
+      reason: FAILURE_REASONS.NOT_CONNECTED,
+    });
+    return failure(
+      ERROR_CODES.NETWORK,
+      '页面通道未连接，请刷新后重试',
+      FAILURE_REASONS.NOT_CONNECTED
+    );
+  }
+
   const traceLog = log.withTrace(traceId);
   traceLog.info('page.received', '后台已接收段落', {
     scope,
     requestId,
     paragraphs: paragraphs.length,
     chars,
-    tabId: sender?.tab?.id ?? null,
+    tabId: tabId ?? null,
   });
   paragraphs.forEach((raw, index) => {
-    traceLog.info('page.item', '后台接收段落', {
-      scope,
-      requestId,
+    traceLog.debug('page.item', '后台接收段落', {
       index,
       hostId: raw.hostId ?? '',
       textLength: raw.text.length,
-      preview: previewText(raw.text),
     });
   });
+
+  const result = await acceptPageSubmit({
+    requestId,
+    traceId,
+    scope,
+    targetLang: payload.targetLang,
+    domain: payload.domain,
+    viewport: payload.viewport,
+    paragraphs,
+    tabId,
+  });
+
+  if (!result?.accepted) {
+    return failure(
+      result?.error?.code ?? ERROR_CODES.OTHER,
+      result?.error?.message ?? '提交失败，请稍后重试',
+      result?.error?.reason
+    );
+  }
 
   return {
     ok: true,

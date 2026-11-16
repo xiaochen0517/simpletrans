@@ -7,7 +7,7 @@
  * 依赖：D1–D5、E1 消息协议、E4 日志、content.css（P2 起）。
  * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加 `ST_START` 整页任务入口与统一提交；
  *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务；
- *           本轮把结果回显的临时假数据源接到 D5（P6.2 换成后台帧）。
+ *           P6.3 把后台 `ST_ITEM_*` 结果帧转发给 D5，页面不再生成假数据。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -30,7 +30,6 @@ import {
 } from '../shared/log/logger.js';
 import { createBridge } from './bridge.js';
 import { createRenderer } from './dom/renderer.js';
-import { createFakeResults } from './fake-results.js';
 import { createHoverTracker } from './hover.js';
 import { createTask } from './task.js';
 
@@ -39,6 +38,14 @@ const LOAD_FLAG = '__simpletransContentLoaded';
 
 /** 单键 Ctrl 触发的最长按住时间；超过视为普通按住，不触发。 */
 const CTRL_TAP_MAX_MS = 600;
+
+/** 交给 D5 的逐段结果帧。 */
+const RESULT_FRAME_TYPES = new Set([
+  MESSAGE_TYPES.ITEM_START,
+  MESSAGE_TYPES.ITEM_DELTA,
+  MESSAGE_TYPES.ITEM_DONE,
+  MESSAGE_TYPES.ITEM_ERROR,
+]);
 
 /** @type {ReturnType<typeof createBridge> | null} */
 let bridge = null;
@@ -218,14 +225,26 @@ async function submitPage(payload) {
 }
 
 /**
- * 处理后端帧：只处理日志级别；D5 的提交走一次性消息，不再消费数据面帧。
+ * 处理后端帧：日志级别帧更新自身；逐段结果帧交给 D5 按 `requestId + itemId` 路由；
+ * 批次结束只记日志，段落状态完全由 item 帧驱动。
  * @param {object} frame
  */
 function handleFrame(frame) {
-  if (frame?.type === MESSAGE_TYPES.LOG_CONFIG) {
+  const type = frame?.type;
+  if (type === MESSAGE_TYPES.LOG_CONFIG) {
     setLogLevel(frame.payload?.level);
     log?.debug('log.config', '收到日志级别', { level: getLogLevel() });
     logReadyOnce();
+    return;
+  }
+
+  if (RESULT_FRAME_TYPES.has(type)) {
+    task?.applyResultFrame(frame);
+    return;
+  }
+
+  if (type === MESSAGE_TYPES.BATCH_DONE) {
+    log?.debug('page.batch.done', '批次结束', { requestId: frame.payload?.requestId ?? null });
   }
 }
 
@@ -375,8 +394,6 @@ function main() {
     task = createTask({
       renderer,
       submit: submitPage,
-      // 本阶段结果来源：页面内假数据（P6.2 接入后台缓存回显后删除）。
-      resultsFactory: (options) => createFakeResults(options),
     });
     hover = createHoverTracker();
     hover.start();

@@ -110,6 +110,7 @@ import {
   PORT_NAME,
 } from '../../src/shared/protocol.js';
 import { DEFAULT_MAX_CONCURRENCY } from '../../src/shared/config/registry.js';
+import { AI_TIMEOUT_MS, MAX_SEGMENT_CHARS } from '../../src/shared/constants.js';
 import {
   getOrCreateDefaultInstance,
   removeKey,
@@ -119,7 +120,12 @@ import {
 import { saveSettings } from '../../src/shared/settings.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 import { buildCacheKey } from '../../src/shared/cache/key.js';
-import { handleConnect, normalizeConcurrency } from '../../src/background/gateway.js';
+import {
+  acceptPageSubmit,
+  handleConnect,
+  normalizeConcurrency,
+  splitBatches,
+} from '../../src/background/gateway.js';
 import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
 import { BATCH_ENCODING_VERSION } from '../../src/shared/translate/batch.js';
 import { hashPrompt, PROMPT_VERSION } from '../../src/shared/translate/prompt.js';
@@ -1182,5 +1188,480 @@ describe('A2 请求网关：边界与并发入口', () => {
     expect(normalizeConcurrency(2)).toBe(2);
     expect(normalizeConcurrency(2.7)).toBe(2);
     expect(normalizeConcurrency(9)).toBe(9);
+  });
+});
+
+describe('A2 页面提交（P6.3）：缓存、分组与切批', () => {
+  /**
+   * 以页面注入的 sender 建立 st-gateway 连接（带 tab.id），用于接收一次性提交的结果帧。
+   * @param {number} [tabId]
+   */
+  function connectPage(tabId = 7) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: { id: chrome.runtime.id, tab: { id: tabId } },
+    });
+    clients.push(client);
+    const frames = [];
+    client.onMessage.addListener((message) => frames.push(message));
+    return { client, frames };
+  }
+
+  /**
+   * @param {Array<{ hostId?: string, text: string }>} paragraphs
+   * @param {{ requestId?: string, tabId?: number, targetLang?: string, domain?: string }} [options]
+   */
+  function submitPage(paragraphs, options = {}) {
+    return acceptPageSubmit({
+      requestId: options.requestId ?? 's-1',
+      traceId: options.traceId,
+      scope: options.scope ?? 'page',
+      targetLang: options.targetLang,
+      domain: options.domain,
+      paragraphs,
+      tabId: options.tabId ?? 7,
+    });
+  }
+
+  it('找不到页面连接时拒绝提交，不查缓存、不调用上游', async () => {
+    const result = await submitPage([{ hostId: 'h1', text: 'Hello' }], { tabId: 99 });
+
+    expect(result.accepted).toBe(false);
+    expect(result.error.code).toBe(ERROR_CODES.NETWORK);
+    expect(result.error.reason).toBe(FAILURE_REASONS.NOT_CONNECTED);
+    expect(__cache.getMany).not.toHaveBeenCalled();
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('命中项立即回显 START→DONE（usage null），未命中项才走上游；一次 getMany', async () => {
+    const hitKey = await cacheKeyFor('Hello');
+    __cache.entries.set(hitKey, {
+      text: '你好',
+      bytes: 6,
+      createdAt: Date.now(),
+      domain: '',
+    });
+    const { frames } = connectPage();
+
+    const result = await submitPage([
+      { hostId: 'h1', text: 'Hello' },
+      { hostId: 'h2', text: 'World' },
+    ]);
+
+    expect(result.accepted).toBe(true);
+    // 命中帧在回执返回前已发出，页面会先收到 START → DONE。
+    const hitStart = frames.find(
+      (frame) => frame.type === MESSAGE_TYPES.ITEM_START && frame.payload.itemId === 'h1'
+    );
+    const hitDone = frames.find(
+      (frame) => frame.type === MESSAGE_TYPES.ITEM_DONE && frame.payload.itemId === 'h1'
+    );
+    expect(hitStart).toBeTruthy();
+    expect(hitDone.payload).toMatchObject({ text: '你好', usage: null });
+    expect(__cache.getMany).toHaveBeenCalledTimes(1);
+    expect(__cache.getMany.mock.calls[0][0]).toHaveLength(2);
+
+    await waitForBatchDone(frames);
+    const missDone = frames.find(
+      (frame) => frame.type === MESSAGE_TYPES.ITEM_DONE && frame.payload.itemId === 'h2'
+    );
+    expect(missDone.payload.text).toBe('译:World');
+    expect(missDone.payload.usage).toEqual({ totalTokens: 1 });
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(batchDoneLog('s-1')).toMatchObject({
+      done: 2,
+      failed: 0,
+      cacheHits: 1,
+      cacheMisses: 1,
+      uniqueGroups: 2,
+    });
+  });
+
+  it('命中 hit-only 提交不写缓存、不占用上游名额', async () => {
+    const key = await cacheKeyFor('Hello');
+    __cache.entries.set(key, { text: '你好', bytes: 6, createdAt: Date.now(), domain: '' });
+    const { frames } = connectPage();
+
+    await submitPage([{ hostId: 'h1', text: 'Hello' }]);
+    await waitForBatchDone(frames);
+
+    expect(translate).not.toHaveBeenCalled();
+    expect(__cache.set).not.toHaveBeenCalled();
+    expect(batchDoneLog('s-1')).toMatchObject({ done: 1, cacheWrites: 0 });
+  });
+
+  it('同提交同 key 只执行一次，全部 item 都收到 DONE 并各占一个计数', async () => {
+    const { frames } = connectPage();
+
+    await submitPage([
+      { hostId: 'h1', text: 'Same' },
+      { hostId: 'h2', text: 'Same' },
+    ]);
+    await waitForBatchDone(frames);
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_START)).toHaveLength(2);
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(2);
+    expect(batchDoneLog('s-1')).toMatchObject({
+      done: 2,
+      uniqueGroups: 1,
+      batches: 1,
+      dedupeHits: 1,
+      cacheWrites: 1,
+    });
+    // 成功定稿后按 group 只写一次缓存。
+    expect(__cache.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('缓存关闭时仍按 key 合并与执行，但不读不写缓存', async () => {
+    await saveSettings({ cacheEnabled: false });
+    const { frames } = connectPage();
+
+    await submitPage([
+      { hostId: 'h1', text: 'Same' },
+      { hostId: 'h2', text: 'Same' },
+    ]);
+    await waitForBatchDone(frames);
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(__cache.getMany).not.toHaveBeenCalled();
+    expect(__cache.set).not.toHaveBeenCalled();
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(2);
+    expect(batchDoneLog('s-1')).toMatchObject({ cacheHits: 0, cacheWrites: 0 });
+  });
+
+  it('跨提交同 key 只执行一次上游，结果 fan-out 给两个提交，usage 只归 owner', async () => {
+    const deferred = makeDeferred();
+    translate.mockImplementation(() => deferred.promise);
+    const { frames } = connectPage();
+
+    const first = await submitPage([{ hostId: 'h1', text: 'Shared' }], { requestId: 's-a' });
+    const second = await submitPage([{ hostId: 'h2', text: 'Shared' }], { requestId: 's-b' });
+
+    expect(first.accepted).toBe(true);
+    expect(second.accepted).toBe(true);
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_START)).toHaveLength(2);
+
+    deferred.resolve({ text: '共享译文', usage: { totalTokens: 5 } });
+    await waitForBatchDoneFor(frames, 's-a');
+    await waitForBatchDoneFor(frames, 's-b');
+
+    const doneA = frames.find(
+      (frame) => frame.type === MESSAGE_TYPES.ITEM_DONE && frame.payload.requestId === 's-a'
+    );
+    const doneB = frames.find(
+      (frame) => frame.type === MESSAGE_TYPES.ITEM_DONE && frame.payload.requestId === 's-b'
+    );
+    expect(doneA.payload).toMatchObject({ text: '共享译文', usage: { totalTokens: 5 } });
+    expect(doneB.payload).toMatchObject({ text: '共享译文', usage: null });
+    expect(batchDoneLog('s-b')).toMatchObject({ dedupeJoined: 1 });
+  });
+
+  it('取消一个订阅者不影响其它提交；全部取消后 abort 共享请求', async () => {
+    const deferred = makeDeferred();
+    let capturedSignal = null;
+    translate.mockImplementation((params) => {
+      capturedSignal = params.signal;
+      return deferred.promise;
+    });
+    const { client, frames } = connectPage();
+
+    await submitPage([{ hostId: 'h1', text: 'Shared' }], { requestId: 's-a' });
+    await submitPage([{ hostId: 'h2', text: 'Shared' }], { requestId: 's-b' });
+
+    client.postMessage({
+      type: MESSAGE_TYPES.CANCEL_ITEM,
+      payload: { requestId: 's-a', itemId: 'h1' },
+    });
+    expect(capturedSignal.aborted).toBe(false);
+    await waitForBatchDoneFor(frames, 's-a');
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(0);
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)).toHaveLength(0);
+
+    client.postMessage({
+      type: MESSAGE_TYPES.CANCEL_BATCH,
+      payload: { requestId: 's-b' },
+    });
+    expect(capturedSignal.aborted).toBe(true);
+    await waitForBatchDoneFor(frames, 's-b');
+    expect(batchDoneLog('s-b')).toMatchObject({ cancelled: 1 });
+  });
+
+  it('提交超时：未结算段以 NETWORK / BATCH_TIMEOUT 失败并 abort 共享请求', async () => {
+    vi.useFakeTimers();
+    try {
+      let capturedSignal = null;
+      translate.mockImplementation((params) => {
+        capturedSignal = params.signal;
+        return abortableTranslate(params);
+      });
+      const { frames } = connectPage();
+
+      await submitPage([{ hostId: 'h1', text: 'Slow' }], { requestId: 's-timeout' });
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(AI_TIMEOUT_MS.batchTotal);
+      await vi.waitFor(() =>
+        expect(frames.some((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)).toBe(true)
+      );
+
+      const error = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+      expect(error.payload).toMatchObject({
+        code: ERROR_CODES.NETWORK,
+        reason: FAILURE_REASONS.BATCH_TIMEOUT,
+      });
+      expect(capturedSignal.aborted).toBe(true);
+      const done = await waitForBatchDone(frames);
+      expect(done.payload).toMatchObject({ ok: false, failed: 1, cancelled: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('端口断开时移除订阅并 abort 共享请求，不残留提交', async () => {
+    let capturedSignal = null;
+    translate.mockImplementation((params) => {
+      capturedSignal = params.signal;
+      return abortableTranslate(params);
+    });
+    const { client } = connectPage();
+
+    await submitPage([{ hostId: 'h1', text: 'Hi' }], { requestId: 's-drop' });
+    await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+
+    client.disconnect();
+    await vi.waitFor(() => expect(capturedSignal.aborted).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it('初始化失败时逐段发 ITEM_ERROR 并结束提交', async () => {
+    await removeKey(instance.id);
+    const { frames } = connectPage();
+
+    const result = await submitPage([
+      { hostId: 'h1', text: 'Hello' },
+      { hostId: 'h2', text: 'World' },
+    ]);
+
+    expect(result.accepted).toBe(true);
+    expect(translate).not.toHaveBeenCalled();
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)).toHaveLength(2);
+    const done = frames.find((frame) => frame.type === MESSAGE_TYPES.BATCH_DONE);
+    expect(done.payload).toMatchObject({ ok: false, failed: 2, done: 0 });
+    expect(done.payload.error.code).toBe(ERROR_CODES.CONFIG);
+  });
+
+  it('key 计算失败时按文本 fallback 分组，不读写缓存但继续翻译', async () => {
+    vi.stubGlobal('crypto', {});
+    const { frames } = connectPage();
+
+    await submitPage([
+      { hostId: 'h1', text: 'Same' },
+      { hostId: 'h2', text: 'Same' },
+    ]);
+    await waitForBatchDone(frames);
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(__cache.getMany).not.toHaveBeenCalled();
+    expect(__cache.set).not.toHaveBeenCalled();
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(2);
+  });
+
+  it('单段超过 MAX_SEGMENT_CHARS 时该段失败，其余段落继续翻译', async () => {
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'ok' },
+        { hostId: 'h2', text: 'x'.repeat(MAX_SEGMENT_CHARS + 1) },
+      ],
+      { requestId: 's-oversize' }
+    );
+    await waitForBatchDoneFor(frames, 's-oversize');
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(translate.mock.calls[0][0].text).toBe('ok');
+
+    const error = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+    expect(error.payload).toMatchObject({
+      itemId: 'h2',
+      reason: FAILURE_REASONS.TEXT_TOO_LONG,
+    });
+    const done = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(done.payload.itemId).toBe('h1');
+    expect(frames.find((frame) => frame.type === MESSAGE_TYPES.BATCH_DONE).payload).toMatchObject({
+      ok: false,
+      done: 1,
+      failed: 1,
+    });
+  });
+
+  /**
+   * 读取指定事件的 debug 日志数据。
+   * @param {string} event
+   * @param {string} requestId
+   */
+  function debugLogData(event, requestId) {
+    const lines = console.debug.mock.calls.map(([line]) => String(line));
+    const line = lines.find((entry) => entry.includes(event) && entry.includes(requestId));
+    if (!line) return null;
+    return JSON.parse(line.slice(line.indexOf('{'))).data;
+  }
+
+  it('跨连接（两个标签页）同 key 只执行一次，usage 归首个订阅者', async () => {
+    const deferred = makeDeferred();
+    translate.mockImplementation(() => deferred.promise);
+    const first = connectPage(7);
+    const second = connectPage(8);
+
+    await submitPage([{ hostId: 'h1', text: 'Cross' }], { requestId: 'x-a', tabId: 7 });
+    await submitPage([{ hostId: 'h2', text: 'Cross' }], { requestId: 'x-b', tabId: 8 });
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(first.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_START)).toHaveLength(1);
+    expect(second.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_START)).toHaveLength(1);
+
+    deferred.resolve({ text: '跨页译文', usage: { totalTokens: 7 } });
+    await waitForBatchDoneFor(first.frames, 'x-a');
+    await waitForBatchDoneFor(second.frames, 'x-b');
+
+    const doneA = first.frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    const doneB = second.frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(doneA.payload).toMatchObject({ text: '跨页译文', usage: { totalTokens: 7 } });
+    expect(doneB.payload).toMatchObject({ text: '跨页译文', usage: null });
+    expect(batchDoneLog('x-b')).toMatchObject({ dedupeJoined: 1, done: 1 });
+  });
+
+  it('owner 取消后结果仍 fan-out 给剩余订阅者，usage 全为 null', async () => {
+    const deferred = makeDeferred();
+    translate.mockImplementation(() => deferred.promise);
+    const { client, frames } = connectPage();
+
+    await submitPage([{ hostId: 'h1', text: 'Owner' }], { requestId: 'o-a' });
+    await submitPage([{ hostId: 'h2', text: 'Owner' }], { requestId: 'o-b' });
+    client.postMessage({
+      type: MESSAGE_TYPES.CANCEL_ITEM,
+      payload: { requestId: 'o-a', itemId: 'h1' },
+    });
+
+    deferred.resolve({ text: '剩余译文', usage: { totalTokens: 9 } });
+    await waitForBatchDoneFor(frames, 'o-b');
+
+    const doneB = frames.find(
+      (frame) => frame.type === MESSAGE_TYPES.ITEM_DONE && frame.payload.requestId === 'o-b'
+    );
+    expect(doneB.payload).toMatchObject({ text: '剩余译文', usage: null });
+    expect(
+      frames.some(
+        (frame) => frame.type === MESSAGE_TYPES.ITEM_DONE && frame.payload.requestId === 'o-a'
+      )
+    ).toBe(false);
+    expect(batchDoneLog('o-b')).toMatchObject({ done: 1, cancelled: 0 });
+  });
+
+  it('端口断开后再次提交同 key 会重新执行，不复用已断开的共享请求', async () => {
+    const signals = [];
+    translate.mockImplementation((params) => {
+      signals.push(params.signal);
+      return abortableTranslate(params);
+    });
+    const first = connectPage(7);
+    await submitPage([{ hostId: 'h1', text: 'Again' }], { requestId: 'd-a' });
+    await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+
+    const framesBefore = first.frames.length;
+    first.client.disconnect();
+    await vi.waitFor(() => expect(signals[0].aborted).toBe(true));
+    expect(first.frames).toHaveLength(framesBefore);
+
+    const second = connectPage(7);
+    await submitPage([{ hostId: 'h2', text: 'Again' }], { requestId: 'd-b' });
+    await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(2));
+    expect(signals[1]).not.toBe(signals[0]);
+    expect(second.frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_START)).toHaveLength(
+      1
+    );
+  });
+
+  it('按实例 batchSize / batchMaxChars 切批并记录 batch.plan', async () => {
+    initLogging({ level: 'debug', sessionId: 'gateway-test' });
+    await updateInstance(instance.id, { batchSize: 2, batchMaxChars: 12 });
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'aaaaaa' },
+        { hostId: 'h2', text: 'bbbbbb' },
+        { hostId: 'h3', text: 'cccccc' },
+      ],
+      { requestId: 's-plan' }
+    );
+    await waitForBatchDoneFor(frames, 's-plan');
+
+    const plan = debugLogData('batch.plan', 's-plan');
+    expect(plan).toMatchObject({
+      items: 3,
+      groups: 3,
+      batches: 2,
+      batchSize: 2,
+      batchMaxChars: 12,
+      batchChars: 18,
+      oversizeBatches: 0,
+      cacheEnabled: true,
+    });
+  });
+});
+
+describe('A2 批次切分（P6.3）', () => {
+  /**
+   * @param {number} count
+   * @param {number} length
+   */
+  function groupsOf(count, length) {
+    return Array.from({ length: count }, (_, index) => ({
+      key: `g${index}`,
+      text: 'a'.repeat(length),
+    }));
+  }
+
+  it('batchSize 与 batchMaxChars 同时生效，先到先切', () => {
+    const groups = groupsOf(20, 100);
+
+    const bySize = splitBatches(groups, { batchSize: 8, batchMaxChars: 1000 });
+    expect(bySize.map((batch) => batch.groups.length)).toEqual([8, 8, 4]);
+    expect(bySize.map((batch) => batch.chars)).toEqual([800, 800, 400]);
+    expect(bySize.some((batch) => batch.oversize)).toBe(false);
+
+    const byChars = splitBatches(groups, { batchSize: 8, batchMaxChars: 300 });
+    expect(byChars.map((batch) => batch.groups.length)).toEqual([3, 3, 3, 3, 3, 3, 2]);
+    expect(byChars.map((batch) => batch.chars)).toEqual([300, 300, 300, 300, 300, 300, 200]);
+  });
+
+  it('单段超过字符上限时单独成批并标记 oversize，不拆段', () => {
+    const groups = [
+      { key: 'a', text: 'a'.repeat(50) },
+      { key: 'b', text: 'b'.repeat(3000) },
+      { key: 'c', text: 'c'.repeat(50) },
+    ];
+
+    const batches = splitBatches(groups, { batchSize: 8, batchMaxChars: 300 });
+
+    expect(batches).toHaveLength(3);
+    expect(batches[1].groups.map((group) => group.key)).toEqual(['b']);
+    expect(batches[1].oversize).toBe(true);
+    const flattened = batches.flatMap((batch) => batch.groups.map((group) => group.key));
+    expect(flattened).toEqual(['a', 'b', 'c']);
+    expect(new Set(flattened).size).toBe(flattened.length);
+  });
+
+  it('空输入不产生批次；缺失或非法参数回退默认值', () => {
+    expect(splitBatches([], { batchSize: 8, batchMaxChars: 1000 })).toEqual([]);
+    expect(splitBatches(undefined, {})).toEqual([]);
+
+    const groups = groupsOf(3, 10);
+    const byDefault = splitBatches(groups, { batchSize: 'x', batchMaxChars: -1 });
+    expect(byDefault).toHaveLength(1);
+    expect(byDefault[0].groups).toHaveLength(3);
   });
 });

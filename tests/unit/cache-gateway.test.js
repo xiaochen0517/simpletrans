@@ -335,3 +335,145 @@ describe('A2 + A4：网关接入真实缓存 store（P5）', () => {
     expect(stats.bytes).toBe(0);
   });
 });
+
+describe('A2 + A4：页面提交接入真实缓存（P6.3）', () => {
+  /**
+   * 以页面 sender 建立连接（带 tab.id），收集结果帧。
+   * @param {number} [tabId]
+   */
+  function connectPage(tabId = 7) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: { id: chrome.runtime.id, tab: { id: tabId } },
+    });
+    clients.push(client);
+    const frames = [];
+    client.onMessage.addListener((message) => frames.push(message));
+    return { client, frames };
+  }
+
+  /**
+   * @param {Array<{ hostId?: string, text: string }>} paragraphs
+   * @param {{ requestId?: string, domain?: string }} [options]
+   */
+  function submitPage(paragraphs, options = {}) {
+    return gateway.acceptPageSubmit({
+      requestId: options.requestId ?? 'page-1',
+      scope: 'page',
+      domain: options.domain,
+      paragraphs,
+      tabId: 7,
+    });
+  }
+
+  it('一次 getMany 命中同一 key 的多个段落，均立即回显且不重复写缓存', async () => {
+    const key = await expectedKeyFor('Hello cache');
+    const store = storeModule.getCacheStore();
+    await store.set(key, '你好缓存', { generation: store.generation(), domain: 'example.com' });
+
+    const getManySpy = vi.spyOn(store, 'getMany');
+    const setSpy = vi.spyOn(store, 'set');
+    const { frames } = connectPage();
+
+    const result = await submitPage(
+      [
+        { hostId: 'h1', text: 'Hello cache' },
+        { hostId: 'h2', text: 'Hello cache' },
+      ],
+      { requestId: 'page-hit', domain: 'example.com' }
+    );
+
+    expect(result.accepted).toBe(true);
+    expect(getManySpy).toHaveBeenCalledTimes(1);
+    expect(getManySpy.mock.calls[0][0]).toHaveLength(1);
+
+    await waitForBatchDoneFor(frames, 'page-hit');
+
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(adapter.translate).not.toHaveBeenCalled();
+    const dones = frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(dones).toHaveLength(2);
+    for (const done of dones) {
+      expect(done.payload).toMatchObject({ text: '你好缓存', usage: null });
+    }
+  });
+
+  it('未命中经页面提交写入真实 store，同 key 只写一次并保留域名', async () => {
+    const { frames } = connectPage();
+
+    await submitPage(
+      [
+        { hostId: 'h1', text: 'Page miss' },
+        { hostId: 'h2', text: 'Page miss' },
+      ],
+      { requestId: 'page-miss', domain: ' Example.COM. ' }
+    );
+    await waitForBatchDoneFor(frames, 'page-miss');
+
+    expect(adapter.translate).toHaveBeenCalledTimes(1);
+    const store = storeModule.getCacheStore();
+    const key = await expectedKeyFor('Page miss');
+
+    await vi.waitFor(async () => {
+      const stats = await store.stats();
+      expect(stats.entries).toBe(1);
+    });
+
+    const entry = await store.get(key);
+    expect(entry.text).toBe('译:Page miss');
+    const metaRecords = await readStore('meta');
+    expect(metaRecords).toHaveLength(1);
+    expect(metaRecords[0]).toMatchObject({ key, domain: 'example.com' });
+    const entriesRecords = await readStore('entries');
+    expect(entriesRecords).toHaveLength(1);
+  });
+
+  it('页面提交在途时清空缓存，旧 generation 的写入被跳过', async () => {
+    let resolveTranslate;
+    const pending = new Promise((resolve) => {
+      resolveTranslate = resolve;
+    });
+    adapter.translate.mockImplementation(() => pending);
+
+    const { frames } = connectPage();
+    await submitPage([{ hostId: 'h1', text: 'page generation' }], { requestId: 'page-gen' });
+    await vi.waitFor(() => expect(adapter.translate).toHaveBeenCalledTimes(1));
+
+    await storeModule.getCacheStore().clear();
+    resolveTranslate({ text: '迟到的译文', usage: null });
+
+    const done = await waitForBatchDoneFor(frames, 'page-gen');
+    expect(done.payload).toMatchObject({ ok: true, done: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const stats = await storeModule.getCacheStore().stats();
+    expect(stats.entries).toBe(0);
+    expect(stats.bytes).toBe(0);
+  });
+
+  it('缓存关闭时页面提交仍 single-flight，且不读写真实 store', async () => {
+    await settings.saveSettings({ cacheEnabled: false });
+    const store = storeModule.getCacheStore();
+    const getManySpy = vi.spyOn(store, 'getMany');
+    const setSpy = vi.spyOn(store, 'set');
+
+    let resolveTranslate;
+    const pending = new Promise((resolve) => {
+      resolveTranslate = resolve;
+    });
+    adapter.translate.mockImplementation(() => pending);
+
+    const { frames } = connectPage();
+    await submitPage([{ hostId: 'h1', text: 'Same off' }], { requestId: 'off-a' });
+    await submitPage([{ hostId: 'h2', text: 'Same off' }], { requestId: 'off-b' });
+
+    expect(adapter.translate).toHaveBeenCalledTimes(1);
+    resolveTranslate({ text: '关闭缓存译文', usage: null });
+    await waitForBatchDoneFor(frames, 'off-a');
+    await waitForBatchDoneFor(frames, 'off-b');
+
+    expect(getManySpy).not.toHaveBeenCalled();
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(2);
+  });
+});

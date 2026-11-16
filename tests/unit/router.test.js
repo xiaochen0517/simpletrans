@@ -59,21 +59,25 @@ import {
   ERROR_CODES,
   FAILURE_REASONS,
   MESSAGE_TYPES,
+  PORT_NAME,
 } from '../../src/shared/protocol.js';
 import { MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 import { getOrCreateDefaultInstance, removeKey, updateInstance, writeKey } from '../../src/shared/config/instances.js';
 import { saveSettings } from '../../src/shared/settings.js';
 import { handleMessage, receivePageSubmit, sendToTab } from '../../src/background/router.js';
+import { handleConnect } from '../../src/background/gateway.js';
 import { translate, TranslateError } from '../../src/shared/translate/adapter.js';
 import { __cache } from '../../src/shared/cache/store.js';
 
 let instance;
 let sender;
+let clients = [];
 
 beforeEach(async () => {
   installChrome();
-  sender = { id: chrome.runtime.id };
+  sender = { id: chrome.runtime.id, tab: { id: 7 } };
+  clients = [];
   translate.mockReset();
   translate.mockResolvedValue({ text: '你好', usage: { totalTokens: 3 } });
 
@@ -93,9 +97,22 @@ beforeEach(async () => {
 
   instance = await getOrCreateDefaultInstance();
   await writeKey(instance.id, 'sk-test');
+  chrome.runtime.onConnect.addListener((port) => {
+    handleConnect(port);
+  });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const client of clients) {
+    try {
+      client.disconnect();
+    } catch {
+      // 已断开。
+    }
+  }
+  clients = [];
+  // 让 disconnect 触发的清理微任务跑完，避免标签页连接串到下一个用例。
+  await new Promise((resolve) => setTimeout(resolve, 0));
   resetLogging();
   vi.restoreAllMocks();
 });
@@ -611,7 +628,7 @@ describe('A1 控制面：ST_ROUTE（P6.1）', () => {
   });
 });
 
-describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
+describe('A1 控制面：ST_PAGE_SUBMIT（P6.3）', () => {
   /**
    * 一条合法的整页提交载荷。
    * @returns {object}
@@ -632,15 +649,57 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
   }
 
   /**
+   * 页面注入发送方：带 `tab.id`，用于把一次性提交路由到长连接。
+   * @param {number} [tabId]
+   * @returns {{ id: string, tab: { id: number } }}
+   */
+  function pageSender(tabId = 7) {
+    return { id: chrome.runtime.id, tab: { id: tabId } };
+  }
+
+  /**
+   * 以页面注入的 sender 建立 st-gateway 长连接并收集后台帧。
+   * @param {number} [tabId]
+   */
+  function openGateway(tabId = 7) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: pageSender(tabId),
+    });
+    clients.push(client);
+    const frames = [];
+    client.onMessage.addListener((message) => frames.push(message));
+    return { client, frames };
+  }
+
+  /**
    * @param {unknown} payload
    * @param {{ id?: string, tab?: { id?: number } }} [from]
    * @returns {Promise<object>}
    */
-  function submitPage(payload, from = sender) {
+  function submitPage(payload, from = pageSender()) {
     return handleMessage({ type: MESSAGE_TYPES.PAGE_SUBMIT, payload }, from);
   }
 
-  it('合法提交回执 accepted 与段数/字符数，不查缓存、不调用上游', async () => {
+  /** 让上游挂起，用于验证「提交进行中」的重复与并发行为。 */
+  function makePendingTranslate() {
+    const resolvers = [];
+    translate.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    return {
+      resolveAll(value = { text: '你好', usage: null }) {
+        for (const resolve of resolvers.splice(0)) resolve(value);
+      },
+    };
+  }
+
+  it('合法提交校验后转交 A2：回执 accepted、唯一 key 一次预取、逐段帧回到页面', async () => {
+    const { frames } = openGateway(7);
+
     const response = await submitPage(validPayload());
 
     expect(response).toEqual({
@@ -653,15 +712,18 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
         chars: 10,
       },
     });
-    expect(translate).not.toHaveBeenCalled();
-    expect(__cache.store.getMany).not.toHaveBeenCalled();
-    expect(__cache.store.set).not.toHaveBeenCalled();
-    expect(__cache.store.stats).not.toHaveBeenCalled();
-    expect(__cache.store.clear).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.BATCH_DONE)).toBe(true)
+    );
+    expect(__cache.store.getMany).toHaveBeenCalledTimes(1);
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(2);
   });
 
-  it('receivePageSubmit 已导出，可直接校验与回执', () => {
-    const response = receivePageSubmit(validPayload(), { tab: { id: 7 } }, 't-direct');
+  it('receivePageSubmit 已导出，直接调用同样把提交转交 A2', async () => {
+    const { frames } = openGateway(7);
+
+    const response = await receivePageSubmit(validPayload(), pageSender(), 't-direct');
 
     expect(response).toEqual({
       ok: true,
@@ -673,9 +735,37 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
         chars: 10,
       },
     });
+    await vi.waitFor(
+      () =>
+        expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(2)
+    );
+  });
+
+  it('页面通道未连接时拒绝提交，不查缓存、不调用上游', async () => {
+    const response = await submitPage(validPayload());
+
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.NETWORK);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NOT_CONNECTED);
+    expect(__cache.store.getMany).not.toHaveBeenCalled();
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('同一标签页下 requestId 重复时拒绝第二次提交', async () => {
+    const pending = makePendingTranslate();
+    openGateway(7);
+
+    const first = await submitPage(validPayload());
+    const second = await submitPage(validPayload());
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+    expect(second.error.reason).toBe(FAILURE_REASONS.DUPLICATE_REQUEST);
+    pending.resolveAll();
   });
 
   it('scope 缺省为 page；scope=single 时只接受 1 段', async () => {
+    openGateway(7);
     const page = await submitPage({ paragraphs: [{ text: 'Hi' }] });
     expect(page.ok).toBe(true);
     expect(page.data.scope).toBe('page');
@@ -718,6 +808,7 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
   });
 
   it('hostId 恰好 64 字符时接受', async () => {
+    openGateway(7);
     const response = await submitPage({
       paragraphs: [
         {
@@ -782,6 +873,7 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
   });
 
   it('段落里的 context 字段被忽略，不报错也不影响回执', async () => {
+    openGateway(7);
     const response = await submitPage({
       paragraphs: [
         { text: 'Hi', context: 'c'.repeat(500) },
@@ -828,17 +920,18 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
     expect(response.error.code).toBe(ERROR_CODES.OTHER);
   });
 
-  it('成功接收记录 page.received 与逐段 page.item，预览不超过 60 字', async () => {
-    initLogging({ context: 'background', level: 'info', sessionId: 's-test' });
+  it('成功接收记录 page.received，逐段 page.item 只记长度不记原文', async () => {
+    initLogging({ context: 'background', level: 'debug', sessionId: 's-test' });
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    openGateway(7);
     const payload = {
       requestId: 's-log',
       scope: 'single',
       paragraphs: [{ index: 0, hostId: 'h1', text: 'Secret paragraph one' }],
     };
-    const chars = payload.paragraphs.reduce((sum, paragraph) => sum + paragraph.text.length, 0);
 
-    const response = receivePageSubmit(payload, { tab: { id: 7 } }, 't-recv');
+    const response = await submitPage(payload);
 
     expect(response.ok).toBe(true);
     const lines = info.mock.calls.map((call) => String(call[0]));
@@ -846,30 +939,18 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.1）', () => {
     expect(received).toBeTruthy();
     expect(received).toContain('"scope":"single"');
     expect(received).toContain('"requestId":"s-log"');
-    expect(received).toContain(`"paragraphs":${payload.paragraphs.length}`);
-    expect(received).toContain(`"chars":${chars}`);
+    expect(received).toContain('"paragraphs":1');
+    expect(received).toContain('"chars":20');
     expect(received).toContain('"tabId":7');
     expect(received).not.toContain('Secret paragraph one');
 
-    const items = lines.filter((entry) => entry.includes('page.item'));
-    expect(items).toHaveLength(1);
-    expect(items[0]).toContain('"index":0');
-    expect(items[0]).toContain('"hostId":"h1"');
-    expect(items[0]).toContain('"textLength":20');
-    expect(items[0]).toContain('"preview":"Secret paragraph one"');
-
-    // 超过 60 字的段落只打印前 60 字。
-    const longText = 'A'.repeat(80);
-    receivePageSubmit(
-      { requestId: 's-long', paragraphs: [{ index: 0, text: longText }] },
-      { tab: { id: 7 } },
-      't-long'
-    );
-    const longItem = info.mock.calls
-      .map((call) => String(call[0]))
-      .filter((entry) => entry.includes('page.item'))
-      .at(-1);
-    expect(longItem).toContain(`"preview":"${'A'.repeat(60)}"`);
-    expect(longItem).not.toContain(longText);
+    const itemLines = debug.mock.calls.map((call) => String(call[0]));
+    const item = itemLines.find((entry) => entry.includes('page.item'));
+    expect(item).toBeTruthy();
+    expect(item).toContain('"index":0');
+    expect(item).toContain('"hostId":"h1"');
+    expect(item).toContain('"textLength":20');
+    expect(item).not.toContain('preview');
+    expect(item).not.toContain('Secret paragraph one');
   });
 });
