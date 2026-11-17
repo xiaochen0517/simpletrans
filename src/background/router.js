@@ -26,7 +26,7 @@ import {
 import { MAX_PAGE_PARAGRAPHS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
 import { createLogger } from '../shared/log/logger.js';
-import { getKey, getOrCreateDefaultInstance, getPublicSettings } from '../shared/config/instances.js';
+import { getKey, getActiveInstance, getOrCreateDefaultInstance, getPublicSettings } from '../shared/config/instances.js';
 import { validateInstance } from '../shared/config/registry.js';
 import { getCacheStore } from '../shared/cache/store.js';
 import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
@@ -362,8 +362,8 @@ async function testEngine(payload) {
   let instance;
   let apiKey;
   try {
-    instance = await getOrCreateDefaultInstance();
-    if (!validateInstance(instance).ok) {
+    instance = await getActiveInstance({ create: true });
+    if (!instance || !validateInstance(instance).ok) {
       return failure(ERROR_CODES.CONFIG, '引擎配置无效，请到设置页检查');
     }
     apiKey = await getKey(instance.id);

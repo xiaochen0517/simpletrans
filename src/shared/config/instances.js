@@ -129,6 +129,19 @@ export async function getOrCreateDefaultInstance() {
 }
 
 /**
+ * 取当前生效实例：优先 `settings.activeInstanceId`，找不到时回退第一个实例。
+ * 默认只读、不创建实例（网关不得因请求而写 storage）；`create` 为 true 时按目录默认值惰性创建。
+ * @param {{ create?: boolean }} [options]
+ * @returns {Promise<Record<string, unknown> | null>}
+ */
+export async function getActiveInstance(options = {}) {
+  if (options.create === true) await getOrCreateDefaultInstance();
+  const [instances, settings] = await Promise.all([getInstances(), getSettings()]);
+  const activeId = typeof settings.activeInstanceId === 'string' ? settings.activeInstanceId : null;
+  return instances.find((instance) => instance.id === activeId) ?? instances[0] ?? null;
+}
+
+/**
  * 更新一个实例：合并补丁、归一、校验，成功后写回完整字段；失败抛出且不写入。
  * @param {string} id
  * @param {Record<string, unknown>} patch

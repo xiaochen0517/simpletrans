@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { installChrome } from '../helpers/load.js';
 import {
   createDefaultInstance,
+  getActiveInstance,
   getFullSettings,
   getInstances,
   getKey,
@@ -44,6 +45,33 @@ describe('E3 引擎实例与密钥', () => {
     expect(await getInstances()).toHaveLength(1);
 
     await getOrCreateDefaultInstance();
+    expect(await getInstances()).toHaveLength(1);
+  });
+
+  it('getActiveInstance 默认取第一个实例，并按 activeInstanceId 切换', async () => {
+    await chrome.storage.sync.set({
+      engineInstances: [
+        { id: 'a', type: 'deepseek', name: 'A', model: 'deepseek-chat' },
+        { id: 'b', type: 'deepseek', name: 'B', model: 'deepseek-reasoner' },
+      ],
+    });
+
+    expect((await getActiveInstance()).id).toBe('a');
+
+    await saveSettings({ activeInstanceId: 'b' });
+    expect((await getActiveInstance()).id).toBe('b');
+
+    // 记录的首选实例不存在时回退第一个，不抛错。
+    await saveSettings({ activeInstanceId: 'missing' });
+    expect((await getActiveInstance()).id).toBe('a');
+  });
+
+  it('getActiveInstance 只读：没有实例时返回 null 且不创建', async () => {
+    expect(await getActiveInstance()).toBeNull();
+    expect(await getInstances()).toHaveLength(0);
+
+    const created = await getActiveInstance({ create: true });
+    expect(created.id).toBe('default');
     expect(await getInstances()).toHaveLength(1);
   });
 

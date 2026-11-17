@@ -9,6 +9,7 @@
  * P2 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
  * P3 补 storage.onChanged、getManifest、getURL；P4 补 commands.onCommand、tabs.query / sendMessage、
  * scripting.insertCSS / executeScript（记录调用顺序）；P6.5 补 tabs.create（打开测试页，记录创建参数）；
+ * P7 补 runtime.openOptionsPage（打开设置页，记录调用次数与可注入的失败）；
  * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`。
  */
 
@@ -170,6 +171,13 @@ export function createChrome() {
     id: 'test-extension-id',
     onMessage,
     onConnect,
+    /** openOptionsPage 的调用次数与可注入的失败。 */
+    __openOptionsCount: 0,
+    __openOptionsError: null,
+    async openOptionsPage() {
+      runtime.__openOptionsCount += 1;
+      if (runtime.__openOptionsError) throw runtime.__openOptionsError;
+    },
     getManifest() {
       return { version: '0.1.0' };
     },

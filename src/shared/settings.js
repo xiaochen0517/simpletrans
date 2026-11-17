@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   cacheEnabled: true, // 译文缓存开关（P5 生效）
   concurrency: 3, // 用户并发数（P2 生效）
   logLevel: 'info', // 日志级别：debug / info / warn / error / off（P3 生效）
+  activeInstanceId: null, // 当前生效实例 id：弹窗「翻译方式」下拉切换写入（P7），P8 的首选引擎沿用
 });
 
 /**

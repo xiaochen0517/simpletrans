@@ -16,6 +16,7 @@
   "dependencies": {
     "@ai-sdk/deepseek": "^3.0.54",
     "ai": "^7.0.116",
+    "lucide-react": "^1.73.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

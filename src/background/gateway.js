@@ -35,9 +35,8 @@ import { getSettings } from '../shared/settings.js';
 import { createLogger, getLogLevel, setLogLevel } from '../shared/log/logger.js';
 import { normalizeLevel } from '../shared/log/levels.js';
 import {
-  getInstances,
+  getActiveInstance,
   getKey,
-  getOrCreateDefaultInstance,
 } from '../shared/config/instances.js';
 import {
   DEFAULT_BATCH_MAX_CHARS,
@@ -110,13 +109,13 @@ function releaseSlot() {
  * 在全局并发名额内执行一次上游调用。所有上游出口（批次与测试翻译）都必须经过这里。
  * @template T
  * @param {() => Promise<T>} fn
- * @param {number} [limit] 实例 `maxConcurrency`；省略时读默认实例
+ * @param {number} [limit] 实例 `maxConcurrency`；省略时读当前生效实例
  * @returns {Promise<T>}
  */
 export async function withUpstreamSlot(fn, limit) {
   const effective =
     limit == null
-      ? normalizeConcurrency((await getOrCreateDefaultInstance()).maxConcurrency)
+      ? normalizeConcurrency((await getActiveInstance())?.maxConcurrency)
       : normalizeConcurrency(limit);
   slotLimit = effective;
   pumpSlots();
@@ -446,8 +445,7 @@ async function beginBatch(conn, payload) {
   let instance;
   let apiKey;
   try {
-    const list = await getInstances();
-    instance = Array.isArray(list) ? list[0] : null;
+    instance = await getActiveInstance();
     if (!instance || !validateInstance(instance).ok) {
       rejectBatch(conn, requestId, ERROR_CODES.CONFIG, '没有可用的引擎配置', undefined);
       return;
@@ -1124,8 +1122,7 @@ export async function acceptPageSubmit({
   let instance;
   let apiKey;
   try {
-    const list = await getInstances();
-    instance = Array.isArray(list) ? list[0] : null;
+    instance = await getActiveInstance();
     if (!instance || !validateInstance(instance).ok) {
       return rejectInit(ERROR_CODES.CONFIG, '没有可用的引擎配置');
     }
