@@ -111,16 +111,22 @@ import {
   PORT_NAME,
 } from '../../src/shared/protocol.js';
 import { DEFAULT_MAX_CONCURRENCY } from '../../src/shared/config/registry.js';
-import { AI_TIMEOUT_MS, MAX_SEGMENT_CHARS } from '../../src/shared/constants.js';
+import { AI_TIMEOUT_MS, BAIDU_TIMEOUT_MS, MAX_SEGMENT_CHARS } from '../../src/shared/constants.js';
 import {
+  createInstance,
   getOrCreateDefaultInstance,
+  removeInstance,
   removeKey,
+  setActiveInstance,
+  setInstanceEnabled,
   updateInstance,
+  writeCredentials,
   writeKey,
 } from '../../src/shared/config/instances.js';
 import { saveSettings } from '../../src/shared/settings.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
 import { buildCacheKey } from '../../src/shared/cache/key.js';
+import { buildLLMProfile } from '../../src/shared/translate/openai-profile.js';
 import {
   acceptPageSubmit,
   handleConnect,
@@ -192,17 +198,19 @@ async function waitForBatchDoneFor(frames, requestId) {
  * @param {string} text
  * @param {{ context?: string, targetLang?: string }} [overrides]
  */
-function cacheKeyFor(text, overrides = {}) {
+async function cacheKeyFor(text, overrides = {}) {
+  const promptHash = await hashPrompt(instance.systemPrompt);
+  const { endpointFingerprint, generationHash } = await buildLLMProfile(instance);
   return buildCacheKey({
     engineType: instance.type,
+    endpointFingerprint,
     model: instance.model,
     sourceLang: 'auto',
     targetLang: overrides.targetLang ?? 'zh',
     promptVersion: PROMPT_VERSION,
-    batchEncodingVersion: BATCH_ENCODING_VERSION,
-    reasoningEffort: instance.reasoningEffort,
     promptHash,
-    context: overrides.context ?? '',
+    generationHash,
+    batchEncodingVersion: BATCH_ENCODING_VERSION,
     text,
   });
 }
@@ -440,7 +448,7 @@ describe('A2 请求网关：批次执行', () => {
       FAILURE_REASONS.FORBIDDEN_FIELD
     );
     await reject(
-      { requestId: 'r', items: [textItem('hi')], targetLang: 'ja' },
+      { requestId: 'r', items: [textItem('hi')], targetLang: 'fr' },
       FAILURE_REASONS.UNSUPPORTED_LANG
     );
 
@@ -590,7 +598,7 @@ describe('A2 请求网关：译文缓存（P5）', () => {
     expect(__cache.set).toHaveBeenCalledTimes(1);
     const [key, text, options] = __cache.set.mock.calls[0];
     expect(text).toBe('译:Hello cache');
-    expect(key).toMatch(/^cache:v2:[0-9a-f]{64}$/);
+    expect(key).toMatch(/^cache:v3:[0-9a-f]{64}$/);
     expect(key).toBe(await cacheKeyFor('Hello cache'));
     expect(options.generation).toBe(0);
     expect(options.domain).toBe('example.com');
@@ -603,7 +611,7 @@ describe('A2 请求网关：译文缓存（P5）', () => {
     expect(log).toMatchObject({ cacheHits: 0, cacheMisses: 1, cacheWrites: 1 });
   });
 
-  it('修改提示词或思考强度后同一文本不再命中缓存', async () => {
+  it('修改提示词或生成参数后同一文本不再命中缓存', async () => {
     const text = 'styled paragraph';
     const { client, frames } = connectGateway();
 
@@ -627,7 +635,12 @@ describe('A2 请求网关：译文缓存（P5）', () => {
     expect(translate).toHaveBeenCalledTimes(2);
     expect(batchDoneLog('style-2')).toMatchObject({ cacheHits: 0, cacheMisses: 1 });
 
-    await updateInstance(instance.id, { reasoningEffort: 'high' });
+    await updateInstance(instance.id, {
+      params: {
+        ...instance.params,
+        temperature: { enabled: true, value: 0.3 },
+      },
+    });
 
     frames.length = 0;
     client.postMessage({
@@ -742,7 +755,7 @@ describe('A2 请求网关：译文缓存（P5）', () => {
     );
     // 日志不出现原文、域名与 key 哈希。
     expect(lines.join('\n')).not.toContain('log me');
-    expect(lines.join('\n')).not.toContain('cache:v2:');
+    expect(lines.join('\n')).not.toContain('cache:v3:');
   });
 
   it('命中不占用上游并发名额', async () => {
@@ -2050,5 +2063,214 @@ describe('A2 页面提交（P6.4）：队列与批量翻译', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('A2 多实例与百度（P8-2）', () => {
+  /** 以页面 sender 建立连接（带 tab.id）。 */
+  function connectPage(tabId = 7) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: { id: chrome.runtime.id, tab: { id: tabId } },
+    });
+    clients.push(client);
+    const frames = [];
+    client.onMessage.addListener((message) => frames.push(message));
+    return { client, frames };
+  }
+
+  /** 创建百度实例、写入凭据并设为当前实例。 */
+  async function useBaidu() {
+    const baidu = await createInstance({ type: 'baidu', name: 'Baidu' });
+    await writeCredentials(baidu.id, { appId: 'appid-1', secretKey: 'secret-1' });
+    await setActiveInstance(baidu.id);
+    return baidu;
+  }
+
+  it('百度实例：提交带上 APPID/密钥，单段走 translate', async () => {
+    const baidu = await useBaidu();
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'baidu-single',
+      scope: 'single',
+      paragraphs: [{ hostId: 'h1', text: 'Hello' }],
+      tabId: 7,
+    });
+    await waitForBatchDoneFor(frames, 'baidu-single');
+
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(translate.mock.calls[0][0].instance).toMatchObject({
+      id: baidu.id,
+      type: 'baidu',
+      appId: 'appid-1',
+      secretKey: 'secret-1',
+    });
+    const done = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE);
+    expect(done.payload.text).toBe('译:Hello');
+  });
+
+  it('百度实例：单段超过 4800 字节直接失败，不调用上游', async () => {
+    await useBaidu();
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'baidu-long',
+      paragraphs: [{ hostId: 'h1', text: '汉'.repeat(1601) }],
+      tabId: 7,
+    });
+    const done = await waitForBatchDoneFor(frames, 'baidu-long');
+    expect(done.payload).toMatchObject({ ok: false, failed: 1 });
+    const error = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+    expect(error.payload).toMatchObject({
+      code: ERROR_CODES.OTHER,
+      reason: FAILURE_REASONS.TEXT_TOO_LONG,
+    });
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('百度实例提交超时为 30 秒（不是 180 秒）', async () => {
+    vi.useFakeTimers();
+    try {
+      await useBaidu();
+      translate.mockImplementation(abortableTranslate);
+      const { frames } = connectPage();
+      await acceptPageSubmit({
+        requestId: 'baidu-timeout',
+        paragraphs: [{ hostId: 'h1', text: 'slow' }],
+        tabId: 7,
+      });
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(BAIDU_TIMEOUT_MS.batch);
+      await vi.waitFor(() =>
+        expect(frames.some((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)).toBe(true)
+      );
+      expect(
+        frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR).payload
+      ).toMatchObject({
+        code: ERROR_CODES.NETWORK,
+        reason: FAILURE_REASONS.BATCH_TIMEOUT,
+      });
+      const done = await waitForBatchDoneFor(frames, 'baidu-timeout');
+      expect(done.payload).toMatchObject({ ok: false, failed: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('百度缓存 key 使用固定 profile，与 OpenAI 隔离', async () => {
+    await useBaidu();
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'baidu-cache',
+      paragraphs: [{ hostId: 'h1', text: 'Cached text' }],
+      tabId: 7,
+    });
+    await waitForBatchDoneFor(frames, 'baidu-cache');
+
+    await vi.waitFor(() => expect(__cache.set).toHaveBeenCalledTimes(1));
+    const [key] = __cache.set.mock.calls[0];
+    const expected = await buildCacheKey({
+      engineType: 'baidu',
+      endpointFingerprint: 'baidu',
+      model: 'general',
+      sourceLang: 'auto',
+      targetLang: 'zh',
+      promptVersion: 0,
+      promptHash: 'none',
+      generationHash: 'baidu:v1',
+      batchEncodingVersion: BATCH_ENCODING_VERSION,
+      text: 'Cached text',
+    });
+    expect(key).toBe(expected);
+  });
+
+  it('唯一实例的 endpoint 未授权时拒绝提交，不调用上游', async () => {
+    const custom = await createInstance({
+      type: 'openai',
+      preset: 'custom',
+      name: 'Local',
+      endpoint: { baseUrl: 'https://llm.example.com', path: '/v1/chat/completions' },
+      model: 'local',
+    });
+    await writeCredentials(custom.id, { apiKey: 'sk-local' });
+    await removeInstance(instance.id);
+
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'permission-denied',
+      paragraphs: [{ hostId: 'h1', text: 'hi' }],
+      tabId: 7,
+    });
+    const done = await waitForBatchDoneFor(frames, 'permission-denied');
+    expect(done.payload.ok).toBe(false);
+    const error = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+    expect(error.payload).toMatchObject({ code: ERROR_CODES.CONFIG });
+    expect(error.payload.message).toContain('未授权');
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('当前实例不可用且没有备选时拒绝提交', async () => {
+    const custom = await createInstance({
+      type: 'openai',
+      preset: 'custom',
+      name: 'Local',
+      endpoint: { baseUrl: 'https://llm.example.com', path: '/v1/chat/completions' },
+      model: 'local',
+    });
+    await writeCredentials(custom.id, { apiKey: 'sk-local' });
+    await setInstanceEnabled(instance.id, false);
+    await setInstanceEnabled(custom.id, false);
+
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'no-usable',
+      paragraphs: [{ hostId: 'h1', text: 'hi' }],
+      tabId: 7,
+    });
+    const done = await waitForBatchDoneFor(frames, 'no-usable');
+    expect(done.payload.ok).toBe(false);
+    const error = frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+    expect(error.payload.code).toBe(ERROR_CODES.CONFIG);
+    expect(translate).not.toHaveBeenCalled();
+  });
+});
+
+describe('A2 批次切分（P8-2）', () => {
+  it('batchMaxBytes 按 UTF-8 字节切批，且不拆段', () => {
+    const groups = Array.from({ length: 5 }, (_, index) => ({
+      key: `g${index}`,
+      text: '汉'.repeat(100),
+    }));
+    const batches = splitBatches(groups, {
+      batchSize: 20,
+      batchMaxChars: 10_000,
+      batchMaxBytes: 1_000,
+    });
+    expect(batches.length).toBe(2);
+    expect(batches[0].groups.length).toBe(3);
+    expect(batches[1].groups.length).toBe(2);
+    for (const batch of batches) {
+      expect(batch.bytes).toBeLessThanOrEqual(1_000);
+      expect(batch.oversize).toBe(false);
+    }
+  });
+
+  it('单段超过字节上限时单独成批并标记 oversize', () => {
+    const batches = splitBatches(
+      [{ text: '汉'.repeat(400) }, { text: 'ok' }],
+      { batchSize: 20, batchMaxChars: 10_000, batchMaxBytes: 1_000 }
+    );
+    expect(batches.length).toBe(2);
+    expect(batches[0].oversize).toBe(true);
+    expect(batches[0].groups).toHaveLength(1);
+  });
+
+  it('未提供 batchMaxBytes 时不限制字节', () => {
+    const batches = splitBatches([{ text: '汉'.repeat(400) }], {
+      batchSize: 20,
+      batchMaxChars: 10_000,
+    });
+    expect(batches).toHaveLength(1);
+    expect(batches[0].oversize).toBe(false);
   });
 });

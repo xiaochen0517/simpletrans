@@ -26,6 +26,7 @@ vi.mock('../../src/shared/translate/adapter.js', () => {
 
 import { installChrome } from '../helpers/load.js';
 import { MESSAGE_TYPES, PORT_NAME } from '../../src/shared/protocol.js';
+import { buildLLMProfile } from '../../src/shared/translate/openai-profile.js';
 
 const CACHE_DB_NAME = 'simpletrans-cache';
 
@@ -105,17 +106,19 @@ function readStore(storeName) {
   });
 }
 
-function expectedKeyFor(text, overrides = {}) {
+async function expectedKeyFor(text, overrides = {}) {
+  const promptHash = await prompt.hashPrompt(instance.systemPrompt);
+  const { endpointFingerprint, generationHash } = await buildLLMProfile(instance);
   return keyModule.buildCacheKey({
     engineType: instance.type,
+    endpointFingerprint,
     model: instance.model,
     sourceLang: 'auto',
     targetLang: overrides.targetLang ?? 'zh',
     promptVersion: prompt.PROMPT_VERSION,
-    batchEncodingVersion: batch.BATCH_ENCODING_VERSION,
-    reasoningEffort: instance.reasoningEffort,
     promptHash,
-    context: overrides.context ?? '',
+    generationHash,
+    batchEncodingVersion: batch.BATCH_ENCODING_VERSION,
     text,
   });
 }
@@ -200,7 +203,7 @@ describe('A2 + A4：网关接入真实缓存 store（P5）', () => {
     });
 
     const expectedKey = await expectedKeyFor('Hello real cache');
-    expect(expectedKey).toMatch(/^cache:v2:[0-9a-f]{64}$/);
+    expect(expectedKey).toMatch(/^cache:v3:[0-9a-f]{64}$/);
     // 域名不进入 key：同文本 key 与域名无关。
     expect(expectedKey).not.toContain('example.com');
 

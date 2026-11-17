@@ -4,11 +4,13 @@
  * 模块：后台服务（A）/ A1
  * 职责：处理设置页与弹窗的一次性消息：引擎列表、测试翻译、缓存占用与清空、标签页命令转发、
  *       页面注入的统一段落提交；把结果回给调用方。
- * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、A3（adapter）、A4（cache）、A2（gateway 的并发名额）、公共数值。
+ * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、E3 语言目录、A3（adapter）、
+ *       A4（cache）、A2（gateway 的并发名额）、公共数值。
  * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息；P6.1 增加 `ST_ROUTE` 转发与
- *           `ST_PAGE_SUBMIT` 接收（校验、计数、逐段日志与回执，不调用网关）；本轮移除段落上下文校验；
- *           P6.2 `ST_LIST_ENGINES` 返回完整实例参数，测试翻译改按实例 `maxConcurrency` 取并发名额；
- *           P6.3 `ST_PAGE_SUBMIT` 校验后按 `sender.tab.id` 转交 A2，回执不再等待翻译完成。
+ *           `ST_PAGE_SUBMIT` 接收；P6.2 `ST_LIST_ENGINES` 返回完整实例参数；
+ *           P6.3 `ST_PAGE_SUBMIT` 校验后按 `sender.tab.id` 转交 A2；
+ *           P8-2 `ST_LIST_ENGINES` 返回多实例公开字段、不创建默认实例，
+ *           `ST_TEST_ENGINE` 支持 `instanceId` 与每实例凭据/权限校验。
  *
  * 标签页转发有两处入口：P4 的快捷键走 `ST_TOGGLE`（commands.js），P6.1 的弹窗走 `ST_ROUTE`
  * 的 `start` / `clear`（本文件），两者共用 `sendToTab` 的补注入与错误归一。
@@ -25,11 +27,18 @@ import {
 } from '../shared/protocol.js';
 import { MAX_PAGE_PARAGRAPHS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
+import { isSupportedTargetLang } from '../shared/languages.js';
 import { createLogger } from '../shared/log/logger.js';
-import { getKey, getActiveInstance, getOrCreateDefaultInstance, getPublicSettings } from '../shared/config/instances.js';
-import { validateInstance } from '../shared/config/registry.js';
+import {
+  getInstanceCredentials,
+  getInstances,
+  getPublicSettings,
+  isInstancePermitted,
+  requiresKey,
+} from '../shared/config/instances.js';
+import { getEngineType, getTypeLabel, validateInstance } from '../shared/config/registry.js';
 import { getCacheStore } from '../shared/cache/store.js';
-import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
+import { translate, TranslateError } from '../shared/translate/adapter.js';
 import { normalizeConcurrency, withUpstreamSlot, acceptPageSubmit, findConnectionByTab } from './gateway.js';
 
 /** A1 日志入口。 */
@@ -96,29 +105,13 @@ export async function handleMessage(message, sender) {
 }
 
 /**
- * @returns {Promise<{ ok: true, data: { instances: Array<object> } }>}
+ * 返回全部实例的公开字段；不创建默认实例，列表为空时返回空数组。
+ * @returns {Promise<{ ok: true, data: { instances: Array<object> } } | { ok: false, error: object }>}
  */
 async function listEngines() {
   try {
-    await getOrCreateDefaultInstance();
     const { instances } = await getPublicSettings();
-    return {
-      ok: true,
-      data: {
-        instances: instances.map((instance) => ({
-          id: instance.id,
-          type: instance.type,
-          name: instance.name,
-          model: instance.model,
-          reasoningEffort: instance.reasoningEffort,
-          batchSize: instance.batchSize,
-          batchMaxChars: instance.batchMaxChars,
-          maxConcurrency: instance.maxConcurrency,
-          systemPrompt: instance.systemPrompt,
-          hasKey: Boolean(instance.hasKey),
-        })),
-      },
-    };
+    return { ok: true, data: { instances } };
   } catch (error) {
     return failure(ERROR_CODES.OTHER, `读取引擎列表失败：${error?.message ?? error}`);
   }
@@ -348,31 +341,74 @@ async function testEngine(payload) {
   } catch {
     return failure(ERROR_CODES.CONFIG, '读取设置失败');
   }
+  if (settings.enabled === false) return failure(ERROR_CODES.CONFIG, '扩展已停用');
 
   const targetLang = payload.targetLang ?? settings.targetLang;
   if (!isSupportedTargetLang(targetLang)) {
     return failure(ERROR_CODES.OTHER, '不支持的目标语言', FAILURE_REASONS.UNSUPPORTED_LANG);
   }
 
+  if (
+    payload.instanceId != null &&
+    (typeof payload.instanceId !== 'string' ||
+      payload.instanceId === '' ||
+      payload.instanceId.length > 64)
+  ) {
+    return failure(ERROR_CODES.OTHER, '实例标识无效', FAILURE_REASONS.INVALID_MESSAGE);
+  }
+
   traceLog.info('engine.test.start', '开始测试翻译', {
     textLength: text.length,
     targetLang,
+    instanceId: typeof payload.instanceId === 'string' ? payload.instanceId : null,
   });
 
-  let instance;
-  let apiKey;
+  let instances;
   try {
-    instance = await getActiveInstance({ create: true });
-    if (!instance || !validateInstance(instance).ok) {
-      return failure(ERROR_CODES.CONFIG, '引擎配置无效，请到设置页检查');
-    }
-    apiKey = await getKey(instance.id);
+    instances = await getInstances();
   } catch {
     return failure(ERROR_CODES.CONFIG, '读取引擎配置失败');
   }
 
-  if (!apiKey) {
-    return failure(ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥');
+  let instance;
+  if (typeof payload.instanceId === 'string') {
+    instance = instances.find((item) => item.id === payload.instanceId) ?? null;
+    if (!instance) return failure(ERROR_CODES.CONFIG, '实例不存在');
+  } else {
+    const activeId = settings.activeInstanceId;
+    instance = instances.find((item) => item.id === activeId) ?? instances[0] ?? null;
+    if (!instance) return failure(ERROR_CODES.CONFIG, '没有可用的翻译实例');
+  }
+
+  if (!getEngineType(instance.type)) {
+    return failure(ERROR_CODES.CONFIG, '不支持的实例类型');
+  }
+  const validation = validateInstance(instance);
+  if (!validation.ok) {
+    return failure(ERROR_CODES.CONFIG, validation.errors[0] ?? '实例配置无效');
+  }
+
+  let credentials;
+  try {
+    credentials = await getInstanceCredentials(instance);
+  } catch {
+    return failure(ERROR_CODES.CONFIG, '读取实例凭据失败');
+  }
+  if (requiresKey(instance)) {
+    const complete =
+      instance.type === 'baidu'
+        ? Boolean(credentials.appId && credentials.secretKey)
+        : Boolean(credentials.apiKey);
+    if (!complete) {
+      return failure(
+        ERROR_CODES.CONFIG,
+        instance.type === 'baidu' ? 'APPID 或密钥未配置完整' : '缺少密钥，请先在设置页保存密钥'
+      );
+    }
+  }
+
+  if (!(await isInstancePermitted(instance))) {
+    return failure(ERROR_CODES.CONFIG, '未授权访问该接口域名，请到设置页重新授权');
   }
 
   let elapsedMs = 0;
@@ -383,7 +419,8 @@ async function testEngine(payload) {
         return await translate({
           text,
           targetLang,
-          instance: { ...instance, apiKey },
+          sourceLang: settings.sourceLang,
+          instance: { ...instance, ...credentials },
         });
       } finally {
         elapsedMs = Math.round(performance.now() - startedAt);
@@ -393,7 +430,10 @@ async function testEngine(payload) {
     traceLog.info('engine.test.done', '测试翻译完成', {
       ok: true,
       elapsedMs,
+      instanceId: instance.id,
+      type: instance.type,
       totalTokens: result.usage?.totalTokens ?? null,
+      chars: text.length,
     });
 
     return {
@@ -402,6 +442,15 @@ async function testEngine(payload) {
         text: result.text,
         elapsedMs,
         usage: result.usage ?? null,
+        chars: text.length,
+        engine: {
+          id: instance.id,
+          name: instance.name,
+          type: instance.type,
+          typeLabel: getTypeLabel(instance.type),
+          preset: instance.type === 'openai' ? instance.preset : null,
+          model: instance.model,
+        },
       },
     };
   } catch (error) {
@@ -410,6 +459,8 @@ async function testEngine(payload) {
       ok: false,
       code,
       elapsedMs,
+      instanceId: instance.id,
+      type: instance.type,
     });
     if (error instanceof TranslateError) {
       return failure(error.code, error.message);

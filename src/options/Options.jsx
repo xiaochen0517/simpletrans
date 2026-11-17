@@ -1,200 +1,202 @@
 /**
- * C1–C5 设置页（P2 最小测试表单，经后台执行；P3 增加日志级别；P5 增加译文缓存区块；P6.2 增加翻译实例参数）
+ * C1–C5 设置页壳层
  *
- * 模块：插件独立页面（C）
- * 职责：提供「密钥配置 + 翻译实例参数 + 单段测试翻译」最小表单；增加日志级别、缓存开关/占用/清空。
- *       实例参数经 E3 `updateInstance` 写入 storage.sync；测试翻译经 ST_TEST_ENGINE 交给后台；
- *       缓存占用与清空经 ST_CACHE_STATS / ST_CLEAR_CACHE 交给后台。
- * 依赖：E1（protocol）、E2（settings）、E3（instances.writeKey / updateInstance、registry 校验）、E4（日志）、constants.js。
- * 实现阶段：P2（后台网关与页面通道）、P3（日志模块与调试输出）、P5（译文缓存）、P6.2（翻译实例参数配置）
+ * 模块：插件独立页面（C）/ 设置页
+ * 职责：分区导航与哈希路由、全局数据加载（设置 / 实例公开字段 / 缓存占用）、写操作串行与刷新、
+ *       全局保存状态与 toast、外部变更提示、编辑抽屉与新增对话框的挂载、未保存离开兜底。
+ * 依赖：React、`lucide-react`、E1（protocol）、E2（settings）、E3（instances 公开字段）、
+ *       E4（日志）、各分区与组件、设置页共享工具。
+ * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
  *
- * 与 P1 的差异：不再直接调用 A3、不再读取密钥明文；hasKey 由 ST_LIST_ENGINES 返回。
- * 设置页不 import 缓存模块、不直接打开缓存数据库；不 import A3 提示词模块，提示词校验用 E3 的规则。
- * 完整实例管理由 P8 落地。
+ * 设置页只读公开字段与 `credentialFields`（布尔），不读凭据明文；实例写入经 E3 后重新拉取
+ * `ST_LIST_ENGINES`，不在本地合并可变对象。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Activity,
+  Database,
+  FlaskConical,
+  Info,
+  LayoutDashboard,
+  LoaderCircle,
+  Settings2,
+  Sparkles,
+} from 'lucide-react';
+import './options.css';
 import { MESSAGE_TYPES } from '../shared/protocol.js';
-import { updateInstance, writeKey } from '../shared/config/instances.js';
-import {
-  DEFAULT_SYSTEM_PROMPT,
-  isDefaultPrompt,
-  MAX_MODEL_CHARS,
-  MAX_PROMPT_CHARS,
-  MIN_BATCH_SIZE,
-  REASONING_EFFORTS,
-  validatePromptTemplate,
-} from '../shared/config/registry.js';
-import { MAX_SEGMENT_CHARS } from '../shared/constants.js';
-import { getSettings, saveSettings } from '../shared/settings.js';
-import { LOG_LEVEL_OPTIONS, normalizeLevel } from '../shared/log/levels.js';
-import {
-  createLogger,
-  getLogMeta,
-  newTraceId,
-  setLogLevel as setLoggerLevel,
-} from '../shared/log/logger.js';
+import { STORAGE_KEYS } from '../shared/storage.js';
+import { getSettings } from '../shared/settings.js';
+import { AppContext, DEFAULT_ROUTE, ROUTES, openTestPage, sendToBackground } from './lib.js';
+import Toast from './components/toast.jsx';
+import CreateInstance from './components/create-instance.jsx';
+import InstanceEditor from './components/instance-editor.jsx';
+import Overview from './sections/overview.jsx';
+import Instances from './sections/instances.jsx';
+import General from './sections/general.jsx';
+import TestTranslation from './sections/test-translation.jsx';
+import DataManagement from './sections/data-management.jsx';
+import About from './sections/about.jsx';
 
-/** C1 日志入口。 */
-const log = createLogger('C1');
-
-/** 思考强度显示文案。 */
-const REASONING_EFFORT_LABELS = Object.freeze({
-  off: '关闭',
-  low: '低',
-  medium: '中',
-  high: '高',
-  max: '最高',
+/** 分区图标。 */
+const ROUTE_ICONS = Object.freeze({
+  overview: LayoutDashboard,
+  instances: Sparkles,
+  general: Settings2,
+  test: FlaskConical,
+  data: Database,
+  about: Info,
 });
 
-/** 翻译实例参数的保存字段（用于 `settings.save` 日志）。 */
-const ENGINE_PARAM_FIELDS = Object.freeze([
-  'model',
-  'reasoningEffort',
-  'batchSize',
-  'batchMaxChars',
-  'maxConcurrency',
-  'systemPrompt',
-]);
+/** 分区组件。 */
+const ROUTE_VIEWS = Object.freeze({
+  overview: Overview,
+  instances: Instances,
+  general: General,
+  test: TestTranslation,
+  data: DataManagement,
+  about: About,
+});
 
 /**
- * 字节数格式化为可读单位；非数字按 0 处理。
- * @param {unknown} value
+ * 读取当前哈希对应的分区 id；非法 hash 回退概览。
  * @returns {string}
  */
-function formatBytes(value) {
-  const n = Number.isFinite(value) ? Math.max(0, Number(value)) : 0;
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(1)} GB`;
+function routeFromHash() {
+  const hash = typeof window !== 'undefined' ? window.location.hash : '';
+  return ROUTES.find((route) => route.path === hash)?.id ?? DEFAULT_ROUTE;
 }
 
 /**
- * 条数加千分位；非数字按 0 处理。
- * @param {unknown} value
- * @returns {string}
+ * 读取扩展清单；不可用时返回空对象。
+ * @returns {Record<string, any>}
  */
-function formatCount(value) {
-  const n = Number.isFinite(value) ? Math.max(0, Number(value)) : 0;
-  return n.toLocaleString('zh-CN');
-}
-
-/**
- * 缓存占用文字；上限未知时只显示已用量。
- * @param {{ entries?: number, bytes?: number, maxBytes?: number } | null} stats
- * @returns {string | null}
- */
-function statsText(stats) {
-  if (!stats) return null;
-  const used = `已用约 ${formatBytes(stats.bytes)}`;
-  const limit = Number.isFinite(stats.maxBytes) ? ` / ${formatBytes(stats.maxBytes)}` : '';
-  return `${used}${limit} · ${formatCount(stats.entries)} 条`;
-}
-
-/**
- * 发一条一次性消息；后台不可用时归一为 NETWORK。
- * @param {string} type
- * @param {object} [payload]
- */
-async function sendToBackground(type, payload) {
+function readManifest() {
   try {
-    const response = await chrome.runtime.sendMessage({ type, payload });
-    return response ?? { ok: false, error: { code: 'OTHER', message: '后台没有返回结果' } };
+    return globalThis.chrome?.runtime?.getManifest?.() ?? {};
   } catch {
-    return {
-      ok: false,
-      error: { code: 'NETWORK', message: '无法连接后台，请稍后重试' },
-    };
+    return {};
   }
 }
 
 export default function Options() {
-  const [instance, setInstance] = useState(null);
-  const [configured, setConfigured] = useState(false);
+  const [route, setRoute] = useState(routeFromHash);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
-  const [keyInput, setKeyInput] = useState('');
-  const [text, setText] = useState('Hello world');
-  const [result, setResult] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [logLevel, setLogLevel] = useState('info');
-  const [logSaving, setLogSaving] = useState(false);
-  const [logNotice, setLogNotice] = useState(null);
-  const [logError, setLogError] = useState(null);
-  const [cacheEnabled, setCacheEnabled] = useState(true);
+  const [enginesError, setEnginesError] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [instances, setInstances] = useState([]);
   const [cacheStats, setCacheStats] = useState(null);
+  const [cacheError, setCacheError] = useState(false);
   const [cacheLoading, setCacheLoading] = useState(true);
-  const [cacheSaving, setCacheSaving] = useState(false);
-  const [cacheClearing, setCacheClearing] = useState(false);
-  const [cacheNotice, setCacheNotice] = useState(null);
-  const [cacheError, setCacheError] = useState(null);
-  const [modelInput, setModelInput] = useState('');
-  const [reasoningEffort, setReasoningEffort] = useState('off');
-  const [batchSizeInput, setBatchSizeInput] = useState('8');
-  const [batchMaxCharsInput, setBatchMaxCharsInput] = useState('1000');
-  const [maxConcurrencyInput, setMaxConcurrencyInput] = useState('4');
-  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
-  const [engineSaving, setEngineSaving] = useState(false);
-  const [engineNotice, setEngineNotice] = useState(null);
-  const [engineError, setEngineError] = useState(null);
-  const [engineFieldErrors, setEngineFieldErrors] = useState({});
-  const promptRef = useRef(null);
+  const [toast, setToast] = useState(null);
+  const [savingCount, setSavingCount] = useState(0);
+  const [saveError, setSaveError] = useState(null);
+  const [lastAction, setLastAction] = useState(null);
+  const [editorId, setEditorId] = useState(null);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [externalChange, setExternalChange] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createHint, setCreateHint] = useState(null);
+  const [testState, setTestState] = useState({
+    instanceId: null,
+    text: 'Hello world',
+    result: null,
+    busy: false,
+  });
+  const [clearCacheRequest, setClearCacheRequest] = useState(false);
 
-  /**
-   * 用实例里的已保存参数填充表单状态。
-   * @param {Record<string, unknown> | null} next
-   */
-  const applyInstance = useCallback((next) => {
-    if (!next) return;
-    setModelInput(String(next.model ?? ''));
-    setReasoningEffort(String(next.reasoningEffort ?? 'off'));
-    setBatchSizeInput(String(next.batchSize ?? 8));
-    setBatchMaxCharsInput(String(next.batchMaxChars ?? 1000));
-    setMaxConcurrencyInput(String(next.maxConcurrency ?? 4));
-    setSystemPrompt(String(next.systemPrompt ?? DEFAULT_SYSTEM_PROMPT));
-  }, []);
+  const writeDepth = useRef(0);
+  const writeChain = useRef(Promise.resolve());
+  const toastTimer = useRef(null);
+  const editorIdRef = useRef(null);
+  const editorStampRef = useRef(null);
+  const instancesRef = useRef([]);
+
+  const manifest = readManifest();
+  const version = String(manifest.version ?? '');
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const settings = await getSettings();
-        if (cancelled) return;
-        const level = normalizeLevel(settings.logLevel);
-        setLogLevel(level);
-        setCacheEnabled(settings.cacheEnabled !== false);
-        setLoggerLevel(level);
-        log.info('logger.ready', '日志已启动', getLogMeta());
-      } catch {
-        if (!cancelled) log.warn('settings.read', '读取设置失败，使用默认日志级别');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    editorIdRef.current = editorId;
+  }, [editorId]);
+
+  useEffect(() => {
+    instancesRef.current = instances;
+  }, [instances]);
+
+  // ---------------------------------------------------------------- 数据读取
+  /** 读取设置；失败时抛出，由调用方决定是否降级。 */
+  const fetchSettings = useCallback(async () => {
+    const next = await getSettings();
+    setSettings(next);
+    return next;
   }, []);
 
-  /** 读取缓存占用；打开设置页、窗口重新获得焦点与清空成功后调用，不做轮询。 */
+  /** 读取实例公开字段；失败时抛出。 */
+  const fetchInstances = useCallback(async () => {
+    const response = await sendToBackground(MESSAGE_TYPES.LIST_ENGINES);
+    if (!response.ok) {
+      const message = response.error?.message ?? '无法读取引擎配置';
+      setEnginesError(message);
+      throw new Error(message);
+    }
+    const list = Array.isArray(response.data?.instances) ? response.data.instances : [];
+    setInstances(list);
+    setEnginesError(null);
+    return list;
+  }, []);
+
+  /** 重新读取缓存占用；打开页面、窗口聚焦、刷新与清空后调用。 */
   const refreshCacheStats = useCallback(async () => {
+    setCacheLoading(true);
     const response = await sendToBackground(MESSAGE_TYPES.CACHE_STATS);
     if (response.ok && response.data) {
       setCacheStats({
-        entries: response.data.entries,
-        bytes: response.data.bytes,
-        maxBytes: response.data.maxBytes,
-        maxEntries: response.data.maxEntries,
+        entries: Number(response.data.entries) || 0,
+        bytes: Number(response.data.bytes) || 0,
+        maxBytes: Number(response.data.maxBytes) || 0,
+        maxEntries: Number(response.data.maxEntries) || 0,
       });
-      setCacheError((current) => (current === '占用信息暂不可用' ? null : current));
+      setCacheError(false);
     } else {
-      setCacheError('占用信息暂不可用');
+      setCacheError(true);
     }
     setCacheLoading(false);
   }, []);
 
-  useEffect(() => {
+  const refreshSettings = useCallback(async () => {
+    try {
+      await fetchSettings();
+    } catch {
+      setLoadError('读取设置失败，请重试');
+    }
+  }, [fetchSettings]);
+
+  const refreshInstances = useCallback(async () => {
+    try {
+      await fetchInstances();
+    } catch {
+      // 错误已写入 enginesError。
+    }
+  }, [fetchInstances]);
+
+  /** 首次加载：设置与实例分开降级，缓存占用随后读取。 */
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    const [settingsResult] = await Promise.allSettled([fetchSettings(), fetchInstances()]);
+    if (settingsResult.status === 'rejected') {
+      setLoadError('读取设置失败，请重试');
+    }
+    setLoading(false);
     void refreshCacheStats();
+  }, [fetchInstances, fetchSettings, refreshCacheStats]);
+
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  useEffect(() => {
     const onFocus = () => {
       void refreshCacheStats();
     };
@@ -204,565 +206,378 @@ export default function Options() {
     };
   }, [refreshCacheStats]);
 
+  // ------------------------------------------------------------------ 路由
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const response = await sendToBackground(MESSAGE_TYPES.LIST_ENGINES);
-      if (cancelled) return;
-      if (response.ok) {
-        const first = response.data?.instances?.[0] ?? null;
-        setInstance(first);
-        applyInstance(first);
-        setConfigured(Boolean(first?.hasKey));
-        setLoadError(first ? null : '没有可用的引擎实例，请稍后重试');
-      } else {
-        setLoadError(response.error?.message ?? '无法读取引擎配置');
+    const onHashChange = () => setRoute(routeFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    const known = ROUTES.some((item) => item.path === window.location.hash);
+    if (!known) {
+      try {
+        window.history.replaceState(null, '', `#/${DEFAULT_ROUTE}`);
+      } catch {
+        window.location.hash = `#/${DEFAULT_ROUTE}`;
       }
-      setLoading(false);
-    })();
+    }
     return () => {
-      cancelled = true;
+      window.removeEventListener('hashchange', onHashChange);
     };
-  }, [applyInstance]);
+  }, []);
 
-  async function onChangeLogLevel(event) {
-    const next = normalizeLevel(event.target.value);
-    setLogSaving(true);
-    setLogNotice(null);
-    setLogError(null);
-    try {
-      await saveSettings({ logLevel: next });
-      setLogLevel(next);
-      setLoggerLevel(next);
-      log.info('settings.save', '日志级别已保存', { level: next });
-      setLogNotice('已保存；已打开的网页刷新或重连后生效。');
-    } catch {
-      setLogError('保存日志级别失败，请重试');
-    } finally {
-      setLogSaving(false);
+  /** 切换分区。 */
+  const navigate = useCallback((path) => {
+    if (window.location.hash === path) {
+      setRoute(routeFromHash());
+      return;
     }
-  }
+    window.location.hash = path;
+  }, []);
 
-  async function onChangeCacheEnabled(event) {
-    const next = event.target.checked === true;
-    setCacheSaving(true);
-    setCacheNotice(null);
-    setCacheError(null);
-    try {
-      await saveSettings({ cacheEnabled: next });
-      setCacheEnabled(next);
-      setCacheNotice('已保存；下一次翻译即生效。');
-      log.info('settings.save', '缓存开关已保存', { cacheEnabled: next });
-    } catch {
-      setCacheError('保存缓存开关失败，请重试');
-    } finally {
-      setCacheSaving(false);
+  // -------------------------------------------------------------- 提示与状态
+  const notify = useCallback((tone, text) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ id: Date.now(), tone, text });
+    if (tone !== 'error') {
+      toastTimer.current = setTimeout(() => setToast(null), 3000);
     }
-  }
+  }, []);
 
-  async function onClearCache() {
-    setCacheClearing(true);
-    setCacheNotice(null);
-    setCacheError(null);
-    try {
-      const response = await sendToBackground(MESSAGE_TYPES.CLEAR_CACHE);
-      if (!response.ok) {
-        setCacheError(response.error?.message ?? '清空缓存失败，请重试');
-        return;
-      }
-      const cleared = Number(response.data?.cleared) || 0;
-      setCacheStats((current) => ({
-        entries: 0,
-        bytes: 0,
-        maxBytes: current?.maxBytes,
-        maxEntries: current?.maxEntries,
-      }));
-      setCacheNotice(cleared > 0 ? `已清空 ${formatCount(cleared)} 条缓存` : '缓存已经是空的');
-      log.info('settings.save', '已清空译文缓存', { cleared });
-    } catch {
-      setCacheError('清空缓存失败，请重试');
-    } finally {
-      setCacheClearing(false);
-    }
-  }
+  const dismissToast = useCallback(() => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(null);
+  }, []);
 
-  async function onSaveKey() {
-    const key = keyInput.trim();
-    if (!instance || !key) return;
-    setSaving(true);
-    try {
-      await writeKey(instance.id, key);
-      setKeyInput('');
-      setConfigured(true);
-      setLoadError(null);
-    } catch {
-      setResult({ status: 'error', message: '保存密钥失败，请重试' });
-    } finally {
-      setSaving(false);
-    }
-  }
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    },
+    []
+  );
+
+  const recordAction = useCallback((text) => {
+    setLastAction({ text, at: Date.now() });
+  }, []);
+
+  /** 写入成功后的局部设置更新（即时保存的乐观显示）。 */
+  const updateSettingsLocal = useCallback((partial) => {
+    setSettings((current) => (current ? { ...current, ...partial } : current));
+  }, []);
 
   /**
-   * 在提示词光标处插入占位符；插入后把光标放到占位符之后。
-   * @param {string} token
+   * 串行执行一次写操作：写期间屏蔽外部变更提示，写后重新拉取设置与实例。
+   * 失败时抛出原错误，由调用方决定提示方式；同时记录顶部「保存失败」。
+   * @template T
+   * @param {() => Promise<T>} action
+   * @returns {Promise<T>}
    */
-  function insertPromptToken(token) {
-    const element = promptRef.current;
-    const start = Number.isInteger(element?.selectionStart) ? element.selectionStart : systemPrompt.length;
-    const end = Number.isInteger(element?.selectionEnd) ? element.selectionEnd : start;
-    setSystemPrompt(`${systemPrompt.slice(0, start)}${token}${systemPrompt.slice(end)}`);
-    setEngineFieldErrors((current) => ({ ...current, systemPrompt: undefined }));
+  const mutate = useCallback(
+    (action) => {
+      const run = writeChain.current.then(async () => {
+        writeDepth.current += 1;
+        setSavingCount((count) => count + 1);
+        setSaveError(null);
+        try {
+          const result = await action();
+          await Promise.all([refreshSettings(), refreshInstances()]);
+          return result;
+        } catch (error) {
+          setSaveError(error?.message ?? '保存失败，请重试');
+          throw error;
+        } finally {
+          writeDepth.current -= 1;
+          setSavingCount((count) => Math.max(0, count - 1));
+        }
+      });
+      writeChain.current = run.then(
+        () => undefined,
+        () => undefined
+      );
+      return run;
+    },
+    [refreshInstances, refreshSettings]
+  );
 
-    const placeCursor = () => {
-      const target = promptRef.current;
-      if (!target) return;
-      target.focus();
-      try {
-        target.setSelectionRange(start + token.length, start + token.length);
-      } catch {
-        // 控件不可选中时忽略。
-      }
+  // ------------------------------------------------------------ 外部变更同步
+  useEffect(() => {
+    const onChanged = (changes, area) => {
+      if (area !== 'sync') return;
+      const keys = Object.keys(changes ?? {});
+      if (!keys.includes(STORAGE_KEYS.settings) && !keys.includes(STORAGE_KEYS.instances)) return;
+      if (writeDepth.current > 0) return;
+
+      void (async () => {
+        try {
+          const [fresh] = await Promise.all([fetchInstances(), fetchSettings()]);
+          const id = editorIdRef.current;
+          if (!id) return;
+          const target = fresh.find((instance) => instance.id === id) ?? null;
+          if (!target) {
+            setEditorId(null);
+            setEditorDirty(false);
+            return;
+          }
+          if ((target.updatedAt ?? null) !== editorStampRef.current) setExternalChange(true);
+        } catch {
+          // 读取失败时保留现有界面，等待用户手动重试。
+        }
+      })();
     };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(placeCursor);
-    else setTimeout(placeCursor, 0);
-  }
+    const listener = globalThis.chrome?.storage?.onChanged;
+    listener?.addListener?.(onChanged);
+    return () => {
+      listener?.removeListener?.(onChanged);
+    };
+  }, [fetchInstances, fetchSettings]);
 
-  /** 恢复默认提示词只改文本框，仍需点击「保存参数」才写入。 */
-  function onRestoreDefaultPrompt() {
-    setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
-    setEngineFieldErrors((current) => ({ ...current, systemPrompt: undefined }));
-  }
+  // ---------------------------------------------------------- 抽屉与对话框
+  /** 打开实例编辑抽屉，并记录当前 updatedAt 作为外部变更基线。 */
+  const openEditor = useCallback((id) => {
+    const target = instancesRef.current.find((instance) => instance.id === id);
+    editorStampRef.current = target?.updatedAt ?? null;
+    setExternalChange(false);
+    setEditorDirty(false);
+    setEditorId(id);
+  }, []);
 
-  /** 保存前在本地校验六个字段；不合法时不发请求，只显示字段错误。 */
-  async function onSaveEngineParams() {
-    if (!instance) return;
+  const closeEditor = useCallback(() => {
+    setEditorId(null);
+    setEditorDirty(false);
+    setExternalChange(false);
+  }, []);
 
-    const errors = {};
-    const model = modelInput.trim();
-    if (model === '') errors.model = '请填写模型名称';
-    else if (model.length > MAX_MODEL_CHARS) {
-      errors.model = `模型名称不能超过 ${MAX_MODEL_CHARS} 字符`;
+  const openCreate = useCallback((hint = null) => {
+    setCreateHint(hint);
+    setCreateOpen(true);
+  }, []);
+
+  const closeCreate = useCallback(() => {
+    setCreateOpen(false);
+    setCreateHint(null);
+  }, []);
+
+  /** 更新测试分区的会话状态（输入、选中实例、执行中与结果）。 */
+  const updateTestState = useCallback((patch) => {
+    setTestState((current) => ({ ...current, ...patch }));
+  }, []);
+
+  /** 预选测试实例；从概览或实例卡片进入测试分区时使用。 */
+  const setTestInstanceId = useCallback(
+    (instanceId) => {
+      updateTestState({ instanceId });
+    },
+    [updateTestState]
+  );
+
+  /** 概览快捷操作：跳到数据管理并请求打开清空确认（由数据管理消费一次）。 */
+  const requestClearCache = useCallback(() => {
+    setClearCacheRequest(true);
+    navigate('#/data');
+  }, [navigate]);
+
+  const consumeClearCacheRequest = useCallback(() => {
+    setClearCacheRequest(false);
+  }, []);
+
+  // -------------------------------------------------------------- 未保存兜底
+  useEffect(() => {
+    if (!editorDirty) return undefined;
+    const onBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
+  }, [editorDirty]);
+
+  // 实例被外部删除时关闭抽屉。
+  useEffect(() => {
+    if (!editorId || loading) return;
+    if (!instances.some((instance) => instance.id === editorId)) {
+      setEditorId(null);
+      setEditorDirty(false);
     }
+  }, [editorId, instances, loading]);
 
-    const batchSize = Number(batchSizeInput);
-    if (!Number.isInteger(batchSize) || batchSize < MIN_BATCH_SIZE) {
-      errors.batchSize = '单批段数必须是正整数';
-    }
+  const editorInstance = instances.find((instance) => instance.id === editorId) ?? null;
+  const currentRoute = ROUTES.find((item) => item.id === route) ?? ROUTES[0];
+  const View = ROUTE_VIEWS[route] ?? Overview;
 
-    const batchMaxChars = Number(batchMaxCharsInput);
-    if (!Number.isInteger(batchMaxChars) || batchMaxChars < 1) {
-      errors.batchMaxChars = '批次最大字符数必须是正整数';
-    }
+  const needsAttention = instances.some(
+    (instance) =>
+      instance.kind === 'unsupported' ||
+      instance.permission === 'missing' ||
+      (instance.requiresKey !== false && instance.hasKey !== true)
+  );
 
-    const maxConcurrency = Number(maxConcurrencyInput);
-    if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-      errors.maxConcurrency = '最大并发数必须是正整数';
-    }
+  const statusText = savingCount > 0
+    ? '保存中…'
+    : saveError
+      ? '保存失败'
+      : editorDirty
+        ? '有未保存更改'
+        : loading
+          ? '读取中…'
+          : '已保存';
 
-    const promptCheck = validatePromptTemplate(systemPrompt);
-    if (!promptCheck.ok) {
-      errors.systemPrompt = promptCheck.error;
-      log.warn('prompt.error', '提示词校验失败', { reason: promptCheck.error });
-    }
-
-    setEngineFieldErrors(errors);
-    setEngineNotice(null);
-    setEngineError(null);
-    if (Object.keys(errors).length > 0) return;
-
-    const prompt = systemPrompt.trim();
-    setEngineSaving(true);
-    try {
-      const next = await updateInstance(instance.id, {
-        model,
-        reasoningEffort,
-        batchSize,
-        batchMaxChars,
-        maxConcurrency,
-        systemPrompt: prompt,
-      });
-      setInstance(next);
-      applyInstance(next);
-      setEngineNotice('已保存；下一次测试翻译或整页翻译生效');
-      log.info('settings.save', '翻译实例参数已保存', {
-        fields: ENGINE_PARAM_FIELDS,
-        model: next.model,
-        reasoningEffort: next.reasoningEffort,
-        batchSize: next.batchSize,
-        batchMaxChars: next.batchMaxChars,
-        maxConcurrency: next.maxConcurrency,
-        systemPromptLength: next.systemPrompt.length,
-        promptDefault: isDefaultPrompt(next.systemPrompt),
-      });
-    } catch (error) {
-      setEngineError('保存翻译实例参数失败，请重试');
-      log.warn('settings.save', '翻译实例参数保存失败', {
-        reason: error?.message ? String(error.message).slice(0, 120) : 'Error',
-      });
-    } finally {
-      setEngineSaving(false);
-    }
-  }
-
-  async function onTest() {
-    const t = text.trim();
-    if (!t) {
-      setResult({ status: 'error', message: '请输入待翻译文本' });
-      return;
-    }
-    if (t.length > MAX_SEGMENT_CHARS) {
-      setResult({ status: 'error', message: `文本超过 ${MAX_SEGMENT_CHARS} 字符上限` });
-      return;
-    }
-    if (!instance) return;
-
-    const traceId = newTraceId();
-    const testLog = log.withTrace(traceId);
-    const startedAt = Date.now();
-
-    setBusy(true);
-    setResult(null);
-    testLog.info('engine.test.start', '开始测试翻译', { textLength: t.length });
-    const response = await sendToBackground(MESSAGE_TYPES.TEST_ENGINE, { text: t, traceId });
-    const elapsedMs = Date.now() - startedAt;
-    if (response.ok) {
-      setResult({
-        status: 'success',
-        text: response.data?.text ?? '',
-        elapsedMs: response.data?.elapsedMs ?? elapsedMs,
-        usage: response.data?.usage ?? null,
-      });
-      testLog.info('engine.test.done', '测试翻译完成', {
-        ok: true,
-        elapsedMs,
-        totalTokens: response.data?.usage?.totalTokens ?? null,
-      });
-    } else {
-      setResult({
-        status: 'error',
-        code: response.error?.code,
-        message: response.error?.message ?? '翻译失败',
-      });
-      testLog.warn('engine.test.done', '测试翻译失败', {
-        ok: false,
-        code: response.error?.code,
-        ...(response.error?.reason ? { reason: response.error.reason } : {}),
-        elapsedMs,
-      });
-    }
-    setBusy(false);
-  }
+  const appValue = {
+    route,
+    navigate,
+    loading,
+    loadError,
+    enginesError,
+    settings,
+    instances,
+    cacheStats,
+    cacheError,
+    cacheLoading,
+    saving: savingCount > 0,
+    saveError,
+    lastAction,
+    notify,
+    recordAction,
+    updateSettingsLocal,
+    refreshAll: loadAll,
+    refreshSettings,
+    refreshInstances,
+    refreshCacheStats,
+    mutate,
+    openEditor,
+    closeEditor,
+    openCreate,
+    createOpen,
+    createHint,
+    editorId,
+    editorDirty,
+    externalChange,
+    setTestInstanceId,
+    testState,
+    updateTestState,
+    clearCacheRequest,
+    requestClearCache,
+    consumeClearCacheRequest,
+  };
 
   return (
-    <main className="max-w-xl mx-auto my-10 px-4 space-y-6">
-      <header>
-        <h1 className="text-2xl font-bold mb-1">SimpleTrans 设置</h1>
-        <p className="text-sm text-base-content/70">
-          测试翻译经后台执行；完整设置页待接入（P8）。
-        </p>
-      </header>
-
-      {loading && <p className="text-sm text-base-content/70">正在读取引擎配置…</p>}
-
-      {loadError && (
-        <div className="rounded-box bg-error/10 text-error p-3 text-sm">{loadError}</div>
-      )}
-
-      <section className="space-y-2">
-        <h2 className="text-base font-semibold">
-          DeepSeek 密钥
-          {instance?.name ? <span className="text-base-content/60"> · {instance.name}</span> : null}
-        </h2>
-        <div className="flex gap-2 items-center">
-          <input
-            type="password"
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            placeholder="sk-..."
-            className="input input-bordered flex-1"
-            autoComplete="off"
-            disabled={!instance || saving}
-          />
-          <button
-            className="btn btn-primary"
-            onClick={onSaveKey}
-            disabled={saving || !instance || !keyInput.trim()}
-          >
-            保存密钥
-          </button>
-        </div>
-        <p className="text-sm">
-          状态：
-          {configured ? (
-            <span className="text-success font-medium">已配置</span>
-          ) : (
-            <span className="text-warning font-medium">未配置</span>
-          )}
-        </p>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold">翻译实例（大模型翻译）</h2>
-        <p className="text-sm text-base-content/70">
-          模型、思考强度、批次与提示词保存在当前实例；保存后下一次测试翻译或整页翻译生效。
-        </p>
-
-        <label className="flex flex-col gap-1 text-sm">
-          <span>模型名称</span>
-          <input
-            type="text"
-            className="input input-bordered w-full"
-            value={modelInput}
-            onChange={(e) => setModelInput(e.target.value)}
-            placeholder="deepseek-chat"
-            autoComplete="off"
-            disabled={!instance || engineSaving}
-          />
-          <span className="text-xs text-base-content/60">
-            自由输入，不做模型白名单；是否支持思考模式由上游决定。
-          </span>
-          {engineFieldErrors.model && (
-            <span className="text-sm text-error">{engineFieldErrors.model}</span>
-          )}
-        </label>
-
-        <label className="flex flex-col gap-1 text-sm">
-          <span>思考强度</span>
-          <select
-            className="select select-bordered w-full"
-            value={reasoningEffort}
-            onChange={(e) => setReasoningEffort(e.target.value)}
-            disabled={!instance || engineSaving}
-          >
-            {REASONING_EFFORTS.map((effort) => (
-              <option key={effort} value={effort}>
-                {REASONING_EFFORT_LABELS[effort] ?? effort}
-              </option>
-            ))}
-          </select>
-          <span className="text-xs text-base-content/60">
-            关闭时不开启思考模式，速度与成本最低；其余档位开启思考并传递对应强度。
-          </span>
-        </label>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <label className="flex flex-col gap-1 text-sm">
-            <span>单批段数</span>
-            <input
-              type="number"
-              className="input input-bordered w-full"
-              value={batchSizeInput}
-              onChange={(e) => setBatchSizeInput(e.target.value)}
-              min={MIN_BATCH_SIZE}
-              step={1}
-              disabled={!instance || engineSaving}
-            />
-            <span className="text-xs text-base-content/60">
-              每批最多多少段；与批次最大字符数同时生效，先到先切；不设业务上限。
+    <AppContext.Provider value={appValue}>
+      <div className="op-shell">
+        <aside className="op-sidebar">
+          <div className="op-brand">
+            <span className="op-brand-mark" aria-hidden="true">
+              <Sparkles size={16} />
             </span>
-            {engineFieldErrors.batchSize && (
-              <span className="text-sm text-error">{engineFieldErrors.batchSize}</span>
-            )}
-          </label>
-
-          <label className="flex flex-col gap-1 text-sm">
-            <span>批次最大字符数</span>
-            <input
-              type="number"
-              className="input input-bordered w-full"
-              value={batchMaxCharsInput}
-              onChange={(e) => setBatchMaxCharsInput(e.target.value)}
-              min={1}
-              step={1}
-              disabled={!instance || engineSaving}
-            />
-            <span className="text-xs text-base-content/60">
-              按原文累计字符切批，不拆分单段；不设固定上限。
-            </span>
-            {engineFieldErrors.batchMaxChars && (
-              <span className="text-sm text-error">{engineFieldErrors.batchMaxChars}</span>
-            )}
-          </label>
-
-          <label className="flex flex-col gap-1 text-sm">
-            <span>最大并发数</span>
-            <input
-              type="number"
-              className="input input-bordered w-full"
-              value={maxConcurrencyInput}
-              onChange={(e) => setMaxConcurrencyInput(e.target.value)}
-              min={1}
-              step={1}
-              disabled={!instance || engineSaving}
-            />
-            <span className="text-xs text-base-content/60">
-              同时在途的批次数；不设固定上限，设置过高可能触发上游限流。
-            </span>
-            {engineFieldErrors.maxConcurrency && (
-              <span className="text-sm text-error">{engineFieldErrors.maxConcurrency}</span>
-            )}
-          </label>
-        </div>
-
-        <div className="flex flex-col gap-2 text-sm">
-          <span>翻译 system 提示词</span>
-          <textarea
-            ref={promptRef}
-            value={systemPrompt}
-            onChange={(e) => {
-              setSystemPrompt(e.target.value);
-              setEngineFieldErrors((current) => ({ ...current, systemPrompt: undefined }));
-            }}
-            rows={10}
-            className="textarea textarea-bordered w-full font-mono text-xs"
-            spellCheck={false}
-            disabled={!instance || engineSaving}
-          />
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="btn btn-xs btn-outline"
-              onClick={() => insertPromptToken('{{targetLang}}')}
-              disabled={!instance || engineSaving}
-            >
-              插入目标语言
-            </button>
-            <button
-              type="button"
-              className="btn btn-xs btn-outline"
-              onClick={() => insertPromptToken('{{outputFormat}}')}
-              disabled={!instance || engineSaving}
-            >
-              插入输出格式
-            </button>
-            <button
-              type="button"
-              className="btn btn-xs btn-outline"
-              onClick={onRestoreDefaultPrompt}
-              disabled={!instance || engineSaving}
-            >
-              恢复默认提示词
-            </button>
+            <div>
+              <h1 className="op-brand-title">SimpleTrans</h1>
+              <span className="op-brand-sub">网页双语对照翻译</span>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-base-content/60">
-            <span>{'{{targetLang}}'} 与 {'{{outputFormat}}'} 必须保留，且不能出现其它 {'{{...}}'} 占位符。</span>
-            <span>
-              {systemPrompt.length} / {MAX_PROMPT_CHARS}
-            </span>
+
+          <nav className="op-nav" aria-label="设置分类">
+            {ROUTES.map((item) => {
+              const Icon = ROUTE_ICONS[item.id] ?? Activity;
+              const active = route === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="op-nav-item"
+                  aria-current={active ? 'page' : undefined}
+                  onClick={() => navigate(item.path)}
+                >
+                  <Icon size={15} aria-hidden="true" />
+                  <span className="op-nav-label">
+                    <span className="op-nav-full">{item.label}</span>
+                    <span className="op-nav-short">{item.short}</span>
+                  </span>
+                  {item.id === 'instances' && instances.length > 0 ? (
+                    needsAttention ? (
+                      <span className="op-nav-dot" aria-label="有实例需要处理" />
+                    ) : (
+                      <span className="op-nav-count">{instances.length}</span>
+                    )
+                  ) : null}
+                </button>
+              );
+            })}
+          </nav>
+
+          {version ? <div className="op-sidebar-footer">v{version}</div> : null}
+        </aside>
+
+        <div className="op-main">
+          <header className="op-topbar">
+            <h2 className="op-title">{currentRoute.label}</h2>
+            <div className="op-topbar-right">
+              <span
+                className={`op-status${saveError ? ' is-error' : savingCount > 0 ? '' : ' is-ok'}`}
+                aria-live="polite"
+                title={saveError ?? undefined}
+              >
+                {savingCount > 0 ? <LoaderCircle size={13} className="op-spin" aria-hidden="true" /> : null}
+                {statusText}
+              </span>
+              {version ? <span className="op-version">v{version}</span> : null}
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                aria-label="打开翻译测试页"
+                title="打开翻译测试页"
+                onClick={async () => {
+                  const result = await openTestPage();
+                  notify(result.ok ? 'ok' : 'error', result.ok ? '已打开翻译测试页' : result.message);
+                }}
+              >
+                <FlaskConical size={15} aria-hidden="true" />
+              </button>
+            </div>
+          </header>
+
+          <div className="op-content">
+            {loadError && !settings ? (
+              <div className="op-card">
+                <div className="op-warning is-warn">
+                  <span className="op-warning-text">{loadError}</span>
+                  <span className="op-warning-action">
+                    <button type="button" className="btn btn-xs" onClick={() => void loadAll()}>
+                      重试
+                    </button>
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="op-stack">
+                {enginesError ? (
+                  <div className="op-warning is-warn">
+                    <span className="op-warning-text">读取实例列表失败：{enginesError}</span>
+                    <span className="op-warning-action">
+                      <button type="button" className="btn btn-xs" onClick={() => void refreshInstances()}>
+                        重试
+                      </button>
+                    </span>
+                  </div>
+                ) : null}
+                <View />
+              </div>
+            )}
           </div>
-          <p className="text-xs text-base-content/60">
-            {'{{targetLang}}'} 会替换为「中文」等目标语言显示名；{'{{outputFormat}}'} 由程序按单段/批量替换为对应输出规则。
-            默认模板包含防注入与逐段独立翻译要求，删除后防注入能力由用户自行负责。
-          </p>
-          {engineFieldErrors.systemPrompt && (
-            <span className="text-sm text-error">{engineFieldErrors.systemPrompt}</span>
-          )}
         </div>
+      </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            className="btn btn-primary"
-            onClick={onSaveEngineParams}
-            disabled={engineSaving || !instance}
-          >
-            {engineSaving ? '保存中…' : '保存参数'}
-          </button>
-          <span className="text-sm text-base-content/60">
-            保存只更新当前实例的这些字段，不改密钥与地址。
-          </span>
-        </div>
-        {engineNotice && <p className="text-sm text-success">{engineNotice}</p>}
-        {engineError && <p className="text-sm text-error">{engineError}</p>}
-      </section>
+      {createOpen ? <CreateInstance hint={createHint} onClose={closeCreate} /> : null}
 
-      <section className="space-y-2">
-        <h2 className="text-base font-semibold">测试翻译</h2>
-        <p className="text-sm text-base-content/70">
-          先保存参数，再测试翻译；测试翻译使用已保存的模型、思考强度与提示词。
-        </p>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={2}
-          className="textarea textarea-bordered w-full"
-          placeholder="输入一句英文…"
+      {editorInstance ? (
+        <InstanceEditor
+          key={editorInstance.id}
+          instance={editorInstance}
+          active={editorInstance.id === settings?.activeInstanceId}
+          externalChange={externalChange}
+          onClose={closeEditor}
+          onDirtyChange={setEditorDirty}
         />
-        <button className="btn btn-primary" onClick={onTest} disabled={busy || !instance}>
-          {busy ? '翻译中…' : '测试翻译'}
-        </button>
-      </section>
+      ) : null}
 
-      {result && (
-        <section className="space-y-1 text-sm">
-          {result.status === 'success' && (
-            <div className="rounded-box bg-base-200 p-3">
-              <p className="whitespace-pre-wrap">{result.text}</p>
-              <p className="text-base-content/60 mt-2">
-                耗时 {result.elapsedMs} ms
-                {result.usage?.totalTokens != null ? ` · ${result.usage.totalTokens} tokens` : ''}
-              </p>
-            </div>
-          )}
-          {result.status === 'error' && (
-            <div className="rounded-box bg-error/10 text-error p-3">
-              {result.message}
-              {result.code && <span className="text-base-content/50">（{result.code}）</span>}
-            </div>
-          )}
-        </section>
-      )}
-
-      <section className="space-y-2">
-        <h2 className="text-base font-semibold">译文缓存</h2>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="checkbox checkbox-sm"
-            checked={cacheEnabled}
-            onChange={onChangeCacheEnabled}
-            disabled={cacheSaving}
-          />
-          <span>启用译文缓存</span>
-        </label>
-        <p className="text-sm text-base-content/70">
-          缓存只保存在本机 IndexedDB、跨标签页共享；关闭后不再读写缓存，已有缓存不会自动删除；
-          清空只影响译文缓存，不影响密钥与设置。
-        </p>
-        <p className="text-sm">
-          {cacheLoading
-            ? '正在读取缓存占用…'
-            : statsText(cacheStats) ?? '占用信息暂不可用'}
-        </p>
-        <button className="btn btn-outline" onClick={onClearCache} disabled={cacheClearing}>
-          {cacheClearing ? '清空中…' : '清空缓存'}
-        </button>
-        {cacheNotice && <p className="text-sm text-success">{cacheNotice}</p>}
-        {cacheError && <p className="text-sm text-error">{cacheError}</p>}
-      </section>
-
-      <section className="space-y-2">
-        <h2 className="text-base font-semibold">日志</h2>
-        <label className="flex flex-col gap-1 text-sm">
-          <span>日志级别</span>
-          <select
-            className="select select-bordered w-full"
-            value={logLevel}
-            onChange={onChangeLogLevel}
-            disabled={logSaving}
-          >
-            {LOG_LEVEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className="text-sm text-base-content/70">
-          日志只输出到浏览器控制台，不保存、不上传；调整后已打开的网页需刷新或重连才生效。
-        </p>
-        {logNotice && <p className="text-sm text-success">{logNotice}</p>}
-        {logError && <p className="text-sm text-error">{logError}</p>}
-      </section>
-    </main>
+      <Toast toast={toast} onClose={dismissToast} />
+    </AppContext.Provider>
   );
 }

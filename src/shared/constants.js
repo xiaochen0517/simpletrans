@@ -2,12 +2,13 @@
  * 公共数值
  *
  * 模块：公共模块（E）
- * 职责：集中超时、心跳、重连与载荷上限等公共数值（见项目架构 5.3）；其它文件只引用，不各自定义。
+ * 职责：集中超时、心跳、重连、载荷上限与实例数量等公共数值（见项目架构 5.3）；其它文件只引用，不各自定义。
  * 依赖：无（P1 起）。
- * 实现阶段：P1–P2
+ * 实现阶段：P1–P2；P6.1 增加整页段落上限、扫描分片、视口附近余量与滚动防抖；
+ *           P8-2 增加实例数量/名称/字节上限与百度翻译超时、单段/单批 UTF-8 字节上限。
  *
- * P1 落地单段上限与 AI 超时；P2 补齐心跳、重连、载荷上限与批总超时；P6.1 增加整页段落上限、扫描分片、
- * 视口附近余量与滚动防抖。翻译并发、单批段数与批次字符数的默认值属于实例配置，见 E3 registry.js。
+ * 翻译并发、单批段数与批次字符数的默认值属于实例配置，见 E3 registry.js；
+ * 本文件可被页面注入引用，因此不得出现服务商地址、密钥字段或签名相关词。
  */
 
 /** 单段字符上限（架构 5.3 载荷上限）。 */
@@ -65,3 +66,34 @@ export const VIEWPORT_MARGIN_RATIO = 0.5;
 
 /** 滚动停止后等待多久再扫描并提交新段落（毫秒，P6.1 起）。 */
 export const SCROLL_SUBMIT_DEBOUNCE_MS = 200;
+
+/** 实例数量上限（P8-2 起）。 */
+export const MAX_INSTANCES = 20;
+
+/** 实例名称最大字符数（P8-2 起）。 */
+export const MAX_INSTANCE_NAME_CHARS = 40;
+
+/** `engineInstances` 序列化后的最大字节数，受 `storage.sync` 单条 8192 字节限制（P8-2 起）。 */
+export const MAX_INSTANCE_BYTES = 7_500;
+
+/** 百度翻译单段 UTF-8 字节上限：应用层留余量（P8-2 起）。 */
+export const BAIDU_SEGMENT_MAX_BYTES = 4_800;
+
+/** 百度翻译单批 `q` 的 UTF-8 字节上限：应用层留余量（P8-2 起）。 */
+export const BAIDU_BATCH_MAX_BYTES = 4_800;
+
+/**
+ * 百度翻译超时（P8-2 起）。
+ * - single：单段请求超时，15 秒；
+ * - batch：整批请求超时，30 秒。
+ */
+export const BAIDU_TIMEOUT_MS = Object.freeze({
+  single: 15_000,
+  batch: 30_000,
+});
+
+/**
+ * 译文缓存数据库版本（P8-3 起）。
+ * A4 用它打开 IndexedDB；设置页「关于」只读展示，不引用缓存模块。
+ */
+export const CACHE_DB_VERSION = 2;

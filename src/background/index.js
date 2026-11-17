@@ -12,6 +12,7 @@
 
 import { ERROR_CODES, PORT_NAME } from '../shared/protocol.js';
 import { getSettings } from '../shared/settings.js';
+import { ensureConfigMigrated } from '../shared/config/instances.js';
 import { createLogger, getLogLevel, getLogMeta, initLogging, setLogLevel } from '../shared/log/logger.js';
 import { handleMessage } from './router.js';
 import { handleConnect } from './gateway.js';
@@ -44,6 +45,13 @@ getSettings()
   .finally(() => {
     log.info('logger.ready', '日志已启动', getLogMeta());
   });
+
+// 配置迁移 v1 → v2：只执行一次，幂等；失败保留旧数据并在下次唤醒时重试。
+ensureConfigMigrated().catch((error) => {
+  log.warn('config.migrate.error', '配置迁移失败，将在下次启动重试', {
+    reason: error?.name ?? 'Error',
+  });
+});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'sync' || !changes.settings) return;

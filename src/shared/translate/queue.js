@@ -56,6 +56,7 @@ async function runSingleJob(job, group) {
   const result = await translate({
     text: group.text,
     targetLang: job.targetLang,
+    sourceLang: job.sourceLang,
     instance: job.instance,
     signal: job.controller?.signal,
     onDelta: (delta) => job.onDelta?.(delta),
@@ -89,6 +90,7 @@ async function runBatchJob(job, groups) {
   const result = await translateBatch({
     items: entries.map(({ groupId, text }) => ({ groupId, text })),
     targetLang: job.targetLang,
+    sourceLang: job.sourceLang,
     instance: job.instance,
     signal: job.controller?.signal,
     onItem: ({ groupId, text }) => {

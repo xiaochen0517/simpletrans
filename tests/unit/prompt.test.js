@@ -24,7 +24,7 @@ afterEach(() => {
 
 describe('A3 提示词模板', () => {
   it('PROMPT_VERSION 为 2，占位符只有目标语言与输出格式', () => {
-    expect(PROMPT_VERSION).toBe(2);
+    expect(PROMPT_VERSION).toBe(3);
     expect(PROMPT_PLACEHOLDERS).toEqual(['targetLang', 'outputFormat']);
   });
 
@@ -64,8 +64,9 @@ describe('A3 提示词模板', () => {
     expect(single).not.toBe(batch);
     expect(batch).toContain('JSONL');
 
-    const unknown = buildSystemPrompt({ targetLang: 'ja' });
-    expect(unknown).toContain('ja');
+    const unknown = buildSystemPrompt({ targetLang: 'fr' });
+    expect(unknown).toContain('fr');
+    expect(buildSystemPrompt({ targetLang: 'ja' })).toContain('日语');
   });
 
   it('buildSystemPrompt：使用自定义模板，空模板回退默认模板', () => {

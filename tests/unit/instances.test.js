@@ -1,240 +1,541 @@
 /**
- * E3 引擎实例与密钥测试
+ * E3 引擎实例测试（P8-2）
  *
- * 覆盖 P6.2：默认实例字段、旧实例读取补齐与并发迁移、updateInstance 合并/校验/失败不写入。
+ * 覆盖实例 CRUD、名称唯一、数量/字节上限、启停与当前实例改选、每实例凭据、
+ * `keyStorage` 迁移、提示词存储、公开字段与不支持类型保留。
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { installChrome } from '../helpers/load.js';
 import {
   createDefaultInstance,
+  createInstance,
+  duplicateInstance,
   getActiveInstance,
+  getCredentialInfo,
   getFullSettings,
+  getInstanceCredentials,
   getInstances,
-  getKey,
-  getOrCreateDefaultInstance,
   getPublicSettings,
   hasKey,
-  keyName,
-  normalizeInstance,
+  isInstancePermitted,
+  removeCredentials,
+  removeInstance,
+  resolveActiveInstance,
+  saveInstances,
+  setActiveInstance,
+  setInstanceEnabled,
+  setKeyStorage,
   updateInstance,
-  writeKey,
+  writeCredentials,
 } from '../../src/shared/config/instances.js';
+import { STORAGE_KEYS } from '../../src/shared/storage.js';
 import {
-  DEFAULT_BATCH_MAX_CHARS,
-  DEFAULT_BATCH_SIZE,
-  DEFAULT_MAX_CONCURRENCY,
+  BAIDU_BATCH_MAX_CHARS,
+  BAIDU_BATCH_SIZE,
+  BAIDU_MAX_CONCURRENCY,
   DEFAULT_SYSTEM_PROMPT,
+  MAX_INSTANCES,
 } from '../../src/shared/config/registry.js';
-import { saveSettings } from '../../src/shared/settings.js';
+import { getSettings } from '../../src/shared/settings.js';
 
-/** 读原始实例列表，用于确认没有发生隐式写回。 */
+beforeEach(() => {
+  installChrome();
+});
+
+/** 读原始实例数组（不合并提示词）。 */
 async function rawInstances() {
-  const data = await chrome.storage.sync.get('engineInstances');
-  return data.engineInstances ?? [];
+  const data = await chrome.storage.sync.get(STORAGE_KEYS.instances);
+  return data[STORAGE_KEYS.instances] ?? [];
 }
 
-describe('E3 引擎实例与密钥', () => {
-  beforeEach(() => installChrome());
+/** 读本地存储两个键。 */
+async function readLocal(keys) {
+  return chrome.storage.local.get(keys);
+}
 
-  it('getOrCreateDefaultInstance 惰性创建默认实例，不重复创建', async () => {
-    expect(await getInstances()).toEqual([]);
-    const instance = await getOrCreateDefaultInstance();
-    expect(instance.type).toBe('deepseek');
-    expect(instance.model).toBeTruthy();
-    expect(await getInstances()).toHaveLength(1);
+/**
+ * 创建带凭据的 OpenAI 实例。
+ * @param {{ name?: string, apiKey?: string, preset?: string }} [options]
+ */
+async function createWithKey({ name, apiKey = 'sk-test', preset = 'deepseek' } = {}) {
+  const created = await createInstance({ type: 'openai', preset, name });
+  await writeCredentials(created.id, { apiKey });
+  return (await getInstances()).find((instance) => instance.id === created.id);
+}
 
-    await getOrCreateDefaultInstance();
-    expect(await getInstances()).toHaveLength(1);
+describe('E3 实例 CRUD 与默认值', () => {
+  it('createInstance 生成默认 OpenAI 实例：启用、DeepSeek 预设、时间戳、提示词入 local', async () => {
+    const created = await createInstance({ type: 'openai' });
+
+    expect(created).toMatchObject({
+      type: 'openai',
+      preset: 'deepseek',
+      name: 'DeepSeek',
+      enabled: true,
+      requiresKey: true,
+      hasKey: false,
+      credentialStatus: false,
+    });
+    expect(typeof created.id).toBe('string');
+    expect(Number.isFinite(created.createdAt)).toBe(true);
+    expect(Number.isFinite(created.updatedAt)).toBe(true);
+    expect(created.endpoint.baseUrl).toBe('https://api.deepseek.com');
+    expect(created.model).toBe('deepseek-chat');
+
+    const raw = await rawInstances();
+    expect(raw).toHaveLength(1);
+    expect(raw[0]).not.toHaveProperty('systemPrompt');
+    expect(raw[0]).not.toHaveProperty('apiKey');
+    const local = await readLocal([`systemPrompt:${created.id}`]);
+    expect(local[`systemPrompt:${created.id}`]).toBe(DEFAULT_SYSTEM_PROMPT);
   });
 
-  it('getActiveInstance 默认取第一个实例，并按 activeInstanceId 切换', async () => {
+  it('createInstance 百度实例使用固定地址/模型并夹取批次范围', async () => {
+    const created = await createInstance({
+      type: 'baidu',
+      batchSize: 99,
+      batchMaxChars: 9999,
+      maxConcurrency: 99,
+    });
+
+    expect(created).toMatchObject({
+      type: 'baidu',
+      typeLabel: '百度翻译',
+      kind: 'traditional',
+      baseUrl: 'https://fanyi-api.baidu.com',
+      model: 'general',
+      batchSize: BAIDU_BATCH_SIZE.max,
+      batchMaxChars: BAIDU_BATCH_MAX_CHARS.max,
+      maxConcurrency: BAIDU_MAX_CONCURRENCY.max,
+      requiresKey: true,
+      hasKey: false,
+    });
+    const local = await readLocal([`systemPrompt:${created.id}`]);
+    expect(local[`systemPrompt:${created.id}`]).toBeUndefined();
+  });
+
+  it('实例名称唯一（忽略大小写与首尾空白），默认名自动加序号', async () => {
+    await createInstance({ type: 'openai', name: 'DeepSeek' });
+    await expect(createInstance({ type: 'openai', name: ' deepseek ' })).rejects.toThrow(
+      '实例名称已存在'
+    );
+
+    const second = await createInstance({ type: 'openai' });
+    expect(second.name).toBe('DeepSeek 2');
+    await expect(
+      createInstance({ type: 'baidu', name: 'x'.repeat(41) })
+    ).rejects.toThrow('实例名称必须是');
+  });
+
+  it('实例数量上限 20', async () => {
+    for (let index = 0; index < MAX_INSTANCES; index += 1) {
+      await createInstance({ type: 'baidu' });
+    }
+    await expect(createInstance({ type: 'baidu' })).rejects.toThrow(
+      `最多只能创建 ${MAX_INSTANCES} 个翻译实例`
+    );
+    expect(await rawInstances()).toHaveLength(MAX_INSTANCES);
+  });
+
+  it('实例字节上限：超限时抛错且不写入', async () => {
+    const created = await createInstance({ type: 'openai' });
+    const headers = Array.from({ length: 40 }, (_, index) => ({
+      name: `X-Test-${index}`,
+      value: 'v'.repeat(200),
+    }));
+    await expect(updateInstance(created.id, { headers })).rejects.toThrow('实例配置过大');
+    const stored = await getInstances();
+    expect(stored[0].headers).toEqual([]);
+  });
+
+  it('不支持的类型保留，只允许查看与删除', async () => {
     await chrome.storage.sync.set({
-      engineInstances: [
-        { id: 'a', type: 'deepseek', name: 'A', model: 'deepseek-chat' },
-        { id: 'b', type: 'deepseek', name: 'B', model: 'deepseek-reasoner' },
+      [STORAGE_KEYS.instances]: [
+        { id: 'future', type: 'deepl', name: 'Future', enabled: false, extraField: 'keep' },
       ],
     });
 
-    expect((await getActiveInstance()).id).toBe('a');
-
-    await saveSettings({ activeInstanceId: 'b' });
-    expect((await getActiveInstance()).id).toBe('b');
-
-    // 记录的首选实例不存在时回退第一个，不抛错。
-    await saveSettings({ activeInstanceId: 'missing' });
-    expect((await getActiveInstance()).id).toBe('a');
-  });
-
-  it('getActiveInstance 只读：没有实例时返回 null 且不创建', async () => {
-    expect(await getActiveInstance()).toBeNull();
-    expect(await getInstances()).toHaveLength(0);
-
-    const created = await getActiveInstance({ create: true });
-    expect(created.id).toBe('default');
-    expect(await getInstances()).toHaveLength(1);
-  });
-
-  it('createDefaultInstance 写入 P6.2 的默认参数', () => {
-    const instance = createDefaultInstance();
-    expect(instance).toMatchObject({
-      reasoningEffort: 'off',
-      batchSize: DEFAULT_BATCH_SIZE,
-      batchMaxChars: DEFAULT_BATCH_MAX_CHARS,
-      maxConcurrency: DEFAULT_MAX_CONCURRENCY,
-      systemPrompt: DEFAULT_SYSTEM_PROMPT,
-    });
-  });
-
-  it('旧实例读取时补齐默认字段，但不主动写回', async () => {
-    const legacy = {
-      id: 'legacy',
-      type: 'deepseek',
-      name: '旧实例',
-      model: 'deepseek-chat',
-      baseUrl: 'https://api.deepseek.com',
-    };
-    await chrome.storage.sync.set({ engineInstances: [legacy] });
-
     const [instance] = await getInstances();
-    expect(instance).toMatchObject({
-      id: 'legacy',
-      name: '旧实例',
-      reasoningEffort: 'off',
-      batchSize: DEFAULT_BATCH_SIZE,
-      batchMaxChars: DEFAULT_BATCH_MAX_CHARS,
-      systemPrompt: DEFAULT_SYSTEM_PROMPT,
-    });
-    // 默认设置 concurrency=3，旧实例缺 maxConcurrency 时按它迁移。
-    expect(instance.maxConcurrency).toBe(3);
+    expect(instance).toMatchObject({ id: 'future', type: 'deepl', name: 'Future' });
+    expect(instance.extraField).toBe('keep');
 
+    const { instances } = await getPublicSettings();
+    expect(instances[0]).toMatchObject({
+      typeLabel: '不支持',
+      kind: 'unsupported',
+      hasKey: false,
+      permission: 'unsupported',
+    });
+
+    await expect(updateInstance('future', { name: 'X' })).rejects.toThrow('不支持的实例类型');
+    await expect(setInstanceEnabled('future', true)).rejects.toThrow('不支持的实例类型');
+    await expect(setActiveInstance('future')).rejects.toThrow();
+    await expect(duplicateInstance('future')).rejects.toThrow('不支持的实例类型');
+    await removeInstance('future');
+    expect(await rawInstances()).toEqual([]);
+  });
+});
+
+describe('E3 实例更新、复制与删除', () => {
+  it('updateInstance 合并字段、更新提示词并保留 created/updated 语义', async () => {
+    const created = await createInstance({ type: 'openai' });
+    const updated = await updateInstance(created.id, {
+      model: 'deepseek-reasoner',
+      batchSize: 3,
+      systemPrompt: '自定义 {{targetLang}} {{outputFormat}}',
+    });
+
+    expect(updated.model).toBe('deepseek-reasoner');
+    expect(updated.batchSize).toBe(3);
+    expect(updated.createdAt).toBe(created.createdAt);
+    expect(updated.updatedAt).toBeGreaterThanOrEqual(created.updatedAt);
+
+    const local = await readLocal([`systemPrompt:${created.id}`]);
+    expect(local[`systemPrompt:${created.id}`]).toBe('自定义 {{targetLang}} {{outputFormat}}');
     const raw = await rawInstances();
-    expect(raw[0]).toEqual(legacy);
     expect(raw[0]).not.toHaveProperty('systemPrompt');
   });
 
-  it('旧实例并发迁移优先取 settings.concurrency，非法值回退 4', async () => {
+  it('updateInstance 校验失败或名称冲突时抛错且不写入', async () => {
+    const first = await createInstance({ type: 'openai', name: 'One' });
+    await createInstance({ type: 'baidu', name: 'Two' });
+
+    await expect(updateInstance(first.id, { model: '' })).rejects.toThrow();
+    await expect(updateInstance(first.id, { name: 'two' })).rejects.toThrow('实例名称已存在');
+    const stored = (await getInstances()).find((instance) => instance.id === first.id);
+    expect(stored.model).toBe('deepseek-chat');
+    expect(stored.name).toBe('One');
+  });
+
+  it('预设切换：DeepSeek 套用预设默认连接配置，自定义保留当前配置', async () => {
+    const custom = await createInstance({
+      type: 'openai',
+      preset: 'custom',
+      name: 'Local',
+      endpoint: { baseUrl: 'https://llm.example.com', path: '/v1/chat/completions' },
+      model: 'local-model',
+    });
+    expect(custom.preset).toBe('custom');
+
+    const switched = await updateInstance(custom.id, { preset: 'deepseek' });
+    expect(switched.preset).toBe('deepseek');
+    expect(switched.endpoint.baseUrl).toBe('https://api.deepseek.com');
+    expect(switched.model).toBe('deepseek-chat');
+
+    const customAgain = await updateInstance(custom.id, { preset: 'custom' });
+    expect(customAgain.preset).toBe('custom');
+    expect(customAgain.endpoint.baseUrl).toBe('https://api.deepseek.com');
+  });
+
+  it('duplicateInstance：默认停用、不复制凭据、名称加「副本」、提示词一并复制', async () => {
+    const source = await createWithKey({ name: 'Primary' });
+    await updateInstance(source.id, { systemPrompt: '复制我 {{targetLang}} {{outputFormat}}' });
+
+    const copy = await duplicateInstance(source.id);
+    expect(copy.name).toBe('Primary 副本');
+    expect(copy.enabled).toBe(false);
+    expect(copy.hasKey).toBe(false);
+    expect(copy.requiresKey).toBe(true);
+    expect(copy.id).not.toBe(source.id);
+
+    const localSource = await readLocal([`systemPrompt:${source.id}`]);
+    const localCopy = await readLocal([`systemPrompt:${copy.id}`]);
+    expect(localCopy[`systemPrompt:${copy.id}`]).toBe(
+      localSource[`systemPrompt:${source.id}`]
+    );
+
+    const settings = await getSettings();
+    expect(settings.activeInstanceId).toBe(source.id);
+  });
+
+  it('removeInstance：先删凭据与提示词，再改选当前实例', async () => {
+    const first = await createWithKey({ name: 'First' });
+    const second = await createWithKey({ name: 'Second', apiKey: 'sk-2' });
+    expect((await getSettings()).activeInstanceId).toBe(first.id);
+
+    const result = await removeInstance(first.id);
+    expect(result).toMatchObject({ removed: first.id, activeInstanceId: second.id });
+    expect((await getSettings()).activeInstanceId).toBe(second.id);
+
+    const local = await readLocal([`systemPrompt:${first.id}`, `engineKey:${first.id}`]);
+    expect(local[`systemPrompt:${first.id}`]).toBeUndefined();
+    expect(local[`engineKey:${first.id}`]).toBeUndefined();
+    expect(await rawInstances()).toHaveLength(1);
+  });
+});
+
+describe('E3 启用状态与当前实例', () => {
+  it('停用当前实例改选下一个可用；没有可用时为 null', async () => {
+    const first = await createWithKey({ name: 'First' });
+    const second = await createWithKey({ name: 'Second', apiKey: 'sk-2' });
+    expect((await getSettings()).activeInstanceId).toBe(first.id);
+
+    await setInstanceEnabled(first.id, false);
+    expect((await getSettings()).activeInstanceId).toBe(second.id);
+
+    await setInstanceEnabled(second.id, false);
+    expect((await getSettings()).activeInstanceId).toBeNull();
+  });
+
+  it('启用实例时若当前为空且可用，自动设为当前', async () => {
+    const created = await createWithKey({ name: 'Only' });
+    await setInstanceEnabled(created.id, false);
+    expect((await getSettings()).activeInstanceId).toBeNull();
+
+    await setInstanceEnabled(created.id, true);
+    expect((await getSettings()).activeInstanceId).toBe(created.id);
+  });
+
+  it('setActiveInstance 只接受受支持、启用、凭据完整且已授权的实例', async () => {
+    const usable = await createWithKey({ name: 'Usable' });
+    const second = await createInstance({ type: 'baidu', name: 'Baidu' });
+
+    await expect(setActiveInstance(second.id)).rejects.toThrow('缺少凭据');
+    await setInstanceEnabled(second.id, false);
+    await expect(setActiveInstance(second.id)).rejects.toThrow('实例已停用');
+    await expect(setActiveInstance('missing')).rejects.toThrow('实例不存在');
+
+    const active = await setActiveInstance(usable.id);
+    expect(active.id).toBe(usable.id);
+  });
+
+  it('自定义 endpoint 未授权时不可设为当前，授权后恢复', async () => {
+    const created = await createInstance({
+      type: 'openai',
+      preset: 'custom',
+      name: 'Local',
+      endpoint: { baseUrl: 'https://llm.example.com', path: '/v1/chat/completions' },
+      model: 'local-model',
+    });
+    await writeCredentials(created.id, { apiKey: 'sk-local' });
+
+    await expect(setActiveInstance(created.id)).rejects.toThrow('接口域名未授权');
+    expect(await getActiveInstance()).toBeNull();
+
+    await chrome.permissions.request({ origins: ['https://llm.example.com/*'] });
+    expect(await isInstancePermitted(await getInstances().then((list) => list[0]))).toBe(true);
+    await setActiveInstance(created.id);
+    expect((await getSettings()).activeInstanceId).toBe(created.id);
+  });
+
+  it('getActiveInstance 只读：没有实例时返回 null 且不写存储', async () => {
+    expect(await getActiveInstance()).toBeNull();
+    expect(await rawInstances()).toEqual([]);
+    const resolved = await resolveActiveInstance();
+    expect(resolved).toMatchObject({ instance: null, reason: 'no-instance' });
+  });
+
+  it('resolveActiveInstance 跳过被停用/缺凭据的实例并给出原因', async () => {
+    const usable = await createWithKey({ name: 'Usable' });
+    await setInstanceEnabled(usable.id, false);
+    const resolved = await resolveActiveInstance();
+    expect(resolved.instance).toBeNull();
+    expect(resolved.reason).toBe('disabled');
+  });
+});
+
+describe('E3 每实例凭据', () => {
+  it('OpenAI 凭据以 JSON 存在 local，hasKey 不暴露明文', async () => {
+    const created = await createInstance({ type: 'openai' });
+    expect(await hasKey(created.id)).toBe(false);
+
+    await writeCredentials(created.id, { apiKey: 'sk-secret' });
+    expect(await hasKey(created.id)).toBe(true);
+    expect((await getInstanceCredentials(created.id)).apiKey).toBe('sk-secret');
+
+    const local = await readLocal([`engineKey:${created.id}`]);
+    expect(local[`engineKey:${created.id}`]).toEqual({ apiKey: 'sk-secret' });
+
+    const { instances } = await getPublicSettings();
+    expect(instances[0].hasKey).toBe(true);
+    expect(instances[0].credentialStatus).toBe(true);
+    expect(JSON.stringify(instances[0])).not.toContain('sk-secret');
+  });
+
+  it('无认证 OpenAI 实例无需凭据，hasKey 恒为 true', async () => {
+    const created = await createInstance({
+      type: 'openai',
+      preset: 'custom',
+      name: 'NoAuth',
+      auth: { type: 'none' },
+      endpoint: { baseUrl: 'http://localhost:11434', path: '/v1/chat/completions' },
+      model: 'local',
+    });
+
+    const info = await getCredentialInfo(created);
+    expect(info.requiresKey).toBe(false);
+    expect(info.hasKey).toBe(true);
+    expect(info.credentialStatus).toBe(true);
+  });
+
+  it('百度凭据需要 APPID 与密钥同时完整', async () => {
+    const created = await createInstance({ type: 'baidu' });
+    await writeCredentials(created.id, { appId: 'app-1' });
+    expect(await hasKey(created.id)).toBe(false);
+
+    const info = await writeCredentials(created.id, { secretKey: 'secret-1' });
+    expect(info).toMatchObject({ requiresKey: true, hasKey: true, credentialStatus: true });
+    expect(await getInstanceCredentials(created.id)).toEqual({
+      appId: 'app-1',
+      secretKey: 'secret-1',
+    });
+  });
+
+  it('leave 空字段表示不修改，显式空值清除全部凭据', async () => {
+    const created = await createInstance({ type: 'baidu' });
+    await writeCredentials(created.id, { appId: 'app', secretKey: 'secret' });
+
+    await writeCredentials(created.id, { appId: 'app-2' });
+    expect(await getInstanceCredentials(created.id)).toEqual({
+      appId: 'app-2',
+      secretKey: 'secret',
+    });
+
+    await writeCredentials(created.id, { appId: '', secretKey: '' });
+    expect(await hasKey(created.id)).toBe(false);
+  });
+
+  it('removeCredentials 删除 local 与 sync 两区副本，并改选当前实例', async () => {
+    const first = await createWithKey({ name: 'First' });
+    const second = await createWithKey({ name: 'Second', apiKey: 'sk-2' });
+    await chrome.storage.sync.set({ [`engineKey:${first.id}`]: { apiKey: 'sk-copy' } });
+
+    await removeCredentials(first.id);
+    const local = await readLocal([`engineKey:${first.id}`]);
+    const sync = await chrome.storage.sync.get(`engineKey:${first.id}`);
+    expect(local[`engineKey:${first.id}`]).toBeUndefined();
+    expect(sync[`engineKey:${first.id}`]).toBeUndefined();
+    expect((await getSettings()).activeInstanceId).toBe(second.id);
+  });
+
+  it('兼容旧单字符串密钥：按 OpenAI `{ apiKey }` 读取', async () => {
+    const created = await createInstance({ type: 'openai' });
+    await chrome.storage.local.set({ [`engineKey:${created.id}`]: 'sk-legacy' });
+
+    expect(await getInstanceCredentials(created.id)).toEqual({ apiKey: 'sk-legacy' });
+    expect(await hasKey(created.id)).toBe(true);
+  });
+
+  it('keyStorage 切换：凭据搬到目标区，源区删除', async () => {
+    const created = await createWithKey({ name: 'First' });
+    const result = await setKeyStorage('sync');
+
+    expect(result).toMatchObject({ area: 'sync', migrated: 1 });
+    expect((await getSettings()).keyStorage).toBe('sync');
+    const sync = await chrome.storage.sync.get(`engineKey:${created.id}`);
+    const local = await readLocal([`engineKey:${created.id}`]);
+    expect(sync[`engineKey:${created.id}`]).toEqual({ apiKey: 'sk-test' });
+    expect(local[`engineKey:${created.id}`]).toBeUndefined();
+    expect(await getInstanceCredentials(created.id)).toEqual({ apiKey: 'sk-test' });
+  });
+
+  it('keyStorage 切换失败时回滚设置并保留原数据', async () => {
+    const created = await createWithKey({ name: 'First' });
+    const originalSet = chrome.storage.sync.set.bind(chrome.storage.sync);
+    const setSpy = vi
+      .spyOn(chrome.storage.sync, 'set')
+      .mockImplementation(async (values) => {
+        if (Object.hasOwn(values, STORAGE_KEYS.settings)) throw new Error('quota');
+        return originalSet(values);
+      });
+
+    await expect(setKeyStorage('sync')).rejects.toThrow('quota');
+    setSpy.mockRestore();
+
+    expect((await getSettings()).keyStorage).toBe('local');
+    const local = await readLocal([`engineKey:${created.id}`]);
+    expect(local[`engineKey:${created.id}`]).toEqual({ apiKey: 'sk-test' });
+    const sync = await chrome.storage.sync.get(`engineKey:${created.id}`);
+    expect(sync[`engineKey:${created.id}`]).toBeUndefined();
+  });
+});
+
+describe('E3 提示词与公开字段', () => {
+  it('getInstances 合并 local 提示词；缺失时回退默认模板', async () => {
+    const created = await createInstance({ type: 'openai' });
+    let [instance] = await getInstances();
+    expect(instance.systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT);
+
+    await chrome.storage.local.set({ [`systemPrompt:${created.id}`]: '自定义 {{targetLang}} {{outputFormat}}' });
+    [instance] = await getInstances();
+    expect(instance.systemPrompt).toBe('自定义 {{targetLang}} {{outputFormat}}');
+  });
+
+  it('迁移前旧实例内提示词作为读取回退，local 优先', async () => {
     await chrome.storage.sync.set({
-      engineInstances: [{ id: 'legacy', type: 'deepseek', name: '旧', model: 'deepseek-chat' }],
-    });
-    await saveSettings({ concurrency: 2 });
-    expect((await getInstances())[0].maxConcurrency).toBe(2);
-
-    await saveSettings({ concurrency: 0 });
-    expect((await getInstances())[0].maxConcurrency).toBe(DEFAULT_MAX_CONCURRENCY);
-
-    await saveSettings({ concurrency: 8 });
-    expect((await getInstances())[0].maxConcurrency).toBe(8);
-  });
-
-  it('已有 maxConcurrency 的实例不受 settings.concurrency 影响', async () => {
-    await saveSettings({ concurrency: 2 });
-    const instance = await getOrCreateDefaultInstance();
-    expect(instance.maxConcurrency).toBe(DEFAULT_MAX_CONCURRENCY);
-  });
-
-  it('normalizeInstance 归一非法值，空提示词保留为空交给校验', () => {
-    const normalized = normalizeInstance({
-      id: 'x',
-      type: 'deepseek',
-      model: '  m  ',
-      reasoningEffort: 'turbo',
-      batchSize: 99,
-      batchMaxChars: 0,
-      maxConcurrency: -1,
-      systemPrompt: '   ',
-    });
-    expect(normalized.model).toBe('m');
-    expect(normalized.reasoningEffort).toBe('off');
-    expect(normalized.batchSize).toBe(99);
-    expect(normalized.batchMaxChars).toBe(DEFAULT_BATCH_MAX_CHARS);
-    expect(normalized.maxConcurrency).toBe(DEFAULT_MAX_CONCURRENCY);
-    expect(normalized.systemPrompt).toBe('');
-  });
-
-  it('updateInstance 合并、归一并写回完整字段', async () => {
-    const instance = await getOrCreateDefaultInstance();
-    const prompt = '自定义 {{targetLang}} 模板，{{outputFormat}}';
-
-    const next = await updateInstance(instance.id, {
-      model: '  deepseek-chat-v2  ',
-      reasoningEffort: 'low',
-      batchSize: 4,
-      batchMaxChars: 300,
-      maxConcurrency: 2,
-      systemPrompt: prompt,
+      [STORAGE_KEYS.instances]: [
+        {
+          id: 'legacy',
+          type: 'deepseek',
+          name: 'Legacy',
+          systemPrompt: '实例内旧提示词 {{targetLang}} {{outputFormat}}',
+        },
+      ],
     });
 
-    expect(next).toMatchObject({
-      model: 'deepseek-chat-v2',
-      reasoningEffort: 'low',
-      batchSize: 4,
-      batchMaxChars: 300,
-      maxConcurrency: 2,
-      systemPrompt: prompt,
+    let [instance] = await getInstances();
+    expect(instance.systemPrompt).toBe('实例内旧提示词 {{targetLang}} {{outputFormat}}');
+
+    await chrome.storage.local.set({
+      'systemPrompt:legacy': '本地新提示词 {{targetLang}} {{outputFormat}}',
     });
+    [instance] = await getInstances();
+    expect(instance.systemPrompt).toBe('本地新提示词 {{targetLang}} {{outputFormat}}');
+  });
 
-    const stored = (await rawInstances())[0];
-    expect(stored).toMatchObject({
-      id: instance.id,
-      model: 'deepseek-chat-v2',
-      reasoningEffort: 'low',
-      batchSize: 4,
-      batchMaxChars: 300,
-      maxConcurrency: 2,
-      systemPrompt: prompt,
+  it('saveInstances 去掉运行时字段，不把提示词写回 sync', async () => {
+    const created = await createInstance({ type: 'openai' });
+    const view = { ...created, systemPrompt: 'should not persist', apiKey: 'sk-x' };
+    await saveInstances([view]);
+    const raw = await rawInstances();
+    expect(raw[0]).not.toHaveProperty('systemPrompt');
+    expect(raw[0]).not.toHaveProperty('apiKey');
+  });
+
+  it('公开列表包含类型/预设/凭据/权限状态，不含凭据明文', async () => {
+    const created = await createWithKey({ name: 'Public' });
+    const { instances } = await getPublicSettings();
+    const item = instances[0];
+
+    expect(item).toMatchObject({
+      id: created.id,
+      type: 'openai',
+      typeLabel: 'OpenAI 兼容',
+      kind: 'llm',
+      preset: 'deepseek',
+      name: 'Public',
+      enabled: true,
+      hasKey: true,
+      credentialStatus: true,
+      requiresKey: true,
+      permission: 'granted',
+      model: 'deepseek-chat',
     });
+    expect(item.endpoint.baseUrl).toBe('https://api.deepseek.com');
+    expect(item.auth).toBeTruthy();
+    expect(item.params).toBeTruthy();
+    expect(item.systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT);
+    expect(item).not.toHaveProperty('apiKey');
+    expect(item).not.toHaveProperty('appId');
+    expect(item).not.toHaveProperty('secretKey');
   });
 
-  it('updateInstance 不限制单批段数上限', async () => {
-    const instance = await getOrCreateDefaultInstance();
-    const next = await updateInstance(instance.id, { batchSize: 20 });
-    expect(next.batchSize).toBe(20);
-    expect((await rawInstances())[0].batchSize).toBe(20);
+  it('getFullSettings 含凭据明文，仅后台使用', async () => {
+    const created = await createWithKey({ name: 'Full', apiKey: 'sk-full' });
+    const { instances } = await getFullSettings();
+    expect(instances[0].credentials).toMatchObject({ apiKey: 'sk-full' });
+    expect(instances[0].id).toBe(created.id);
   });
 
-  it('updateInstance 校验失败时抛错且不写入', async () => {
-    const instance = await getOrCreateDefaultInstance();
-    const before = await rawInstances();
-
-    await expect(updateInstance(instance.id, { model: '   ' })).rejects.toThrow();
-    await expect(
-      updateInstance(instance.id, { systemPrompt: '缺少两个占位符' })
-    ).rejects.toThrow();
-    await expect(updateInstance('missing', { model: 'm' })).rejects.toThrow('实例不存在');
-
-    expect(await rawInstances()).toEqual(before);
-  });
-
-  it('密钥键名与读写：默认存 local，hasKey 不暴露明文', async () => {
-    const instance = await getOrCreateDefaultInstance();
-    expect(keyName(instance.id)).toBe(`engineKey:${instance.id}`);
-    expect(await hasKey(instance.id)).toBe(false);
-
-    await writeKey(instance.id, 'sk-test');
-    expect(await getKey(instance.id)).toBe('sk-test');
-    expect(await hasKey(instance.id)).toBe(true);
-  });
-
-  it('公开设置不含密钥，完整设置含密钥', async () => {
-    const instance = await getOrCreateDefaultInstance();
-    await writeKey(instance.id, 'sk-secret');
-
-    const pub = await getPublicSettings();
-    expect(pub.instances[0]).not.toHaveProperty('apiKey');
-    expect(pub.instances[0].hasKey).toBe(true);
-
-    const full = await getFullSettings();
-    expect(full.instances[0].apiKey).toBe('sk-secret');
-  });
-
-  it('更新实例参数不影响密钥', async () => {
-    const instance = await getOrCreateDefaultInstance();
-    await writeKey(instance.id, 'sk-keep');
-
-    await updateInstance(instance.id, { batchSize: 2 });
-
-    expect(await getKey(instance.id)).toBe('sk-keep');
-    expect(await hasKey(instance.id)).toBe(true);
+  it('createDefaultInstance 返回 OpenAI + DeepSeek 预设的默认实例', () => {
+    const instance = createDefaultInstance();
+    expect(instance).toMatchObject({
+      type: 'openai',
+      preset: 'deepseek',
+      name: 'DeepSeek',
+      enabled: true,
+    });
+    expect(instance.systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT);
   });
 });

@@ -4,12 +4,15 @@
  * 模块：后台服务（A）/ A2
  * 职责：接收页面注入的批次请求与统一段落提交，校验载荷、控制全局并发与每连接在途数量、查缓存、调用 A3
  *       并转发增量与定稿；处理取消、断线与批超时；不保存任务状态，不写 storage。
- * 依赖：A3（adapter）、A4（cache）、E1（protocol）、E2（settings）、E3（instances/registry）、constants.js（P2 起）。
+ * 依赖：A3（adapter）、A4（cache）、E1（protocol）、E2（settings）、E3（instances/registry）、
+ *       E3 OpenAI 缓存 profile、语言目录、constants.js（P2 起）。
  * 实现阶段：P2（后台网关与页面通道）；P5 增加按段查缓存、命中帧与成功后写缓存；
- *           P6.2 缓存 key 升 v2（提示词哈希、思考强度与批量编码版本），并发改读实例 `maxConcurrency`；
+ *           P6.2 缓存 key 升 v2，并发改读实例 `maxConcurrency`；
  *           P6.3 增加 `ST_PAGE_SUBMIT` 入口：一次缓存预取、命中回显、唯一 key 分组、
  *           按 `batchMaxChars` / `batchSize` 切批、`inFlightByKey` 在途复用与临时逐 group 执行器；
- *           P6.4 把临时执行器替换为 A3 翻译队列：批次入队、按段回写缓存与 fan-out、批量对齐失败处理。
+ *           P6.4 把临时执行器替换为 A3 翻译队列；
+ *           P8-2 改为多实例：按当前实例分发 OpenAI/百度、每实例凭据、endpoint 权限、
+ *           缓存 key v3、百度字节切批与 30 秒超时。
  */
 
 import {
@@ -24,6 +27,9 @@ import {
 } from '../shared/protocol.js';
 import {
   AI_TIMEOUT_MS,
+  BAIDU_BATCH_MAX_BYTES,
+  BAIDU_SEGMENT_MAX_BYTES,
+  BAIDU_TIMEOUT_MS,
   MAX_BATCH_CHARS,
   MAX_BATCH_CONTEXT_CHARS,
   MAX_BATCH_ITEMS,
@@ -32,29 +38,128 @@ import {
   MAX_SEGMENT_CHARS,
 } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
+import { isSupportedTargetLang } from '../shared/languages.js';
 import { createLogger, getLogLevel, setLogLevel } from '../shared/log/logger.js';
 import { normalizeLevel } from '../shared/log/levels.js';
 import {
   getActiveInstance,
-  getKey,
+  getInstanceCredentials,
+  resolveActiveInstance,
 } from '../shared/config/instances.js';
 import {
   DEFAULT_BATCH_MAX_CHARS,
   DEFAULT_MAX_CONCURRENCY,
+  ENGINE_TYPE_IDS,
   normalizeBatchSize,
   normalizePositiveInt,
-  normalizeReasoningEffort,
-  validateInstance,
 } from '../shared/config/registry.js';
 import { buildCacheKey, CACHE_KEY_VERSION } from '../shared/cache/key.js';
 import { getCacheStore } from '../shared/cache/store.js';
-import { isSupportedTargetLang, translate, TranslateError } from '../shared/translate/adapter.js';
+import { translate, TranslateError } from '../shared/translate/adapter.js';
 import { BATCH_ENCODING_VERSION } from '../shared/translate/batch.js';
+import { buildLLMProfile } from '../shared/translate/openai-profile.js';
 import { translationQueue } from '../shared/translate/queue.js';
 import { hashPrompt, PROMPT_VERSION } from '../shared/translate/prompt.js';
 
 /** 网关日志入口。 */
 const log = createLogger('A2');
+
+/** 当前实例不可用时的用户提示（按原因 + 实例类型细化）。 */
+const INSTANCE_ERROR_MESSAGES = Object.freeze({
+  'no-instance': '没有可用的翻译实例',
+  unavailable: '没有可用的翻译实例',
+  unsupported: '不支持的实例类型',
+  invalid: '实例配置无效，请到设置页检查',
+  disabled: '当前实例已停用',
+  'missing-key': '缺少密钥',
+  permission: '未授权访问该接口域名，请到设置页重新授权',
+});
+
+/** 百度翻译实例缺凭据时的提示。 */
+const BAIDU_CREDENTIAL_MESSAGE = 'APPID 或密钥未配置完整';
+
+/**
+ * 按实例类型取提交超时：OpenAI 180 秒；百度 30 秒。
+ * @param {Record<string, unknown>} instance
+ * @returns {number}
+ */
+function batchTimeoutMs(instance) {
+  return instance?.type === ENGINE_TYPE_IDS.BAIDU
+    ? BAIDU_TIMEOUT_MS.batch
+    : AI_TIMEOUT_MS.batchTotal;
+}
+
+/**
+ * 按实例类型取单批字节上限：只有百度限制 UTF-8 字节。
+ * @param {Record<string, unknown>} instance
+ * @returns {number}
+ */
+function batchMaxBytesFor(instance) {
+  return instance?.type === ENGINE_TYPE_IDS.BAIDU
+    ? BAIDU_BATCH_MAX_BYTES
+    : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * 把当前实例不可用原因转成用户提示。
+ * @param {string | null} reason
+ * @param {Record<string, unknown> | null} candidate
+ * @returns {string}
+ */
+function instanceErrorMessage(reason, candidate) {
+  if (reason === 'missing-key' && candidate?.type === ENGINE_TYPE_IDS.BAIDU) {
+    return BAIDU_CREDENTIAL_MESSAGE;
+  }
+  return INSTANCE_ERROR_MESSAGES[reason] ?? '没有可用的翻译实例';
+}
+
+/**
+ * 计算一次提交的缓存 profile：OpenAI 用 endpoint 指纹与生成参数哈希；百度用固定值。
+ * @param {Record<string, unknown>} instance
+ * @param {{ sourceLang?: string }} settings
+ * @param {string} targetLang
+ * @returns {Promise<{ engineType: string, endpointFingerprint: string, model: string,
+ *   sourceLang: string, targetLang: string, promptVersion: number, promptHash: string,
+ *   generationHash: string, batchEncodingVersion: number }>}
+ */
+async function buildCacheProfile(instance, settings, targetLang) {
+  const sourceLang = settings.sourceLang ?? 'auto';
+  if (instance.type === ENGINE_TYPE_IDS.BAIDU) {
+    return {
+      engineType: ENGINE_TYPE_IDS.BAIDU,
+      endpointFingerprint: 'baidu',
+      model: instance.model ?? 'general',
+      sourceLang,
+      targetLang,
+      promptVersion: 0,
+      promptHash: 'none',
+      generationHash: 'baidu:v1',
+      batchEncodingVersion: BATCH_ENCODING_VERSION,
+    };
+  }
+  const { endpointFingerprint, generationHash } = await buildLLMProfile(instance);
+  const promptHash = await hashPrompt(instance.systemPrompt);
+  return {
+    engineType: ENGINE_TYPE_IDS.OPENAI,
+    endpointFingerprint,
+    model: instance.model,
+    sourceLang,
+    targetLang,
+    promptVersion: PROMPT_VERSION,
+    promptHash,
+    generationHash,
+    batchEncodingVersion: BATCH_ENCODING_VERSION,
+  };
+}
+
+/**
+ * 计算文本 UTF-8 字节数（百度切批使用）。
+ * @param {string} text
+ * @returns {number}
+ */
+function utf8Bytes(text) {
+  return new TextEncoder().encode(String(text ?? '')).length;
+}
 
 /** 已连接端口：Port → { port, tabId, batches, submissions, disconnected, logConfigSent }。只在内存中存在。 */
 const connections = new Map();
@@ -115,7 +220,9 @@ function releaseSlot() {
 export async function withUpstreamSlot(fn, limit) {
   const effective =
     limit == null
-      ? normalizeConcurrency((await getActiveInstance())?.maxConcurrency)
+      ? normalizeConcurrency(
+          (await getActiveInstance({ requireKey: false, requirePermission: false }))?.maxConcurrency
+        )
       : normalizeConcurrency(limit);
   slotLimit = effective;
   pumpSlots();
@@ -443,70 +550,51 @@ async function beginBatch(conn, payload) {
   }
 
   let instance;
-  let apiKey;
+  let credentials;
   try {
-    instance = await getActiveInstance();
-    if (!instance || !validateInstance(instance).ok) {
-      rejectBatch(conn, requestId, ERROR_CODES.CONFIG, '没有可用的引擎配置', undefined);
+    const resolved = await resolveActiveInstance({ requireKey: true, requirePermission: true });
+    instance = resolved.instance;
+    if (!instance) {
+      rejectBatch(
+        conn,
+        requestId,
+        ERROR_CODES.CONFIG,
+        instanceErrorMessage(resolved.reason, resolved.candidate),
+        undefined
+      );
       return;
     }
-    apiKey = await getKey(instance.id);
+    credentials = await getInstanceCredentials(instance);
   } catch {
     rejectBatch(conn, requestId, ERROR_CODES.CONFIG, '读取引擎配置失败', undefined);
     return;
   }
 
-  if (!apiKey) {
-    rejectBatch(conn, requestId, ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥', undefined);
-    return;
-  }
-
-  // 缓存读取在实例与密钥检查之后、批次创建之前：命中仍要求已配置可用密钥。
+  // 缓存读取在实例与凭据检查之后、批次创建之前：命中仍要求实例可用。
   const cacheEnabled = settings.cacheEnabled !== false;
   const cacheDomain = normalizeDomain(payload.domain);
   const cacheGeneration = cacheEnabled ? getCacheStore().generation() : 0;
-  const reasoningEffort = normalizeReasoningEffort(instance.reasoningEffort);
   let cacheKeys = null;
   let cacheEntries = new Map();
 
   if (cacheEnabled) {
-    // 提示词哈希每个批次只算一次；失败按「本批不参与缓存」降级。
-    let promptHash = null;
+    log.debug('cache.key.version', '缓存 key 版本', { version: CACHE_KEY_VERSION });
     try {
-      promptHash = await hashPrompt(instance.systemPrompt);
+      const profile = await buildCacheProfile(instance, settings, targetLang);
+      cacheKeys = await Promise.all(
+        normalized.map((item) =>
+          buildCacheKey({
+            ...profile,
+            text: item.text,
+          })
+        )
+      );
     } catch (error) {
-      log.warn('cache.error', '提示词哈希计算失败，本批不参与缓存', {
+      cacheKeys = null;
+      log.warn('cache.error', '缓存 key 计算失败，本批不参与缓存', {
         requestId,
         reason: error?.name ?? 'Error',
       });
-    }
-
-    if (promptHash) {
-      log.debug('cache.key.version', '缓存 key 版本', { version: CACHE_KEY_VERSION });
-      try {
-        cacheKeys = await Promise.all(
-          normalized.map((item) =>
-            buildCacheKey({
-              engineType: instance.type,
-              model: instance.model,
-              sourceLang: settings.sourceLang ?? 'auto',
-              targetLang,
-              promptVersion: PROMPT_VERSION,
-              batchEncodingVersion: BATCH_ENCODING_VERSION,
-              reasoningEffort,
-              promptHash,
-              context: item.context ?? '',
-              text: item.text,
-            })
-          )
-        );
-      } catch (error) {
-        cacheKeys = null;
-        log.warn('cache.error', '缓存 key 计算失败，本批不参与缓存', {
-          requestId,
-          reason: error?.name ?? 'Error',
-        });
-      }
     }
 
     if (cacheKeys) {
@@ -552,7 +640,7 @@ async function beginBatch(conn, payload) {
   };
 
   conn.batches.set(requestId, batch);
-  batch.deadlineTimer = setTimeout(() => onBatchTimeout(batch), AI_TIMEOUT_MS.batchTotal);
+  batch.deadlineTimer = setTimeout(() => onBatchTimeout(batch), batchTimeoutMs(instance));
   log.withTrace(traceId).info('batch.start', '开始处理批次', {
     requestId,
     items: batch.items.length,
@@ -560,7 +648,13 @@ async function beginBatch(conn, payload) {
   });
 
   const limit = normalizeConcurrency(instance.maxConcurrency);
-  void runBatch(batch, { targetLang, instance, apiKey, limit }).catch((error) => {
+  void runBatch(batch, {
+    targetLang,
+    sourceLang: settings.sourceLang,
+    instance,
+    credentials,
+    limit,
+  }).catch((error) => {
     for (const item of batch.items) {
       if (!item.settled) {
         settle(batch, item, 'failed', {
@@ -577,9 +671,9 @@ async function beginBatch(conn, payload) {
 /**
  * 逐段顺序执行一批。
  * @param {object} batch
- * @param {{ targetLang: string, instance: object, apiKey: string, limit: number }} context
+ * @param {{ targetLang: string, sourceLang?: string, instance: object, credentials: object, limit: number }} context
  */
-async function runBatch(batch, { targetLang, instance, apiKey, limit }) {
+async function runBatch(batch, { targetLang, sourceLang, instance, credentials, limit }) {
   for (const item of batch.items) {
     if (batch.finished) return;
     if (item.settled || item.state !== 'pending') continue;
@@ -634,7 +728,8 @@ async function runBatch(batch, { targetLang, instance, apiKey, limit }) {
         return translate({
           text: item.text,
           targetLang,
-          instance: { ...instance, apiKey },
+          sourceLang,
+          instance: { ...instance, ...credentials },
           signal: controller.signal,
           onDelta: (delta) => {
             if (item.settled) return;
@@ -993,36 +1088,57 @@ function rejectBatch(conn, requestId, code, message, reason) {
  * ------------------------------------------------------------------------- */
 
 /**
- * 按「单批段数」与「批次最大字符数」以段（group）为单位切批；绝不拆段。
- * 单段超过字符上限时单独成批并标记 `oversize`，只用于日志计数。
+ * 按「单批段数」「批次最大字符数」与可选的「单批 UTF-8 字节数」以段（group）为单位切批；绝不拆段。
+ * 字节上限只用于百度翻译（`batchMaxBytes` 省略或非有限值时忽略）。
+ * 单段超过字符/字节上限时单独成批并标记 `oversize`，只用于日志计数。
  * @param {Array<{ text: string }>} groups
- * @param {{ batchSize?: unknown, batchMaxChars?: unknown }} [options]
- * @returns {Array<{ groups: object[], chars: number, oversize: boolean, state: string }>}
+ * @param {{ batchSize?: unknown, batchMaxChars?: unknown, batchMaxBytes?: unknown }} [options]
+ * @returns {Array<{ groups: object[], chars: number, bytes: number, oversize: boolean, state: string }>}
  */
-export function splitBatches(groups, { batchSize, batchMaxChars } = {}) {
+export function splitBatches(groups, { batchSize, batchMaxChars, batchMaxBytes } = {}) {
   const size = normalizeBatchSize(batchSize);
   const maxChars = normalizePositiveInt(batchMaxChars, DEFAULT_BATCH_MAX_CHARS);
+  const maxBytes =
+    Number.isFinite(Number(batchMaxBytes)) && Number(batchMaxBytes) > 0
+      ? Number(batchMaxBytes)
+      : Number.POSITIVE_INFINITY;
   const batches = [];
   let current = [];
   let chars = 0;
+  let bytes = 0;
 
   const flush = () => {
     if (current.length === 0) return;
     batches.push({
       groups: current,
       chars,
-      oversize: current.some((group) => group.text.length > maxChars),
+      bytes,
+      oversize: current.some(
+        (group) => group.text.length > maxChars || utf8Bytes(group.text) > maxBytes
+      ),
       state: 'pending',
     });
     current = [];
     chars = 0;
+    bytes = 0;
   };
 
   for (const group of Array.isArray(groups) ? groups : []) {
     const length = group.text.length;
-    if (current.length > 0 && (current.length >= size || chars + length > maxChars)) flush();
+    const groupBytes = utf8Bytes(group.text);
+    // 段间用换行连接，按 1 字节分隔符计入字节预算。
+    const separator = current.length > 0 ? 1 : 0;
+    if (
+      current.length > 0 &&
+      (current.length >= size ||
+        chars + length > maxChars ||
+        bytes + separator + groupBytes > maxBytes)
+    ) {
+      flush();
+    }
     current.push(group);
     chars += length;
+    bytes += (current.length > 1 ? 1 : 0) + groupBytes;
     if (current.length >= size) flush();
   }
   flush();
@@ -1098,9 +1214,6 @@ export async function acceptPageSubmit({
 
   const traceLog = log.withTrace(traceId);
   const items = normalizeSubmitItems(Array.isArray(paragraphs) ? paragraphs : []);
-  // 单段超限的段落不进入分组与批次，直接以 TEXT_TOO_LONG 失败，其余照常翻译。
-  const oversizedItems = items.filter((item) => item.text.length > MAX_SEGMENT_CHARS);
-  const activeItems = items.filter((item) => item.text.length <= MAX_SEGMENT_CHARS);
   const rejectInit = (code, message, reason) => {
     rejectSubmission(conn, { requestId, traceId, items }, code, message, reason);
     return { accepted: true };
@@ -1120,64 +1233,57 @@ export async function acceptPageSubmit({
   }
 
   let instance;
-  let apiKey;
+  let credentials;
   try {
-    instance = await getActiveInstance();
-    if (!instance || !validateInstance(instance).ok) {
-      return rejectInit(ERROR_CODES.CONFIG, '没有可用的引擎配置');
+    const resolved = await resolveActiveInstance({ requireKey: true, requirePermission: true });
+    instance = resolved.instance;
+    if (!instance) {
+      return rejectInit(
+        ERROR_CODES.CONFIG,
+        instanceErrorMessage(resolved.reason, resolved.candidate)
+      );
     }
-    apiKey = await getKey(instance.id);
+    credentials = await getInstanceCredentials(instance);
   } catch {
     return rejectInit(ERROR_CODES.CONFIG, '读取引擎配置失败');
   }
-  if (!apiKey) {
-    return rejectInit(ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥');
+
+  // 单段超限（字符或百度 UTF-8 字节）的段落不进入分组与批次，其余段落按部分成功处理。
+  const oversizedItems = [];
+  const activeItems = [];
+  for (const item of items) {
+    if (item.text.length > MAX_SEGMENT_CHARS) {
+      oversizedItems.push({ item, message: `单段超过 ${MAX_SEGMENT_CHARS} 字符` });
+    } else if (
+      instance.type === ENGINE_TYPE_IDS.BAIDU &&
+      utf8Bytes(item.text) > BAIDU_SEGMENT_MAX_BYTES
+    ) {
+      oversizedItems.push({ item, message: '文本过长，请分段后重试' });
+    } else {
+      activeItems.push(item);
+    }
   }
 
   // key 与缓存：缓存关闭也计算 key，用于同 key 分组与在途复用。
   const cacheEnabled = settings.cacheEnabled !== false;
   const cacheDomain = normalizeDomain(domain);
   const cacheGeneration = cacheEnabled ? getCacheStore().generation() : 0;
-  const reasoningEffort = normalizeReasoningEffort(instance.reasoningEffort);
 
-  let promptHash = null;
+  let keys = null;
+  let keyOk = false;
   try {
-    promptHash = await hashPrompt(instance.systemPrompt);
+    const profile = await buildCacheProfile(instance, settings, target);
+    keys = await Promise.all(
+      activeItems.map((item) => buildCacheKey({ ...profile, text: item.text }))
+    );
+    keyOk = true;
   } catch (error) {
-    log.warn('cache.error', '提示词哈希计算失败，本次提交不参与缓存', {
+    keys = null;
+    keyOk = false;
+    log.warn('cache.error', '缓存 key 计算失败，本次提交不参与缓存', {
       requestId,
       reason: error?.name ?? 'Error',
     });
-  }
-
-  let keys = null;
-  let keyOk = Boolean(promptHash);
-  if (keyOk) {
-    try {
-      keys = await Promise.all(
-        activeItems.map((item) =>
-          buildCacheKey({
-            engineType: instance.type,
-            model: instance.model,
-            sourceLang: settings.sourceLang ?? 'auto',
-            targetLang: target,
-            promptVersion: PROMPT_VERSION,
-            batchEncodingVersion: BATCH_ENCODING_VERSION,
-            reasoningEffort,
-            promptHash,
-            context: '',
-            text: item.text,
-          })
-        )
-      );
-    } catch (error) {
-      keys = null;
-      keyOk = false;
-      log.warn('cache.error', '缓存 key 计算失败，本次提交不参与缓存', {
-        requestId,
-        reason: error?.name ?? 'Error',
-      });
-    }
   }
 
   activeItems.forEach((item, index) => {
@@ -1233,7 +1339,8 @@ export async function acceptPageSubmit({
   const newGroups = missGroups.filter((group) => !inFlightByKey.has(group.key));
   const batchSize = normalizeBatchSize(instance.batchSize);
   const batchMaxChars = normalizePositiveInt(instance.batchMaxChars, DEFAULT_BATCH_MAX_CHARS);
-  const batches = splitBatches(newGroups, { batchSize, batchMaxChars });
+  const batchMaxBytes = batchMaxBytesFor(instance);
+  const batches = splitBatches(newGroups, { batchSize, batchMaxChars, batchMaxBytes });
   batches.forEach((batch, index) => {
     batch.id = `b${index}`;
   });
@@ -1259,6 +1366,7 @@ export async function acceptPageSubmit({
       domain: cacheDomain,
       batchSize,
       batchMaxChars,
+      ...(Number.isFinite(batchMaxBytes) ? { batchMaxBytes } : {}),
     },
     done: 0,
     failed: 0,
@@ -1285,7 +1393,10 @@ export async function acceptPageSubmit({
   }
 
   conn.submissions.set(submissionKey, submission);
-  submission.deadlineTimer = setTimeout(() => onSubmissionTimeout(submission), AI_TIMEOUT_MS.batchTotal);
+  submission.deadlineTimer = setTimeout(
+    () => onSubmissionTimeout(submission),
+    batchTimeoutMs(instance)
+  );
 
   traceLog.debug('batch.plan', '页面提交批次计划', {
     requestId,
@@ -1309,11 +1420,11 @@ export async function acceptPageSubmit({
   });
 
   // 超长段落直接失败，不进入分组、批次与缓存；其余段落按部分成功处理。
-  for (const item of oversizedItems) {
-    settleItem(submission, item, 'failed', {
+  for (const entry of oversizedItems) {
+    settleItem(submission, entry.item, 'failed', {
       notify: true,
       code: ERROR_CODES.OTHER,
-      message: `单段超过 ${MAX_SEGMENT_CHARS} 字符`,
+      message: entry.message,
       reason: FAILURE_REASONS.TEXT_TOO_LONG,
     });
   }
@@ -1332,8 +1443,9 @@ export async function acceptPageSubmit({
 
   const context = {
     targetLang: target,
+    sourceLang: settings.sourceLang,
     instance,
-    apiKey,
+    credentials,
     limit,
     cacheEnabled,
     cacheGeneration,
@@ -1386,7 +1498,8 @@ function createBatchJob(submission, batch, context) {
     batchId: batch.id ?? null,
     groups: batch.groups,
     targetLang: context.targetLang,
-    instance: { ...context.instance, apiKey: context.apiKey },
+    sourceLang: context.sourceLang,
+    instance: { ...context.instance, ...context.credentials },
     concurrency: context.limit,
     withSlot: (fn, limit) => withUpstreamSlot(fn, limit),
     onDelta: (delta) => forwardJobDelta(batch.groups[0], delta),

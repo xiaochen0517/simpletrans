@@ -64,7 +64,15 @@ import {
 } from '../../src/shared/protocol.js';
 import { MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
-import { getOrCreateDefaultInstance, removeKey, updateInstance, writeKey } from '../../src/shared/config/instances.js';
+import {
+  createInstance,
+  getOrCreateDefaultInstance,
+  removeKey,
+  setInstanceEnabled,
+  updateInstance,
+  writeCredentials,
+  writeKey,
+} from '../../src/shared/config/instances.js';
 import { saveSettings } from '../../src/shared/settings.js';
 import { handleMessage, receivePageSubmit, sendToTab } from '../../src/background/router.js';
 import { handleConnect } from '../../src/background/gateway.js';
@@ -142,30 +150,37 @@ describe('A1 控制面：消息与发送方', () => {
 });
 
 describe('A1 控制面：ST_LIST_ENGINES', () => {
-  it('返回完整实例参数与 hasKey，不含密钥、apiKey 与 baseUrl', async () => {
+  it('返回多实例公开字段，不含凭据明文', async () => {
     const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
 
     expect(response.ok).toBe(true);
     expect(response.data.instances).toHaveLength(1);
     expect(response.data.instances[0]).toMatchObject({
       id: instance.id,
-      type: 'deepseek',
+      type: 'openai',
+      typeLabel: 'OpenAI 兼容',
+      kind: 'llm',
+      preset: 'deepseek',
+      name: 'DeepSeek',
+      enabled: true,
       hasKey: true,
+      credentialStatus: true,
+      requiresKey: true,
+      permission: 'granted',
       model: 'deepseek-chat',
-      reasoningEffort: 'off',
       batchSize: 8,
       batchMaxChars: 1000,
       maxConcurrency: 4,
     });
+    expect(response.data.instances[0].endpoint.baseUrl).toBe('https://api.deepseek.com');
     expect(response.data.instances[0].systemPrompt).toContain('{{targetLang}}');
-    expect(response.data.instances[0].systemPrompt).toContain('{{outputFormat}}');
     expect(response.data.instances[0]).not.toHaveProperty('apiKey');
-    expect(response.data.instances[0]).not.toHaveProperty('baseUrl');
+    // 字段级状态只有布尔值：公开字段里出现的是字段名，不是密钥明文。
+    expect(response.data.instances[0].credentialFields).toEqual({ apiKey: true });
 
     const serialized = JSON.stringify(response);
     expect(serialized).not.toContain('sk-test');
-    expect(serialized).not.toContain('apiKey');
-    expect(serialized).not.toContain('baseUrl');
+    expect(serialized).not.toContain('"credentials"');
   });
 
   it('未配置密钥时 hasKey 为 false', async () => {
@@ -173,12 +188,12 @@ describe('A1 控制面：ST_LIST_ENGINES', () => {
     const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
     expect(response.ok).toBe(true);
     expect(response.data.instances[0].hasKey).toBe(false);
+    expect(response.data.instances[0].credentialStatus).toBe(false);
   });
 
   it('返回保存后的实例参数', async () => {
     await updateInstance(instance.id, {
       model: 'deepseek-v4-pro',
-      reasoningEffort: 'high',
       batchSize: 2,
       batchMaxChars: 300,
       maxConcurrency: 1,
@@ -188,7 +203,6 @@ describe('A1 控制面：ST_LIST_ENGINES', () => {
     const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
     expect(response.data.instances[0]).toMatchObject({
       model: 'deepseek-v4-pro',
-      reasoningEffort: 'high',
       batchSize: 2,
       batchMaxChars: 300,
       maxConcurrency: 1,
@@ -196,17 +210,34 @@ describe('A1 控制面：ST_LIST_ENGINES', () => {
     });
   });
 
-  it('首次列表会创建默认实例', async () => {
+  it('列表为空时返回空数组，不创建默认实例', async () => {
     await chrome.storage.sync.remove('engineInstances');
     const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
     expect(response.ok).toBe(true);
-    expect(response.data.instances).toHaveLength(1);
-    expect(response.data.instances[0].id).toBe(instance.id);
+    expect(response.data.instances).toEqual([]);
+    const stored = await chrome.storage.sync.get('engineInstances');
+    expect(stored.engineInstances).toBeUndefined();
+  });
+
+  it('百度实例返回固定地址、虚拟模型与批次参数', async () => {
+    await createInstance({ type: 'baidu', name: 'Baidu' });
+    const response = await handleMessage({ type: MESSAGE_TYPES.LIST_ENGINES }, sender);
+    const baidu = response.data.instances.find((item) => item.type === 'baidu');
+    expect(baidu).toMatchObject({
+      typeLabel: '百度翻译',
+      kind: 'traditional',
+      baseUrl: 'https://fanyi-api.baidu.com',
+      model: 'general',
+      hasKey: false,
+      requiresKey: true,
+    });
+    expect(baidu).not.toHaveProperty('endpoint');
+    expect(baidu).not.toHaveProperty('systemPrompt');
   });
 });
 
 describe('A1 控制面：ST_TEST_ENGINE', () => {
-  it('成功返回译文、耗时与用量，且调用 A3 时带上密钥', async () => {
+  it('成功返回译文、耗时、用量、字符数与实例信息，且调用 A3 时带上密钥', async () => {
     const response = await handleMessage(
       { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'Hello world' } },
       sender
@@ -217,12 +248,20 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     expect(typeof response.data.elapsedMs).toBe('number');
     expect(response.data.elapsedMs).toBeGreaterThanOrEqual(0);
     expect(response.data.usage).toEqual({ totalTokens: 3 });
+    expect(response.data.chars).toBe('Hello world'.length);
+    expect(response.data.engine).toMatchObject({
+      id: instance.id,
+      type: 'openai',
+      typeLabel: 'OpenAI 兼容',
+      preset: 'deepseek',
+      model: 'deepseek-chat',
+    });
 
     expect(translate).toHaveBeenCalledTimes(1);
     expect(translate.mock.calls[0][0]).toMatchObject({
       text: 'Hello world',
       targetLang: 'zh',
-      instance: { apiKey: 'sk-test' },
+      instance: { apiKey: 'sk-test', type: 'openai' },
     });
     // ST_TEST_ENGINE 不查缓存、不写缓存。
     expect(__cache.store.getMany).not.toHaveBeenCalled();
@@ -233,7 +272,6 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     const prompt = '用书面语翻译成{{targetLang}}。{{outputFormat}}';
     await updateInstance(instance.id, {
       model: 'deepseek-v4-pro',
-      reasoningEffort: 'low',
       systemPrompt: prompt,
     });
 
@@ -245,21 +283,96 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     expect(response.ok).toBe(true);
     expect(translate.mock.calls[0][0].instance).toMatchObject({
       model: 'deepseek-v4-pro',
-      reasoningEffort: 'low',
       systemPrompt: prompt,
     });
   });
 
-  it('缺密钥返回 CONFIG，不调用上游', async () => {
+  it('instanceId 指定百度实例：带上 APPID 与密钥，并允许测试未启用实例', async () => {
+    const baidu = await createInstance({ type: 'baidu', name: 'Baidu' });
+    await writeCredentials(baidu.id, { appId: 'appid-1', secretKey: 'secret-1' });
+    await setInstanceEnabled(baidu.id, false);
+
+    const response = await handleMessage(
+      {
+        type: MESSAGE_TYPES.TEST_ENGINE,
+        payload: { text: 'Hello', instanceId: baidu.id },
+      },
+      sender
+    );
+
+    expect(response.ok).toBe(true);
+    expect(response.data.engine).toMatchObject({ id: baidu.id, type: 'baidu' });
+    expect(translate.mock.calls[0][0].instance).toMatchObject({
+      type: 'baidu',
+      appId: 'appid-1',
+      secretKey: 'secret-1',
+    });
+  });
+
+  it('指定实例不存在或类型不支持时返回 CONFIG，不调用上游', async () => {
+    const missing = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', instanceId: 'nope' } },
+      sender
+    );
+    expect(missing.ok).toBe(false);
+    expect(missing.error.code).toBe(ERROR_CODES.CONFIG);
+
+    await chrome.storage.sync.set({
+      engineInstances: [{ id: 'future', type: 'deepl', name: 'Future', enabled: true }],
+    });
+    const unsupported = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', instanceId: 'future' } },
+      sender
+    );
+    expect(unsupported.ok).toBe(false);
+    expect(unsupported.error.code).toBe(ERROR_CODES.CONFIG);
+
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('缺密钥返回 CONFIG，不调用上游；百度缺一项给出完整提示', async () => {
     await removeKey(instance.id);
     const response = await handleMessage(
       { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi' } },
       sender
     );
-
     expect(response.ok).toBe(false);
     expect(response.error.code).toBe(ERROR_CODES.CONFIG);
+
+    const baidu = await createInstance({ type: 'baidu', name: 'Baidu' });
+    await writeCredentials(baidu.id, { appId: 'appid-only' });
+    const partial = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', instanceId: baidu.id } },
+      sender
+    );
+    expect(partial.ok).toBe(false);
+    expect(partial.error.message).toContain('APPID 或密钥未配置完整');
     expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('自定义 endpoint 未授权时拒绝测试，授权后恢复', async () => {
+    const custom = await createInstance({
+      type: 'openai',
+      preset: 'custom',
+      name: 'Local',
+      endpoint: { baseUrl: 'https://llm.example.com', path: '/v1/chat/completions' },
+      model: 'local-model',
+    });
+    await writeCredentials(custom.id, { apiKey: 'sk-local' });
+
+    const denied = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', instanceId: custom.id } },
+      sender
+    );
+    expect(denied.ok).toBe(false);
+    expect(denied.error.code).toBe(ERROR_CODES.CONFIG);
+
+    await chrome.permissions.request({ origins: ['https://llm.example.com/*'] });
+    const allowed = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', instanceId: custom.id } },
+      sender
+    );
+    expect(allowed.ok).toBe(true);
   });
 
   it('空文本、超长、禁止字段与不支持语言都在调用上游前拒绝', async () => {
@@ -285,12 +398,30 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     expect(forbidden.error.reason).toBe(FAILURE_REASONS.FORBIDDEN_FIELD);
 
     const language = await handleMessage(
-      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', targetLang: 'ja' } },
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', targetLang: 'fr' } },
       sender
     );
     expect(language.ok).toBe(false);
     expect(language.error.reason).toBe(FAILURE_REASONS.UNSUPPORTED_LANG);
 
+    const badId = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi', instanceId: 42 } },
+      sender
+    );
+    expect(badId.ok).toBe(false);
+    expect(badId.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('扩展停用时测试翻译返回 CONFIG，不调用上游', async () => {
+    await saveSettings({ enabled: false });
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi' } },
+      sender
+    );
+    expect(response.ok).toBe(false);
+    expect(response.error).toMatchObject({ code: ERROR_CODES.CONFIG, message: '扩展已停用' });
     expect(translate).not.toHaveBeenCalled();
   });
 
@@ -300,13 +431,24 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
       { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi' } },
       sender
     );
-
     expect(response.ok).toBe(false);
-    expect(response.error.code).toBe(ERROR_CODES.AUTH);
-    expect(response.error.message).toBe('密钥无效或鉴权失败');
+    expect(response.error).toMatchObject({
+      code: ERROR_CODES.AUTH,
+      message: '密钥无效或鉴权失败',
+    });
+  });
+
+  it('没有可用实例时返回 CONFIG', async () => {
+    await chrome.storage.sync.remove('engineInstances');
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.TEST_ENGINE, payload: { text: 'hi' } },
+      sender
+    );
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe(ERROR_CODES.CONFIG);
+    expect(response.error.message).toContain('没有可用的翻译实例');
   });
 });
-
 describe('A1 控制面：缓存消息（P5）', () => {
   it('ST_CACHE_STATS 返回条数、字节与上限', async () => {
     const response = await handleMessage(

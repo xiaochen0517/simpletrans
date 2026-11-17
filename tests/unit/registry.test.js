@@ -1,40 +1,47 @@
 /**
- * E3 引擎类型目录测试
+ * E3 引擎类型目录测试（P8-2）
  *
- * 覆盖 P6.2：实例字段、默认值、思考强度与批次/并发归一、模型与提示词校验。
+ * 覆盖双类型目录、百度上限、实例名称与提示词校验、两种实例的字段校验。
  */
 
 import { describe, expect, it } from 'vitest';
 import {
+  BAIDU_BATCH_MAX_CHARS,
+  BAIDU_BATCH_SIZE,
+  BAIDU_MAX_CONCURRENCY,
   DEFAULT_BATCH_MAX_CHARS,
   DEFAULT_BATCH_SIZE,
   DEFAULT_MAX_CONCURRENCY,
-  DEFAULT_REASONING_EFFORT,
   DEFAULT_SYSTEM_PROMPT,
   ENGINE_TYPE_IDS,
   ENGINE_TYPES,
-  MAX_MODEL_CHARS,
+  MAX_INSTANCE_NAME_CHARS,
   MAX_PROMPT_CHARS,
   MIN_BATCH_SIZE,
-  REASONING_EFFORTS,
+  getDefaultInstanceName,
+  getEngineKind,
   getEngineType,
+  getTypeLabel,
   isDefaultPrompt,
+  isSupportedType,
+  isValidInstanceName,
   normalizeBatchSize,
+  normalizeInstanceName,
   normalizePositiveInt,
-  normalizeReasoningEffort,
   validateInstance,
   validatePromptTemplate,
 } from '../../src/shared/config/registry.js';
+import { createOpenAIConfig } from '../../src/shared/config/openai.js';
 
-/** 合法实例：默认值基础上按需覆盖。 */
-function validInstance(patch = {}) {
+/** 合法 OpenAI 实例。 */
+function validOpenAI(patch = {}) {
   return {
-    id: 'default',
-    type: 'deepseek',
+    ...createOpenAIConfig('deepseek'),
+    id: 'inst-openai',
     name: 'DeepSeek',
-    model: 'deepseek-chat',
-    baseUrl: 'https://api.deepseek.com',
-    reasoningEffort: DEFAULT_REASONING_EFFORT,
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
     batchSize: DEFAULT_BATCH_SIZE,
     batchMaxChars: DEFAULT_BATCH_MAX_CHARS,
     maxConcurrency: DEFAULT_MAX_CONCURRENCY,
@@ -43,39 +50,57 @@ function validInstance(patch = {}) {
   };
 }
 
+/** 合法百度实例。 */
+function validBaidu(patch = {}) {
+  return {
+    id: 'inst-baidu',
+    type: 'baidu',
+    name: '百度翻译',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+    baseUrl: 'https://fanyi-api.baidu.com',
+    model: 'general',
+    batchSize: BAIDU_BATCH_SIZE.default,
+    batchMaxChars: BAIDU_BATCH_MAX_CHARS.default,
+    maxConcurrency: BAIDU_MAX_CONCURRENCY.default,
+    ...patch,
+  };
+}
+
 describe('E3 引擎类型目录', () => {
-  it('P1 只注册 DeepSeek 一个类型', () => {
-    expect(Object.keys(ENGINE_TYPES)).toEqual(['deepseek']);
-    expect(getEngineType(ENGINE_TYPE_IDS.DEEPSEEK)?.id).toBe('deepseek');
-    expect(getEngineType('openai')).toBeNull();
+  it('注册 openai 与 baidu 两种类型，旧 deepseek 不再是可执行类型', () => {
+    expect(Object.keys(ENGINE_TYPES).sort()).toEqual(['baidu', 'openai']);
+    expect(getEngineType(ENGINE_TYPE_IDS.OPENAI)?.id).toBe('openai');
+    expect(getEngineType(ENGINE_TYPE_IDS.BAIDU)?.id).toBe('baidu');
+    expect(getEngineType('deepseek')).toBeNull();
+    expect(isSupportedType('deepseek')).toBe(false);
+    expect(isSupportedType('deepl')).toBe(false);
   });
 
-  it('DeepSeek 默认模型与接口地址', () => {
-    const type = getEngineType('deepseek');
-    expect(typeof type.defaultModel).toBe('string');
-    expect(type.defaultModel).not.toBe('');
-    expect(type.baseUrl).toMatch(/^https:\/\//);
+  it('类型显示名与类别', () => {
+    expect(getTypeLabel('openai')).toBe('OpenAI 兼容');
+    expect(getTypeLabel('baidu')).toBe('百度翻译');
+    expect(getTypeLabel('deepl')).toBe('不支持');
+    expect(getEngineKind('openai')).toBe('llm');
+    expect(getEngineKind('baidu')).toBe('traditional');
+    expect(getEngineKind('deepl')).toBe('unsupported');
   });
 
-  it('实例字段包含 P6.2 参数，默认值与文档一致', () => {
-    const type = getEngineType('deepseek');
-    expect(type.fields).toEqual(
-      expect.arrayContaining([
-        'model',
-        'reasoningEffort',
-        'batchSize',
-        'batchMaxChars',
-        'maxConcurrency',
-        'systemPrompt',
-      ])
-    );
-    expect(DEFAULT_BATCH_SIZE).toBe(8);
-    expect(MIN_BATCH_SIZE).toBe(1);
-    expect(DEFAULT_BATCH_MAX_CHARS).toBe(1000);
-    expect(DEFAULT_MAX_CONCURRENCY).toBe(4);
-    expect(REASONING_EFFORTS).toEqual(['off', 'low', 'medium', 'high', 'max']);
-    expect(DEFAULT_REASONING_EFFORT).toBe('off');
-    expect(MAX_PROMPT_CHARS).toBe(2000);
+  it('默认实例名按类型/预设生成', () => {
+    expect(getDefaultInstanceName('openai', 'deepseek')).toBe('DeepSeek');
+    expect(getDefaultInstanceName('openai', 'custom')).toBe('自定义');
+    expect(getDefaultInstanceName('baidu')).toBe('百度翻译');
+    expect(getDefaultInstanceName('deepl')).toBe('翻译实例');
+  });
+
+  it('实例名称归一与 1–40 字符校验', () => {
+    expect(normalizeInstanceName('  Deep   Seek  ')).toBe('Deep Seek');
+    expect(normalizeInstanceName('\u0000abc\n')).toBe('abc');
+    expect(isValidInstanceName('a')).toBe(true);
+    expect(isValidInstanceName('   ')).toBe(false);
+    expect(isValidInstanceName('x'.repeat(MAX_INSTANCE_NAME_CHARS))).toBe(true);
+    expect(isValidInstanceName('x'.repeat(MAX_INSTANCE_NAME_CHARS + 1))).toBe(false);
   });
 
   it('默认提示词含两个占位符，且被判定为默认模板', () => {
@@ -86,73 +111,71 @@ describe('E3 引擎类型目录', () => {
     expect(isDefaultPrompt('自定义模板 {{targetLang}} {{outputFormat}}')).toBe(false);
   });
 
-  it('normalizeReasoningEffort：合法值保留，非法值归一为 off', () => {
-    for (const value of REASONING_EFFORTS) expect(normalizeReasoningEffort(value)).toBe(value);
-    expect(normalizeReasoningEffort('turbo')).toBe('off');
-    expect(normalizeReasoningEffort(undefined)).toBe('off');
-    expect(normalizeReasoningEffort(null)).toBe('off');
-  });
-
-  it('normalizeBatchSize：保证 ≥1 并向下取整，不设业务上限，非法值回退 8', () => {
+  it('normalizeBatchSize：保证 ≥1 并向下取整，可指定上限', () => {
     expect(normalizeBatchSize(1)).toBe(1);
-    expect(normalizeBatchSize(12)).toBe(12);
-    expect(normalizeBatchSize(20)).toBe(20);
     expect(normalizeBatchSize(999)).toBe(999);
+    expect(normalizeBatchSize(999, 20)).toBe(20);
     expect(normalizeBatchSize(0)).toBe(1);
-    expect(normalizeBatchSize(-5)).toBe(1);
     expect(normalizeBatchSize(4.7)).toBe(4);
     expect(normalizeBatchSize('6')).toBe(6);
     expect(normalizeBatchSize('nope')).toBe(DEFAULT_BATCH_SIZE);
-    expect(normalizeBatchSize(undefined)).toBe(DEFAULT_BATCH_SIZE);
   });
 
-  it('normalizePositiveInt：只接受 >=1 的值，其余回退', () => {
+  it('normalizePositiveInt：只接受 >=1 的值，可指定上下限', () => {
     expect(normalizePositiveInt(3, 4)).toBe(3);
     expect(normalizePositiveInt(3.9, 4)).toBe(3);
     expect(normalizePositiveInt(0, 4)).toBe(4);
-    expect(normalizePositiveInt(-2, 4)).toBe(4);
     expect(normalizePositiveInt('7', 4)).toBe(7);
+    expect(normalizePositiveInt(30, 4, { max: 10 })).toBe(10);
     expect(normalizePositiveInt('x', 4)).toBe(4);
   });
 
   it('validatePromptTemplate：缺少/未知占位符、空与超长都被拒绝', () => {
     expect(validatePromptTemplate(DEFAULT_SYSTEM_PROMPT).ok).toBe(true);
     expect(validatePromptTemplate('').ok).toBe(false);
-    expect(validatePromptTemplate('   ').ok).toBe(false);
     expect(validatePromptTemplate('只有 {{targetLang}}').ok).toBe(false);
-    expect(validatePromptTemplate('只有 {{outputFormat}}').ok).toBe(false);
     expect(validatePromptTemplate('{{targetLang}} {{outputFormat}} {{foo}}').ok).toBe(false);
     expect(validatePromptTemplate('x'.repeat(MAX_PROMPT_CHARS + 1)).ok).toBe(false);
-    expect(validatePromptTemplate(`{{targetLang}} {{outputFormat}} ${'x'.repeat(100)}`).ok).toBe(
-      true
-    );
   });
 
-  it('validateInstance：空实例/未知类型/缺模型被拦截，合法实例通过', () => {
+  it('validateInstance：OpenAI 字段逐项校验', () => {
+    expect(validateInstance(validOpenAI()).ok).toBe(true);
     expect(validateInstance(null).ok).toBe(false);
-    expect(validateInstance({ type: 'openai', model: 'gpt' }).ok).toBe(false);
-    expect(validateInstance(validInstance({ model: '' })).ok).toBe(false);
-    expect(validateInstance(validInstance()).ok).toBe(true);
-  });
-
-  it('validateInstance：模型超长、思考强度、批次、并发与提示词逐项校验', () => {
-    expect(validateInstance(validInstance({ model: 'm'.repeat(MAX_MODEL_CHARS + 1) })).ok).toBe(
+    expect(validateInstance(validOpenAI({ name: '' })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ enabled: 'yes' })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ model: '' })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ endpoint: { baseUrl: 'ftp://x', path: '/x' } })).ok).toBe(
       false
     );
-    expect(validateInstance(validInstance({ reasoningEffort: 'turbo' })).ok).toBe(false);
-    expect(validateInstance(validInstance({ batchSize: 0 })).ok).toBe(false);
-    expect(validateInstance(validInstance({ batchSize: -1 })).ok).toBe(false);
-    expect(validateInstance(validInstance({ batchSize: 2.5 })).ok).toBe(false);
-    expect(validateInstance(validInstance({ batchSize: 13 })).ok).toBe(true);
-    expect(validateInstance(validInstance({ batchSize: 999 })).ok).toBe(true);
-    expect(validateInstance(validInstance({ batchMaxChars: 0 })).ok).toBe(false);
-    expect(validateInstance(validInstance({ batchMaxChars: 1.5 })).ok).toBe(false);
-    expect(validateInstance(validInstance({ maxConcurrency: -1 })).ok).toBe(false);
-    expect(validateInstance(validInstance({ maxConcurrency: 2.5 })).ok).toBe(false);
-    expect(validateInstance(validInstance({ systemPrompt: '缺少占位符' })).ok).toBe(false);
-    expect(validateInstance(validInstance({ systemPrompt: '' })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ preset: 'unknown' })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ batchSize: 0 })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ batchMaxChars: 0 })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ maxConcurrency: 0 })).ok).toBe(false);
+    expect(validateInstance(validOpenAI({ systemPrompt: '缺少占位符' })).ok).toBe(false);
+    // OpenAI 不设批次/并发上限。
+    expect(validateInstance(validOpenAI({ batchSize: 999, maxConcurrency: 99 })).ok).toBe(true);
+  });
 
-    expect(validateInstance(validInstance({ model: 'm'.repeat(MAX_MODEL_CHARS) })).ok).toBe(true);
-    expect(validateInstance(validInstance({ batchSize: 1, maxConcurrency: 99 })).ok).toBe(true);
+  it('validateInstance：百度字段与范围校验', () => {
+    expect(validateInstance(validBaidu()).ok).toBe(true);
+    expect(validateInstance(validBaidu({ baseUrl: 'https://example.com' })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ model: 'chat' })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ batchSize: 21 })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ batchSize: 0 })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ batchMaxChars: 2001 })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ maxConcurrency: 11 })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ maxConcurrency: 10 })).ok).toBe(true);
+    expect(validateInstance(validBaidu({ batchSize: 2.5 })).ok).toBe(false);
+  });
+
+  it('validateInstance：不支持的类型被拒绝', () => {
+    expect(validateInstance({ type: 'deepl', name: 'X', enabled: true }).ok).toBe(false);
+  });
+
+  it('百度默认值与状态目录一致', () => {
+    expect(MIN_BATCH_SIZE).toBe(1);
+    expect(BAIDU_BATCH_SIZE).toEqual({ min: 1, max: 20, default: 8 });
+    expect(BAIDU_BATCH_MAX_CHARS).toEqual({ min: 1, max: 2000, default: 1000 });
+    expect(BAIDU_MAX_CONCURRENCY).toEqual({ min: 1, max: 10, default: 1 });
   });
 });

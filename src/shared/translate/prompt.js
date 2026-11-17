@@ -3,8 +3,8 @@
  *
  * 模块：后台服务（A）/ A3
  * 职责：提供默认 system 提示词模板、占位符校验与展开、单段/批量输出格式，以及提示词哈希（供 A4 缓存 key）。
- * 依赖：E3 引擎类型目录（默认模板、长度上限与占位符校验，P6.2 起）。
- * 实现阶段：P6.2（翻译实例参数配置）
+ * 依赖：E3 引擎类型目录（默认模板、长度上限与占位符校验）、语言目录（语言显示名，P8-2 起）。
+ * 实现阶段：P6.2（翻译实例参数配置）；P8-2 改用共享语言目录，`PROMPT_VERSION` 升到 3。
  *
  * 提示词正文不进入日志；本模块只返回字符串与哈希，不读写存储、不调用引擎。
  */
@@ -16,9 +16,10 @@ import {
   PROMPT_PLACEHOLDERS,
   validatePromptTemplate,
 } from '../config/registry.js';
+import { LANGUAGES, SOURCE_LANGS, TARGET_LANGS, languageLabel } from '../languages.js';
 
 /** 提示词模板与输出格式的结构版本；模板结构、默认模板或语言显示名映射变化时递增。 */
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 
 export {
   DEFAULT_SYSTEM_PROMPT,
@@ -28,11 +29,14 @@ export {
   validatePromptTemplate,
 };
 
-/** 目标语言显示名（当前只有中文；多语言映射后续补充）。 */
-export const LANG_NAMES = Object.freeze({ zh: '中文' });
+/** 语言显示名（源/目标共用）。保留旧导出名，供设置页与测试引用。 */
+export const LANG_NAMES = LANGUAGES;
 
 /** 当前支持的目标语言。 */
-export const SUPPORTED_TARGET_LANGS = Object.freeze(Object.keys(LANG_NAMES));
+export const SUPPORTED_TARGET_LANGS = TARGET_LANGS;
+
+/** 当前支持的源语言。 */
+export const SUPPORTED_SOURCE_LANGS = SOURCE_LANGS;
 
 /**
  * 判断目标语言是否受支持。
@@ -40,7 +44,16 @@ export const SUPPORTED_TARGET_LANGS = Object.freeze(Object.keys(LANG_NAMES));
  * @returns {boolean}
  */
 export function isSupportedTargetLang(lang) {
-  return typeof lang === 'string' && Object.hasOwn(LANG_NAMES, lang);
+  return typeof lang === 'string' && TARGET_LANGS.includes(lang);
+}
+
+/**
+ * 判断源语言是否受支持。
+ * @param {unknown} lang
+ * @returns {boolean}
+ */
+export function isSupportedSourceLang(lang) {
+  return typeof lang === 'string' && SOURCE_LANGS.includes(lang);
 }
 
 /** 程序提供的输出格式规则；用户模板不能修改这段内容。 */
@@ -77,7 +90,7 @@ export function normalizePromptText(template) {
  * @returns {string}
  */
 export function buildSystemPrompt({ targetLang, template, mode = 'single' } = {}) {
-  const lang = LANG_NAMES[targetLang] ?? targetLang ?? '目标语言';
+  const lang = languageLabel(targetLang) || targetLang || '目标语言';
   const outputFormat = OUTPUT_FORMATS[mode] ?? OUTPUT_FORMATS.single;
   return resolveTemplate(template)
     .replaceAll('{{targetLang}}', lang)

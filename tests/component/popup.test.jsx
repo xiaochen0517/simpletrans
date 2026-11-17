@@ -32,9 +32,20 @@ let container;
 /** @type {ReturnType<typeof createRoot>} */
 let root;
 
-/** 默认实例：已配置密钥、默认模型。 */
+/** 默认实例：已启用、已配置密钥、默认模型。 */
 function defaultInstance() {
-  return { id: 'default', name: 'DeepSeek', model: 'deepseek-chat', hasKey: true };
+  return {
+    id: 'default',
+    name: 'DeepSeek',
+    type: 'openai',
+    typeLabel: 'OpenAI 兼容',
+    preset: 'deepseek',
+    model: 'deepseek-chat',
+    enabled: true,
+    hasKey: true,
+    requiresKey: true,
+    permission: 'granted',
+  };
 }
 
 /** 让弹窗完成一次挂载后的异步读取。 */
@@ -142,6 +153,28 @@ describe('弹窗基础信息', () => {
     expect(container.textContent).not.toContain('密钥已配置');
     expect(findSelect().disabled).toBe(true);
     expect(container.textContent).toContain('未配置翻译方式');
+    expect(container.textContent).toContain('没有可用的翻译实例');
+  });
+
+  it('无认证实例显示「无需密钥」并可正常选用', async () => {
+    engineResponse = {
+      ok: true,
+      data: {
+        instances: [
+          {
+            ...defaultInstance(),
+            id: 'local',
+            name: 'Local',
+            requiresKey: false,
+            hasKey: true,
+          },
+        ],
+      },
+    };
+    await renderPopup();
+
+    expect(findSelect().disabled).toBe(false);
+    expect(container.textContent).toContain('无需密钥');
   });
 
   it('没有实例时显示「未配置翻译方式」并保留命令按钮', async () => {
@@ -175,7 +208,21 @@ describe('翻译方式切换', () => {
     await renderPopup();
 
     const labels = [...findSelect().options].map((option) => option.textContent);
-    expect(labels).toEqual(['DeepSeek · deepseek-chat', 'Third · m3']);
+    expect(labels).toEqual([
+      'DeepSeek · OpenAI 兼容/deepseek · deepseek-chat',
+      'Third · m3',
+    ]);
+  });
+
+  it('停用实例不出现在下拉中', async () => {
+    engineResponse.data.instances = [
+      defaultInstance(),
+      { id: 'off', name: 'Off', model: 'm-off', hasKey: true, enabled: false },
+    ];
+    await renderPopup();
+
+    const labels = [...findSelect().options].map((option) => option.textContent);
+    expect(labels).toEqual(['DeepSeek · OpenAI 兼容/deepseek · deepseek-chat']);
   });
 
   it('按 activeInstanceId 选中当前翻译方式', async () => {

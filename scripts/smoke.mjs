@@ -16,6 +16,7 @@
  *   S10 dist 缺失或不完整时给出单条可操作提示
  *   S11 popup / options 页面骨架含 #root 与 module script；testpage 含 #test-page 与 module script
  *   S12 关键产物存在、非空（P4 起 content.css 也必须非空）
+ *   S13 清单主机权限：OpenAI/百度必选域名与可选 HTTPS/回环；content 不含提示词/凭据键前缀
  *
  * 运行：node scripts/smoke.mjs（需先 npm run build）。只读，不构建。
  */
@@ -29,10 +30,12 @@ const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const distDir = join(projectRoot, 'dist');
 const manifestPath = join(distDir, 'manifest.json');
 
-/** content 产物中不允许出现的词：密钥字段、鉴权头、服务商域名、SDK 函数名。 */
+/** content 产物中不允许出现的词：密钥字段、鉴权头、服务商域名、SDK 函数名、提示词/凭据键前缀。 */
 const FORBIDDEN_IN_CONTENT = [
   'apiKey',
   'api_key',
+  'appId',
+  'secretKey',
   'Authorization',
   'Bearer ',
   'x-api-key',
@@ -44,6 +47,10 @@ const FORBIDDEN_IN_CONTENT = [
   'api.youdao.com',
   'tmt.tencentcloudapi.com',
   'mt.cn-hangzhou.aliyuncs.com',
+  'chat/completions',
+  'engineKey:',
+  'systemPrompt:',
+  'js-md5',
   '@ai-sdk/',
   'generateText',
   'streamText',
@@ -53,12 +60,14 @@ const FORBIDDEN_IN_CONTENT = [
 const ENGINE_NAMES = ['deepseek', 'openai', 'deepl', 'google', 'baidu', 'youdao', 'tencent', 'alibaba'];
 
 const failures = [];
+let checks = 0;
 
 /**
  * @param {string} name
  * @param {() => Promise<void> | void} fn
  */
 async function test(name, fn) {
+  checks += 1;
   try {
     await fn();
     console.info(`  ✓ ${name}`);
@@ -301,11 +310,31 @@ await test('S12 入口产物与 CSS 存在且非空', async () => {
   }
 });
 
+// ------------------------------------------------------ S13 主机权限与内容边界
+await test('S13 清单主机权限完整，content 不含提示词/凭据键前缀', async () => {
+  const required = Array.isArray(manifest.host_permissions) ? manifest.host_permissions : [];
+  for (const origin of ['https://api.deepseek.com/*', 'https://fanyi-api.baidu.com/*']) {
+    assert.ok(required.includes(origin), `host_permissions 缺少 ${origin}`);
+  }
+
+  const optional = Array.isArray(manifest.optional_host_permissions)
+    ? manifest.optional_host_permissions
+    : [];
+  for (const origin of ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*']) {
+    assert.ok(optional.includes(origin), `optional_host_permissions 缺少 ${origin}`);
+  }
+
+  const code = await readFile(join(distDir, 'content.js'), 'utf8');
+  for (const token of ['engineKey:', 'systemPrompt:']) {
+    assert.equal(code.includes(token), false, `content.js 出现 ${token}`);
+  }
+});
+
 // ------------------------------------------------------------------------ 汇总
 console.info('');
 if (failures.length > 0) {
   console.error(`冒烟测试失败：${failures.length} 项`);
   process.exitCode = 1;
 } else {
-  console.info('冒烟测试通过（11 项）');
+  console.info(`冒烟测试通过（${checks} 项）`);
 }

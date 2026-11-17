@@ -2,37 +2,71 @@
  * E3 引擎类型目录
  *
  * 模块：公共模块（E）/ E3
- * 职责：维护各引擎类型的字段、默认值、提示词模板与校验规则，供设置页按类型生成表单、供配置模块校验实例。
- * 依赖：无（P1 起）。
- * 实现阶段：P1（引擎层与密钥配置）；P6.2 增加模型上限、思考强度、批次/并发默认值、system 提示词与校验。
+ * 职责：维护引擎类型（OpenAI 兼容 / 百度翻译）、公共字段、百度上限、提示词模板与实例校验规则。
+ * 依赖：E9 公共数值（constants.js）、E3 OpenAI 兼容配置（openai.js，P8-1 起）。
+ * 实现阶段：P1（引擎层与密钥配置）；P6.2 增加思考强度、批次/并发与提示词校验；
+ *           P8-2 改为 `openai | baidu` 双类型目录，OpenAI 字段与预设引用 P8-1 定义，
+ *           增加实例名称、数量与字节上限和百度批次范围。
  *
- * P1 只注册 DeepSeek 一个类型；传统服务商适配器与自定义地址留后续。
- * 注意：本文件含引擎地址与默认模型，属于 config/，页面注入（content）禁止引用（架构 5.1）。
+ * 本文件含引擎地址与默认模型，属于 config/，页面注入（content）禁止引用（架构 5.1）。
  */
+
+import {
+  MAX_INSTANCE_BYTES,
+  MAX_INSTANCE_NAME_CHARS,
+  MAX_INSTANCES,
+} from '../constants.js';
+import {
+  OPENAI_PRESETS,
+  OPENAI_PRESET_IDS,
+  OPENAI_TYPE,
+  validateOpenAIConfig,
+} from './openai.js';
 
 /** 引擎类型 id。 */
 export const ENGINE_TYPE_IDS = Object.freeze({
+  OPENAI: OPENAI_TYPE,
+  BAIDU: 'baidu',
+});
+
+/** 旧版本类型 id；只用于识别与迁移，不再作为可执行类型。 */
+export const LEGACY_TYPE_IDS = Object.freeze({
   DEEPSEEK: 'deepseek',
 });
 
-/** 思考强度枚举；`off` 关闭思考，其余开启并传递对应 reasoning effort。 */
-export const REASONING_EFFORTS = Object.freeze(['off', 'low', 'medium', 'high', 'max']);
+/** 类型显示名。 */
+export const TYPE_LABELS = Object.freeze({
+  [ENGINE_TYPE_IDS.OPENAI]: 'OpenAI 兼容',
+  [ENGINE_TYPE_IDS.BAIDU]: '百度翻译',
+});
 
-/** 思考强度默认值。 */
-export const DEFAULT_REASONING_EFFORT = 'off';
+/** 实例类别：大模型 / 传统引擎；不支持类型归入 `unsupported`。 */
+export const ENGINE_KINDS = Object.freeze({
+  [ENGINE_TYPE_IDS.OPENAI]: 'llm',
+  [ENGINE_TYPE_IDS.BAIDU]: 'traditional',
+});
 
 /** 模型名称最大字符数。 */
 export const MAX_MODEL_CHARS = 100;
 
-/** 单批段数下限与默认值；不设业务上限。 */
+/** 单批段数下限与默认值；OpenAI 不设业务上限，百度另有限定。 */
 export const MIN_BATCH_SIZE = 1;
 export const DEFAULT_BATCH_SIZE = 8;
 
-/** 批次最大字符数默认值；只要求正整数，不设固定上下限。 */
+/** 批次最大字符数默认值。 */
 export const DEFAULT_BATCH_MAX_CHARS = 1000;
 
-/** 最大并发数默认值；只要求正整数，不设固定上下限。 */
+/** 最大并发数默认值（OpenAI）。 */
 export const DEFAULT_MAX_CONCURRENCY = 4;
+
+/** 百度翻译批次、字符与并发范围（P8-2 起）。 */
+export const BAIDU_BATCH_SIZE = Object.freeze({ min: 1, max: 20, default: 8 });
+export const BAIDU_BATCH_MAX_CHARS = Object.freeze({ min: 1, max: 2000, default: 1000 });
+export const BAIDU_MAX_CONCURRENCY = Object.freeze({ min: 1, max: 10, default: 1 });
+
+/** 百度翻译固定接口地址与虚拟模型名。 */
+export const BAIDU_BASE_URL = 'https://fanyi-api.baidu.com';
+export const BAIDU_MODEL = 'general';
 
 /** system 提示词最大字符数（受 `storage.sync` 单条上限约束）。 */
 export const MAX_PROMPT_CHARS = 2000;
@@ -51,27 +85,49 @@ export const DEFAULT_SYSTEM_PROMPT =
  * 引擎类型目录。每个类型：
  * - id：类型标识；
  * - label：显示名；
- * - baseUrl：接口地址（默认值）；
- * - defaultModel：默认模型；
- * - fields：实例可配置字段（P8 表单据此生成）。
+ * - kind：实例类别（llm / traditional）；
+ * - fields：实例可配置字段（P8-3 表单据此生成）；
+ * - baseUrl/defaultModel：百度固定值；OpenAI 由预设提供。
  */
 export const ENGINE_TYPES = Object.freeze({
-  [ENGINE_TYPE_IDS.DEEPSEEK]: Object.freeze({
-    id: 'deepseek',
-    label: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-chat',
+  [ENGINE_TYPE_IDS.OPENAI]: Object.freeze({
+    id: ENGINE_TYPE_IDS.OPENAI,
+    label: TYPE_LABELS[ENGINE_TYPE_IDS.OPENAI],
+    kind: ENGINE_KINDS[ENGINE_TYPE_IDS.OPENAI],
+    defaultPreset: OPENAI_PRESET_IDS.DEEPSEEK,
+    presets: OPENAI_PRESETS,
     fields: Object.freeze([
-      'apiKey',
-      'baseUrl',
+      'endpoint',
+      'auth',
+      'headers',
       'model',
-      'reasoningEffort',
+      'params',
       'batchSize',
       'batchMaxChars',
       'maxConcurrency',
       'systemPrompt',
     ]),
   }),
+  [ENGINE_TYPE_IDS.BAIDU]: Object.freeze({
+    id: ENGINE_TYPE_IDS.BAIDU,
+    label: TYPE_LABELS[ENGINE_TYPE_IDS.BAIDU],
+    kind: ENGINE_KINDS[ENGINE_TYPE_IDS.BAIDU],
+    baseUrl: BAIDU_BASE_URL,
+    defaultModel: BAIDU_MODEL,
+    fields: Object.freeze([
+      'batchSize',
+      'batchMaxChars',
+      'maxConcurrency',
+      'appId',
+      'secretKey',
+    ]),
+  }),
+});
+
+/** 提示词占位符校验所需的输入类型说明（供 JSDoc 引用）。 */
+export const DEFAULT_INSTANCE_NAME = Object.freeze({
+  [ENGINE_TYPE_IDS.OPENAI]: 'OpenAI 兼容',
+  [ENGINE_TYPE_IDS.BAIDU]: '百度翻译',
 });
 
 /**
@@ -80,42 +136,105 @@ export const ENGINE_TYPES = Object.freeze({
  * @returns {Record<string, unknown> | null}
  */
 export function getEngineType(typeId) {
-  return ENGINE_TYPES[typeId] ?? null;
+  return Object.prototype.hasOwnProperty.call(ENGINE_TYPES, typeId)
+    ? ENGINE_TYPES[typeId]
+    : null;
 }
 
 /**
- * 归一思考强度：非法值回退 `off`。
- * @param {unknown} value
- * @returns {'off'|'low'|'medium'|'high'|'max'}
+ * 判断类型是否受支持（可执行、可编辑）。
+ * @param {unknown} typeId
+ * @returns {boolean}
  */
-export function normalizeReasoningEffort(value) {
-  return typeof value === 'string' && REASONING_EFFORTS.includes(value)
-    ? value
-    : DEFAULT_REASONING_EFFORT;
+export function isSupportedType(typeId) {
+  return typeof typeId === 'string' && Boolean(getEngineType(typeId));
 }
 
 /**
- * 归一单批段数：向下取整并保证 ≥1，非法值回退默认 8；不设业务上限。
+ * 取类型显示名；不支持的类型返回「不支持」。
+ * @param {unknown} typeId
+ * @returns {string}
+ */
+export function getTypeLabel(typeId) {
+  return typeof typeId === 'string' && Object.hasOwn(TYPE_LABELS, typeId)
+    ? TYPE_LABELS[typeId]
+    : '不支持';
+}
+
+/**
+ * 取实例类别；不支持的类型返回 `unsupported`。
+ * @param {unknown} typeId
+ * @returns {string}
+ */
+export function getEngineKind(typeId) {
+  return typeof typeId === 'string' && Object.hasOwn(ENGINE_KINDS, typeId)
+    ? ENGINE_KINDS[typeId]
+    : 'unsupported';
+}
+
+/**
+ * 取类型/预设的默认实例名称。
+ * @param {unknown} typeId
+ * @param {unknown} [preset]
+ * @returns {string}
+ */
+export function getDefaultInstanceName(typeId, preset) {
+  if (typeId === ENGINE_TYPE_IDS.BAIDU) return TYPE_LABELS[ENGINE_TYPE_IDS.BAIDU];
+  if (typeId === ENGINE_TYPE_IDS.OPENAI) {
+    const presetDef = Object.hasOwn(OPENAI_PRESETS, preset) ? OPENAI_PRESETS[preset] : null;
+    return presetDef?.label ?? DEFAULT_INSTANCE_NAME[ENGINE_TYPE_IDS.OPENAI];
+  }
+  return '翻译实例';
+}
+
+/**
+ * 归一实例名称：去首尾空白、连续空白折叠为一个空格。
  * @param {unknown} value
+ * @returns {string}
+ */
+export function normalizeInstanceName(value) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * 校验实例名称：1–40 字符，不含控制字符。
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isValidInstanceName(value) {
+  const name = normalizeInstanceName(value);
+  return name.length >= 1 && name.length <= MAX_INSTANCE_NAME_CHARS;
+}
+
+/**
+ * 归一单批段数：向下取整并保证 ≥min；非法值回退默认 8；可指定上限。
+ * @param {unknown} value
+ * @param {number} [max] 上限；省略表示不设业务上限
  * @returns {number}
  */
-export function normalizeBatchSize(value) {
+export function normalizeBatchSize(value, max = Number.POSITIVE_INFINITY) {
   const n = Number(value);
   if (!Number.isFinite(n)) return DEFAULT_BATCH_SIZE;
-  return Math.max(MIN_BATCH_SIZE, Math.floor(n));
+  const floor = Math.max(MIN_BATCH_SIZE, Math.floor(n));
+  return Number.isFinite(max) ? Math.min(floor, max) : floor;
 }
 
 /**
- * 归一正整数：非有限数或小于 1 时回退 `fallback`，小数向下取整。
+ * 归一正整数：非有限数或小于 min 时回退 `fallback`，小数向下取整，可指定上限。
  * @param {unknown} value
  * @param {number} fallback
+ * @param {{ min?: number, max?: number }} [range]
  * @returns {number}
  */
-export function normalizePositiveInt(value, fallback) {
+export function normalizePositiveInt(value, fallback, { min = 1, max = Number.POSITIVE_INFINITY } = {}) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   const floor = Math.floor(n);
-  return floor >= 1 ? floor : fallback;
+  if (floor < min) return fallback;
+  return Number.isFinite(max) ? Math.min(floor, max) : floor;
 }
 
 /**
@@ -155,46 +274,84 @@ export function validatePromptTemplate(template) {
 }
 
 /**
- * 校验引擎实例（结构层校验；密钥存在性由 instances.js 单独判断）。
- * 入参应是已归一化的实例；旧实例缺字段由 `normalizeInstance` 补齐后再校验。
- * @param {unknown} instance
- * @returns {{ ok: boolean, errors: string[] }}
+ * 校验公共字段：名称、启用开关与时间戳。
+ * @param {Record<string, unknown>} instance
+ * @param {string[]} errors
  */
-export function validateInstance(instance) {
-  const errors = [];
-  if (!instance || typeof instance !== 'object') {
-    return { ok: false, errors: ['实例不能为空'] };
+function validateCommon(instance, errors) {
+  if (!isValidInstanceName(instance.name)) {
+    errors.push(`实例名称必须是 1–${MAX_INSTANCE_NAME_CHARS} 个字符`);
   }
-  const type = getEngineType(instance.type);
-  if (!type) {
-    return { ok: false, errors: ['未知的引擎类型'] };
-  }
+  if (typeof instance.enabled !== 'boolean') errors.push('启用状态无效');
+}
 
-  const model = String(instance.model ?? '').trim();
-  if (model === '') errors.push('缺少模型名');
-  else if (model.length > MAX_MODEL_CHARS) errors.push(`模型名不能超过 ${MAX_MODEL_CHARS} 字符`);
-
-  if (!REASONING_EFFORTS.includes(instance.reasoningEffort)) {
-    errors.push('思考强度无效');
-  }
-
+/**
+ * 校验批次与并发：百度有范围上限，OpenAI 只要求正整数。
+ * @param {Record<string, unknown>} instance
+ * @param {{ maxBatchSize?: number, maxBatchChars?: number, maxConcurrency?: number }} limits
+ * @param {string[]} errors
+ */
+function validateBatchParams(instance, limits, errors) {
   const batchSize = Number(instance.batchSize);
   if (!Number.isInteger(batchSize) || batchSize < MIN_BATCH_SIZE) {
     errors.push('单批段数必须是正整数');
+  } else if (limits.maxBatchSize != null && batchSize > limits.maxBatchSize) {
+    errors.push(`单批段数不能超过 ${limits.maxBatchSize}`);
   }
 
   const batchMaxChars = Number(instance.batchMaxChars);
   if (!Number.isInteger(batchMaxChars) || batchMaxChars < 1) {
     errors.push('批次最大字符数必须是正整数');
+  } else if (limits.maxBatchChars != null && batchMaxChars > limits.maxBatchChars) {
+    errors.push(`批次最大字符数不能超过 ${limits.maxBatchChars}`);
   }
 
   const maxConcurrency = Number(instance.maxConcurrency);
   if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
     errors.push('最大并发数必须是正整数');
+  } else if (limits.maxConcurrency != null && maxConcurrency > limits.maxConcurrency) {
+    errors.push(`最大并发数不能超过 ${limits.maxConcurrency}`);
+  }
+}
+
+/**
+ * 校验引擎实例（结构层校验；凭据完整性与主机权限由 instances.js 单独判断）。
+ * 入参应是已归一化的实例；旧实例缺字段由 `normalizeInstance` 补齐后再校验。
+ * @param {unknown} instance
+ * @returns {{ ok: boolean, errors: string[] }}
+ */
+export function validateInstance(instance) {
+  if (!instance || typeof instance !== 'object') {
+    return { ok: false, errors: ['实例不能为空'] };
+  }
+  const errors = [];
+  validateCommon(instance, errors);
+
+  if (instance.type === ENGINE_TYPE_IDS.OPENAI) {
+    const result = validateOpenAIConfig(instance);
+    errors.push(...result.errors);
+    validateBatchParams(instance, {}, errors);
+    const prompt = validatePromptTemplate(instance.systemPrompt);
+    if (!prompt.ok) errors.push(prompt.error);
+  } else if (instance.type === ENGINE_TYPE_IDS.BAIDU) {
+    if (String(instance.baseUrl ?? '').replace(/\/+$/, '') !== BAIDU_BASE_URL) {
+      errors.push('百度翻译接口地址无效');
+    }
+    if (String(instance.model ?? '') !== BAIDU_MODEL) errors.push('百度翻译模型无效');
+    validateBatchParams(
+      instance,
+      {
+        maxBatchSize: BAIDU_BATCH_SIZE.max,
+        maxBatchChars: BAIDU_BATCH_MAX_CHARS.max,
+        maxConcurrency: BAIDU_MAX_CONCURRENCY.max,
+      },
+      errors
+    );
+  } else {
+    errors.push('不支持的实例类型');
   }
 
-  const prompt = validatePromptTemplate(instance.systemPrompt);
-  if (!prompt.ok) errors.push(prompt.error);
-
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors: [...new Set(errors)] };
 }
+
+export { MAX_INSTANCES, MAX_INSTANCE_NAME_CHARS, MAX_INSTANCE_BYTES };

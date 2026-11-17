@@ -10,7 +10,9 @@
  * P3 补 storage.onChanged、getManifest、getURL；P4 补 commands.onCommand、tabs.query / sendMessage、
  * scripting.insertCSS / executeScript（记录调用顺序）；P6.5 补 tabs.create（打开测试页，记录创建参数）；
  * P7 补 runtime.openOptionsPage（打开设置页，记录调用次数与可注入的失败）；
- * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`。
+ * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`；
+ * P8-2 补 permissions（contains / request / remove 与已授权集合）；P8-3 让 getManifest 返回
+ * 与清单一致的名字、版本与权限，供设置页「关于」使用。
  */
 
 let portSequence = 0;
@@ -179,7 +181,13 @@ export function createChrome() {
       if (runtime.__openOptionsError) throw runtime.__openOptionsError;
     },
     getManifest() {
-      return { version: '0.1.0' };
+      return {
+        name: 'SimpleTrans',
+        version: '0.1.0',
+        permissions: ['storage', 'unlimitedStorage', 'activeTab', 'scripting', 'contextMenus'],
+        host_permissions: ['https://api.deepseek.com/*', 'https://fanyi-api.baidu.com/*'],
+        optional_host_permissions: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],
+      };
     },
     getURL(path = '') {
       return `chrome-extension://${runtime.id}/${String(path).replace(/^\/+/, '')}`;
@@ -259,6 +267,41 @@ export function createChrome() {
     },
   };
 
+  const permissions = {
+    /** 已授权的主机匹配模式；默认与清单的必选主机权限一致。 */
+    __granted: new Set([
+      'https://api.deepseek.com/*',
+      'https://fanyi-api.baidu.com/*',
+      'http://localhost/*',
+      'http://127.0.0.1/*',
+    ]),
+    /** request 的返回值；为 false 时模拟用户拒绝。 */
+    __requestResult: true,
+    /** 注入的异常；设置后 contains/request/remove 直接抛出。 */
+    __error: null,
+    /** 按调用顺序记录 { api, origins }。 */
+    __calls: [],
+    async contains(request = {}) {
+      permissions.__calls.push({ api: 'contains', origins: [...(request.origins ?? [])] });
+      if (permissions.__error) throw permissions.__error;
+      const origins = Array.isArray(request.origins) ? request.origins : [];
+      return origins.every((origin) => permissions.__granted.has(origin));
+    },
+    async request(request = {}) {
+      permissions.__calls.push({ api: 'request', origins: [...(request.origins ?? [])] });
+      if (permissions.__error) throw permissions.__error;
+      if (!permissions.__requestResult) return false;
+      for (const origin of request.origins ?? []) permissions.__granted.add(origin);
+      return true;
+    },
+    async remove(request = {}) {
+      permissions.__calls.push({ api: 'remove', origins: [...(request.origins ?? [])] });
+      if (permissions.__error) throw permissions.__error;
+      for (const origin of request.origins ?? []) permissions.__granted.delete(origin);
+      return true;
+    },
+  };
+
   return {
     runtime,
     storage: {
@@ -272,6 +315,7 @@ export function createChrome() {
     },
     tabs,
     scripting,
+    permissions,
   };
 }
 

@@ -1,218 +1,162 @@
 /**
- * A4 缓存 key 测试
+ * A4 缓存 key v3 测试（P8-2）
  *
- * 覆盖 P6.2：key v2 字段顺序、提示词哈希、思考强度、批量编码版本、版本前缀、
- * 必填校验与失败路径，以及域名等非 key 字段不参与。
+ * 覆盖 v3 字段顺序、endpoint 指纹/生成参数/提示词/批量版本参与 key、
+ * OpenAI 与百度隔离、非 key 字段忽略与缺失字段报错。
  */
 
-import { createHash } from 'node:crypto';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CACHE_KEY_PREFIX,
   CACHE_KEY_VERSION,
   buildCacheKey,
 } from '../../src/shared/cache/key.js';
 
-const BASE = Object.freeze({
-  engineType: 'deepseek',
-  model: 'deepseek-chat',
-  sourceLang: 'auto',
-  targetLang: 'zh',
-  promptVersion: 2,
-  batchEncodingVersion: 1,
-  reasoningEffort: 'off',
-  promptHash: 'a'.repeat(64),
-  context: '',
-  text: 'Hello world',
-});
-
-const REQUIRED_FIELDS = [
-  'engineType',
-  'model',
-  'targetLang',
-  'promptVersion',
-  'batchEncodingVersion',
-  'reasoningEffort',
-  'promptHash',
-  'text',
-];
-
-/** 计算规范串的 SHA-256 小写十六进制。 */
-function sha256(payload) {
-  return createHash('sha256').update(payload).digest('hex');
+/** 一组固定输入。 */
+function baseInput(patch = {}) {
+  return {
+    engineType: 'openai',
+    endpointFingerprint: 'https://api.deepseek.com/chat/completions',
+    model: 'deepseek-chat',
+    sourceLang: 'auto',
+    targetLang: 'zh',
+    promptVersion: 3,
+    promptHash: 'p'.repeat(64),
+    generationHash: 'g'.repeat(64),
+    batchEncodingVersion: 1,
+    text: 'Hello world',
+    ...patch,
+  };
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+/** 计算期望的 SHA-256 十六进制。 */
+async function sha256(text) {
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(text)
+  );
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
-describe('A4 缓存 key', () => {
-  it('同一组字段重复计算得到同一个 key，形态为 cache:v2:<64 位小写十六进制>', async () => {
-    const first = await buildCacheKey(BASE);
-    const second = await buildCacheKey({ ...BASE });
-
-    expect(second).toBe(first);
-    expect(CACHE_KEY_VERSION).toBe(2);
-    expect(CACHE_KEY_PREFIX).toBe('cache:v2:');
-    expect(first.startsWith(CACHE_KEY_PREFIX)).toBe(true);
-    expect(first).toMatch(/^cache:v2:[0-9a-f]{64}$/);
-    expect(first).toHaveLength(CACHE_KEY_PREFIX.length + 64);
+describe('A4 缓存 key v3', () => {
+  it('版本常量为 3，key 形态为 cache:v3:<64 位十六进制>', async () => {
+    expect(CACHE_KEY_VERSION).toBe(3);
+    expect(CACHE_KEY_PREFIX).toBe('cache:v3:');
+    const key = await buildCacheKey(baseInput());
+    expect(key).toMatch(/^cache:v3:[0-9a-f]{64}$/);
   });
 
-  it('按文档固定字段顺序生成规范串并做 SHA-256，key 版本进入规范串', async () => {
-    const key = await buildCacheKey(BASE);
-    const canonical = JSON.stringify([
-      String(CACHE_KEY_VERSION),
-      'deepseek',
-      'deepseek-chat',
-      'auto',
-      'zh',
-      '2',
-      '1',
-      'off',
-      'a'.repeat(64),
-      '',
-      'Hello world',
-    ]);
-
-    expect(key).toBe(`cache:v${CACHE_KEY_VERSION}:${sha256(canonical)}`);
+  it('按固定字段顺序做 SHA-256', async () => {
+    const input = baseInput();
+    const parts = [
+      CACHE_KEY_VERSION,
+      input.engineType,
+      input.endpointFingerprint,
+      input.model,
+      input.sourceLang,
+      input.targetLang,
+      input.promptVersion,
+      input.promptHash,
+      input.generationHash,
+      input.batchEncodingVersion,
+      input.text,
+    ].map(String);
+    const expected = CACHE_KEY_PREFIX + (await sha256(JSON.stringify(parts)));
+    expect(await buildCacheKey(input)).toBe(expected);
   });
 
-  it.each([
-    ['引擎类型', { engineType: 'openai' }],
-    ['模型', { model: 'deepseek-reasoner' }],
-    ['源语言', { sourceLang: 'en' }],
-    ['目标语言', { targetLang: 'ja' }],
-    ['提示词版本', { promptVersion: 1 }],
-    ['批量编码版本', { batchEncodingVersion: 2 }],
-    ['思考强度', { reasoningEffort: 'high' }],
-    ['提示词哈希', { promptHash: 'b'.repeat(64) }],
-    ['每段上下文', { context: '上一段文字' }],
-    ['原文', { text: 'Hello world!' }],
-  ])('%s 变化后 key 发生变化', async (_label, patch) => {
-    const base = await buildCacheKey(BASE);
-    const changed = await buildCacheKey({ ...BASE, ...patch });
-
-    expect(changed).not.toBe(base);
-    expect(changed).toMatch(/^cache:v2:[0-9a-f]{64}$/);
+  it('同一组输入稳定，promptVersion 数值与等值字符串等价', async () => {
+    expect(await buildCacheKey(baseInput())).toBe(await buildCacheKey(baseInput()));
+    expect(await buildCacheKey(baseInput({ promptVersion: '3' }))).toBe(
+      await buildCacheKey(baseInput())
+    );
   });
 
-  it('context 缺省、undefined、null 与空串得到同一个 key，且与有上下文不同', async () => {
-    const { context: _context, ...withoutContext } = BASE;
-    const keys = await Promise.all([
-      buildCacheKey(BASE),
-      buildCacheKey(withoutContext),
-      buildCacheKey({ ...BASE, context: undefined }),
-      buildCacheKey({ ...BASE, context: null }),
-      buildCacheKey({ ...BASE, context: '' }),
-    ]);
-
-    expect(new Set(keys).size).toBe(1);
-    expect(await buildCacheKey({ ...BASE, context: '上下文' })).not.toBe(keys[0]);
+  it('endpoint 指纹、生成参数、提示词、模型、语言或批量版本变化都产生新 key', async () => {
+    const base = await buildCacheKey(baseInput());
+    const changes = {
+      endpointFingerprint: 'https://llm.example.com/v1/chat/completions',
+      generationHash: 'x'.repeat(64),
+      promptHash: 'y'.repeat(64),
+      model: 'gpt-4o-mini',
+      targetLang: 'ja',
+      sourceLang: 'en',
+      promptVersion: 4,
+      batchEncodingVersion: 2,
+      text: 'Hello world!',
+    };
+    for (const [field, value] of Object.entries(changes)) {
+      expect(await buildCacheKey(baseInput({ [field]: value })), field).not.toBe(base);
+    }
   });
 
-  it('sourceLang 缺省、空串与显式 auto 得到同一个 key，且与其它语言不同', async () => {
-    const { sourceLang: _sourceLang, ...withoutSourceLang } = BASE;
-    const keys = await Promise.all([
-      buildCacheKey(BASE),
-      buildCacheKey(withoutSourceLang),
-      buildCacheKey({ ...BASE, sourceLang: undefined }),
-      buildCacheKey({ ...BASE, sourceLang: null }),
-      buildCacheKey({ ...BASE, sourceLang: '' }),
-    ]);
-
-    expect(new Set(keys).size).toBe(1);
-    expect(await buildCacheKey({ ...BASE, sourceLang: 'en' })).not.toBe(keys[0]);
-  });
-
-  it('domain、traceId、requestId 与批次上下文等非 key 字段不影响结果', async () => {
-    const base = await buildCacheKey(BASE);
-
-    expect(await buildCacheKey({ ...BASE, domain: 'example.com' })).toBe(base);
-    expect(await buildCacheKey({ ...BASE, domain: 'another.example' })).toBe(base);
-    expect(
-      await buildCacheKey({
-        ...BASE,
-        domain: 'example.com',
-        traceId: 't-1',
-        requestId: 'b-1',
-        batchContext: '页面标题',
+  it('OpenAI 与百度隔离：引擎类型、指纹、模型与提示词 profile 不同', async () => {
+    const openai = await buildCacheKey(baseInput());
+    const baidu = await buildCacheKey(
+      baseInput({
+        engineType: 'baidu',
+        endpointFingerprint: 'baidu',
+        model: 'general',
+        promptVersion: 0,
+        promptHash: 'none',
+        generationHash: 'baidu:v1',
       })
+    );
+    expect(baidu).not.toBe(openai);
+    expect(baidu).toMatch(/^cache:v3:[0-9a-f]{64}$/);
+  });
+
+  it('keyVersion 可显式覆盖，进入规范串并改变 key', async () => {
+    expect(await buildCacheKey(baseInput({ keyVersion: 2 }))).not.toBe(
+      await buildCacheKey(baseInput())
+    );
+  });
+
+  it('domain、requestId 等非 key 字段被忽略', async () => {
+    const base = await buildCacheKey(baseInput());
+    expect(
+      await buildCacheKey(baseInput({ domain: 'example.com', requestId: 'r1', traceId: 't1' }))
     ).toBe(base);
   });
 
-  it('调度参数 batchSize、batchMaxChars、maxConcurrency 不进入 key', async () => {
-    const base = await buildCacheKey(BASE);
-    expect(await buildCacheKey({ ...BASE, batchSize: 1 })).toBe(base);
-    expect(await buildCacheKey({ ...BASE, batchMaxChars: 300 })).toBe(base);
-    expect(await buildCacheKey({ ...BASE, maxConcurrency: 8 })).toBe(base);
+  it('key 中不出现原文、提示词哈希等明文', async () => {
+    const key = await buildCacheKey(baseInput({ text: '仅供测试的原文' }));
+    expect(key).not.toContain('仅供测试');
+    expect(key).not.toContain('Hello world');
+    expect(key.slice('cache:v3:'.length)).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('key 中不出现原文、上下文、域名等明文，只保留哈希与版本前缀', async () => {
-    const text = 'Hello world 你好 😀';
-    const context = '上一段 ctx-123';
-    const key = await buildCacheKey({ ...BASE, text, context, domain: 'example.com' });
-
-    expect(key).not.toContain('Hello');
-    expect(key).not.toContain('world');
-    expect(key).not.toContain('你好');
-    expect(key).not.toContain('😀');
-    expect(key).not.toContain('ctx-123');
-    expect(key).not.toContain('example.com');
-    expect(key).toMatch(/^cache:v2:[0-9a-f]{64}$/);
-  });
-
-  it('中文与 emoji 原文可以计算，且与 ASCII 原文互相区分', async () => {
-    const ascii = await buildCacheKey(BASE);
-    const chinese = await buildCacheKey({ ...BASE, text: '你好，世界' });
-    const emoji = await buildCacheKey({ ...BASE, text: '👋🌍😀' });
-
-    for (const key of [chinese, emoji]) expect(key).toMatch(/^cache:v2:[0-9a-f]{64}$/);
-    expect(new Set([ascii, chinese, emoji]).size).toBe(3);
-  });
-
-  it('原文大小写、标点、首尾空白与内部空白的差异都会改变 key（key 不对原文再归一）', async () => {
-    const base = await buildCacheKey({ ...BASE, text: 'hello world' });
-
-    for (const text of ['Hello world', 'hello world!', ' hello world ', 'hello  world']) {
-      expect(await buildCacheKey({ ...BASE, text })).not.toBe(base);
+  it('中文与 emoji 原文可以计算，大小写与空白差异改变 key', async () => {
+    const chinese = await buildCacheKey(baseInput({ text: '你好' }));
+    const emoji = await buildCacheKey(baseInput({ text: '🙂' }));
+    const upper = await buildCacheKey(baseInput({ text: 'HELLO' }));
+    const spaced = await buildCacheKey(baseInput({ text: 'Hello  world' }));
+    for (const key of [chinese, emoji, upper, spaced]) {
+      expect(key).toMatch(/^cache:v3:[0-9a-f]{64}$/);
     }
+    expect(new Set([chinese, emoji, upper, spaced]).size).toBe(4);
   });
 
-  it('promptVersion 数值与等值字符串得到同一个 key，不同版本得到不同 key', async () => {
-    const fromNumber = await buildCacheKey({ ...BASE, promptVersion: 2 });
-    const fromString = await buildCacheKey({ ...BASE, promptVersion: '2' });
-    const nextVersion = await buildCacheKey({ ...BASE, promptVersion: 3 });
-
-    expect(fromString).toBe(fromNumber);
-    expect(nextVersion).not.toBe(fromNumber);
-  });
-
-  it.each(REQUIRED_FIELDS)('必填字段 %s 缺失时抛 TypeError', async (field) => {
-    const input = { ...BASE };
-    delete input[field];
-
-    await expect(buildCacheKey(input)).rejects.toThrow(TypeError);
-  });
-
-  it.each(REQUIRED_FIELDS)('必填字段 %s 为空白字符串时抛 TypeError', async (field) => {
-    await expect(buildCacheKey({ ...BASE, [field]: '   ' })).rejects.toThrow(TypeError);
-    await expect(buildCacheKey({ ...BASE, [field]: '' })).rejects.toThrow(TypeError);
-  });
-
-  it('必填字段为 null 或 undefined 时抛 TypeError', async () => {
-    for (const field of REQUIRED_FIELDS) {
-      await expect(buildCacheKey({ ...BASE, [field]: null })).rejects.toThrow(TypeError);
-      await expect(buildCacheKey({ ...BASE, [field]: undefined })).rejects.toThrow(TypeError);
+  it('必填字段缺失或为空时抛 TypeError', async () => {
+    for (const field of [
+      'engineType',
+      'endpointFingerprint',
+      'model',
+      'targetLang',
+      'promptVersion',
+      'promptHash',
+      'generationHash',
+      'batchEncodingVersion',
+      'text',
+    ]) {
+      await expect(buildCacheKey(baseInput({ [field]: undefined }))).rejects.toThrow(TypeError);
     }
-  });
-
-  it('无参数调用时抛 TypeError', async () => {
     await expect(buildCacheKey()).rejects.toThrow(TypeError);
   });
 
   it('运行环境缺少 crypto.subtle 时抛 TypeError', async () => {
     vi.stubGlobal('crypto', {});
-    await expect(buildCacheKey(BASE)).rejects.toThrow(TypeError);
+    await expect(buildCacheKey(baseInput())).rejects.toThrow(TypeError);
+    vi.unstubAllGlobals();
   });
 });

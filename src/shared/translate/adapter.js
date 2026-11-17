@@ -2,405 +2,110 @@
  * A3 适配器契约
  *
  * 模块：后台服务（A）/ A3
- * 职责：定义每个服务商适配器的统一契约（地址、鉴权、语言码、错误映射与用量），并落地 DeepSeek 实现。
- * 依赖：E1 消息协议（错误分类）、公共数值（超时）、E3 引擎类型目录（思考强度归一）、
- *       A3 提示词模板（prompt.js）、A3 批量编码（batch.js）、`ai` + `@ai-sdk/deepseek`（P1 起）。
- * 实现阶段：P1–P2（P1 单段 + 流式；P2 增加可选 signal、取消/超时区分与语言判定）；
- *           P6.2 使用实例 system 提示词并透传 DeepSeek thinking / reasoningEffort；
- *           P6.4 增加 `translateBatch`：一次 JSONL 请求、按段解析并逐段回调。
+ * 职责：按实例类型分发到 OpenAI 兼容或百度翻译适配器；统一导出提示词、输出归一与错误类型。
+ * 依赖：A3 OpenAI 适配器（adapters/openai.js）、A3 百度适配器（adapters/baidu.js）、
+ *       E3 OpenAI 配置与旧 DeepSeek 映射（config/openai.js）、E3 类型目录（registry.js）、
+ *       A3 提示词模板（prompt.js）、A3 批量编码（batch.js）。
+ * 实现阶段：P1–P6.4 提供 DeepSeek 契约；P8-1 改为 OpenAI 兼容适配器入口；
+ *           P8-2 按 `instance.type` 分发 OpenAI/百度，未知类型返回 `CONFIG`。
+ *
+ * 页面翻译与设置页测试翻译共用本入口；凭据由调用方从存储读取后随实例传入，本模块不读写存储。
  */
 
-import { streamText } from 'ai';
-import { createDeepSeek } from '@ai-sdk/deepseek';
+import { resolveOpenAIConfig } from '../config/openai.js';
+import { ENGINE_TYPE_IDS, getEngineType } from '../config/registry.js';
 import { ERROR_CODES } from '../protocol.js';
-import { AI_TIMEOUT_MS } from '../constants.js';
-import { normalizeReasoningEffort } from '../config/registry.js';
-import { createLogger } from '../log/logger.js';
+import { translate as translateBaidu, translateBatch as translateBaiduBatch } from './adapters/baidu.js';
+import { translate as translateOpenAI, translateBatch as translateBatchOpenAI } from './adapters/openai.js';
+import { TranslateError } from './openai-errors.js';
+import { normalizeOutput } from './openai-response.js';
 import {
   buildSystemPrompt,
-  isDefaultPrompt,
+  isSupportedTargetLang,
   PROMPT_VERSION,
   SUPPORTED_TARGET_LANGS,
-  isSupportedTargetLang,
 } from './prompt.js';
-import { BatchAlignError, BATCH_ENCODING_VERSION, createBatchParser, encodeBatchInput } from './batch.js';
 
-/** A3 日志入口；只记录引擎类型、模型、思考强度与提示词版本，不含原文/提示词/密钥。 */
-const log = createLogger('A3');
+export {
+  buildSystemPrompt,
+  isSupportedTargetLang,
+  normalizeOutput,
+  PROMPT_VERSION,
+  SUPPORTED_TARGET_LANGS,
+  TranslateError,
+};
 
 /**
- * 提示词与输出归一版本（由 prompt.js 维护）。
- * 系统提示词结构、默认模板或语言映射变化时递增；A4 缓存 key 会纳入该值。
+ * 取实例的可执行类型：旧 `deepseek` 实例按 OpenAI 兼容处理；未知类型返回 null。
+ * @param {unknown} instance
+ * @returns {string | null}
  */
-export { buildSystemPrompt, isSupportedTargetLang, PROMPT_VERSION, SUPPORTED_TARGET_LANGS };
-
-/** 携带统一错误码的可抛出错误。 */
-export class TranslateError extends Error {
-  /**
-   * @param {string} code 统一错误码（见 ERROR_CODES）。
-   * @param {string} message 用户可见提示。
-   */
-  constructor(code, message) {
-    super(message);
-    this.name = 'TranslateError';
-    this.code = code;
-  }
+export function resolveAdapterType(instance) {
+  const source = instance && typeof instance === 'object' ? instance : {};
+  const type = source.type === 'deepseek' ? ENGINE_TYPE_IDS.OPENAI : source.type;
+  return getEngineType(type) ? type : null;
 }
 
 /**
- * 输出归一：去掉首尾空白，并剥掉一层成对引号/书名号等多余包装。
- * @param {string} text
- * @returns {string}
+ * 把调用方实例解析为 OpenAI 配置，保留 `apiKey`、`systemPrompt` 等调用方字段。
+ * @param {unknown} instance
+ * @returns {Record<string, unknown>}
  */
-export function normalizeOutput(text) {
-  let out = String(text ?? '').trim();
-  const pairs = [
-    ['"', '"'],
-    ["'", "'"],
-    ['「', '」'],
-    ['『', '』'],
-    ['“', '”'],
-    ['‘', '’'],
-    ['【', '】'],
-  ];
-  for (const [left, right] of pairs) {
-    if (out.length >= 2 && out.startsWith(left) && out.endsWith(right)) {
-      out = out.slice(left.length, out.length - right.length).trim();
-    }
-  }
-  return out.trim();
-}
-
-/**
- * 取消/失败后观察一次 SDK 的 usage Promise。
- *
- * streamText 的 usage 是延迟 Promise；流被中断时它会 reject。
- * 如果调用方在 catch 里直接返回，这个 reject 没有人等，会变成
- * unhandledrejection（Chrome 控制台会打印 AbortError）。
- * 这里主动挂一个 catch，只为了标记已处理，不读取值。
- * @param {object | null} result
- */
-function observePendingUsage(result) {
-  if (!result) return;
-  try {
-    const usage = result.usage;
-    if (usage && typeof usage.then === 'function') {
-      Promise.resolve(usage).catch(() => {});
-    }
-  } catch {
-    // usage getter 在极少数状态下会抛错，忽略。
-  }
-}
-
-/**
- * 把上游错误映射为统一错误码与用户可见提示。不把上游原始报错透传给页面。
- * @param {unknown} error
- * @returns {{ code: string, message: string }}
- */
-export function mapError(error) {
-  const status = error?.statusCode ?? error?.status ?? error?.cause?.statusCode ?? 0;
-  const name = String(error?.name ?? '');
-  const message = String(error?.message ?? '');
-  const lower = message.toLowerCase();
-
-  if (status === 401 || /unauthorized|invalid (api ?key|token)|authentication|incorrect api key/i.test(lower)) {
-    return { code: ERROR_CODES.AUTH, message: '密钥无效或鉴权失败' };
-  }
-  if (status === 402 || /insufficient|balance|quota|payment|billing/i.test(lower)) {
-    return { code: ERROR_CODES.AUTH, message: '额度不足或账户欠费' };
-  }
-  if (status === 429 || /rate ?limit|too many requests/i.test(lower)) {
-    return { code: ERROR_CODES.RATE_LIMIT, message: '请求过于频繁，请稍后重试' };
-  }
-  // 网络类：明确的网络错误名，或网络/超时关键词。
-  const isNetwork =
-    /FetchError|TypeError|AbortError|TimeoutError|NetworkError/i.test(name) ||
-    /network|fetch|econnrefused|econnreset|etimedout|abort|timeout|connection|socket/i.test(lower);
-  if (isNetwork) {
-    return { code: ERROR_CODES.NETWORK, message: '网络错误或请求超时' };
-  }
-  return { code: ERROR_CODES.OTHER, message: `翻译失败：${message || name || '未知错误'}` };
-}
-
-/**
- * 由实例构造 DeepSeek 模型。地址、鉴权来自实例（密钥不入产物、不进日志）。
- * @param {Record<string, unknown>} instance
- * @returns {import('@ai-sdk/provider').LanguageModelV4}
- */
-export function buildModel(instance) {
-  const provider = createDeepSeek({
-    apiKey: String(instance.apiKey),
-    baseURL: instance.baseUrl ? String(instance.baseUrl) : undefined,
-  });
-  return provider.chat(String(instance.model));
-}
-
-/**
- * 由实例构造 DeepSeek providerOptions：`off` 关闭思考且不传强度，其余开启并传 reasoningEffort。
- * 思考模式不设置 temperature、presence_penalty、frequency_penalty（这些参数在思考模式下无效）。
- * @param {Record<string, unknown>} instance
- * @returns {{ deepseek: Record<string, unknown> }}
- */
-export function deepseekProviderOptions(instance) {
-  const effort = normalizeReasoningEffort(instance?.reasoningEffort);
-  return {
-    deepseek: {
-      thinking: { type: effort === 'off' ? 'disabled' : 'enabled' },
-      ...(effort === 'off' ? {} : { reasoningEffort: effort }),
-    },
-  };
+function toOpenAIInstance(instance) {
+  const source = instance && typeof instance === 'object' ? instance : {};
+  return resolveOpenAIConfig(source);
 }
 
 /**
  * 单段翻译。成功返回 `{ text, usage }`；失败抛 `TranslateError`。
  * @param {{
- *   text: string,
- *   targetLang: string,
- *   instance: Record<string, unknown>,
+ *   text?: string,
+ *   targetLang?: string,
+ *   sourceLang?: string,
+ *   instance?: Record<string, unknown>,
  *   onDelta?: (delta: string) => void,
  *   signal?: AbortSignal,
- * }} params
- * @returns {Promise<{ text: string, usage: Record<string, unknown> | null }>}
+ *   fetchImpl?: Function,
+ *   timeoutMs?: number,
+ *   checkPermission?: (request: { origins: string[] }) => Promise<boolean> | boolean,
+ *   salt?: string,
+ * }} [params]
+ * @returns {Promise<{ text: string, usage: object | null }>}
  */
-export async function translate({ text, targetLang, instance, onDelta, signal }) {
-  // 空文本短路，不发上游请求。
-  if (text == null || String(text).trim() === '') {
-    return { text: '', usage: null };
+export async function translate(params = {}) {
+  const type = resolveAdapterType(params.instance);
+  if (type === ENGINE_TYPE_IDS.OPENAI) {
+    return translateOpenAI({ ...params, instance: toOpenAIInstance(params.instance) });
   }
-
-  // 缺密钥短路，映射为 CONFIG，不触发上游调用。
-  if (!instance || !instance.apiKey || String(instance.apiKey).trim() === '') {
-    throw new TranslateError(ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥');
+  if (type === ENGINE_TYPE_IDS.BAIDU) {
+    return translateBaidu(params);
   }
-
-  // 调用前已被取消：直接中断，不发上游请求。
-  if (signal?.aborted) {
-    throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
-  }
-
-  const engine = String(instance.type ?? '');
-  const model = String(instance.model ?? '');
-  const reasoningEffort = normalizeReasoningEffort(instance.reasoningEffort);
-  const promptDefault = isDefaultPrompt(instance.systemPrompt);
-  const startedAt = Date.now();
-  log.debug('engine.request', '调用翻译引擎', {
-    engine,
-    model,
-    reasoningEffort,
-    promptVersion: PROMPT_VERSION,
-    promptDefault,
-    mode: 'single',
-  });
-
-  // 外部取消与总超时合并：任一触发都中断上游。
-  const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS.total);
-  const abortSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-
-  let result = null;
-  try {
-    result = streamText({
-      model: buildModel(instance),
-      system: buildSystemPrompt({
-        targetLang,
-        template: instance.systemPrompt,
-        mode: 'single',
-      }),
-      prompt: String(text),
-      abortSignal,
-      providerOptions: deepseekProviderOptions(instance),
-    });
-
-    let out = '';
-    for await (const delta of result.textStream) {
-      out += delta;
-      onDelta?.(delta);
-    }
-
-    const usage = await result.usage;
-    const normalized = normalizeOutput(out);
-    log.debug('engine.done', '引擎返回', {
-      engine,
-      model,
-      reasoningEffort,
-      mode: 'single',
-      elapsedMs: Date.now() - startedAt,
-      totalTokens: usage?.totalTokens ?? null,
-    });
-    return {
-      text: normalized,
-      usage: usage
-        ? {
-            promptTokens: usage.promptTokens ?? null,
-            completionTokens: usage.completionTokens ?? null,
-            totalTokens: usage.totalTokens ?? null,
-          }
-        : null,
-    };
-  } catch (error) {
-    // 流被中断后，SDK 的 usage 延迟 Promise 可能已经 reject；先标记为已处理。
-    observePendingUsage(result);
-
-    if (signal?.aborted) {
-      log.info('engine.cancel', '翻译已取消', {
-        engine,
-        model,
-        elapsedMs: Date.now() - startedAt,
-      });
-      throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
-    }
-    if (error instanceof TranslateError) {
-      log.warn('engine.error', '引擎调用失败', {
-        engine,
-        model,
-        code: error.code,
-        elapsedMs: Date.now() - startedAt,
-      });
-      throw error;
-    }
-    const mapped = mapError(error);
-    log.warn('engine.error', '引擎调用失败', {
-      engine,
-      model,
-      code: mapped.code,
-      elapsedMs: Date.now() - startedAt,
-    });
-    throw new TranslateError(mapped.code, mapped.message);
-  }
+  throw new TranslateError(ERROR_CODES.CONFIG, '不支持的实例类型');
 }
 
 /**
- * 多段批量翻译：一次上游请求，输入 JSONL，输出 JSONL；解析出一段就回调一段。
- *
- * - 空 `items` 直接返回 `{ usage: null }`，不发请求。
- * - 缺密钥抛 `TranslateError(CONFIG)`；调用前已取消抛 `TranslateError(CANCELLED)`。
- * - 外部取消与批量总超时（`AI_TIMEOUT_MS.batchTotal`）合并；超时从开始执行时计时。
- * - 每段译文经 `normalizeOutput()` 归一后回调；空译文由调用方按该段失败处理。
- * - 对齐失败抛 `BatchAlignError`（`code = BATCH_ALIGN`），已解析段落保留。
- *
+ * 多段批量翻译：OpenAI 走 JSONL，百度走原生批量；按段回调。
  * @param {{
- *   items: Array<{ groupId: string, text: string }>,
- *   targetLang: string,
- *   instance: Record<string, unknown>,
+ *   items?: Array<{ groupId: string, text: string }>,
+ *   targetLang?: string,
+ *   sourceLang?: string,
+ *   instance?: Record<string, unknown>,
  *   onItem?: (entry: { groupId: string, text: string }) => void,
  *   signal?: AbortSignal,
- * }} params
- * @returns {Promise<{ usage: Record<string, unknown> | null }>}
+ *   fetchImpl?: Function,
+ *   timeoutMs?: number,
+ *   checkPermission?: (request: { origins: string[] }) => Promise<boolean> | boolean,
+ *   salt?: string,
+ * }} [params]
+ * @returns {Promise<{ usage: object | null }>}
  */
-export async function translateBatch({ items, targetLang, instance, onItem, signal }) {
-  const list = Array.isArray(items) ? items : [];
-  if (list.length === 0) return { usage: null };
-
-  if (!instance || !instance.apiKey || String(instance.apiKey).trim() === '') {
-    throw new TranslateError(ERROR_CODES.CONFIG, '缺少密钥，请先在设置页保存密钥');
+export async function translateBatch(params = {}) {
+  const type = resolveAdapterType(params.instance);
+  if (type === ENGINE_TYPE_IDS.OPENAI) {
+    return translateBatchOpenAI({ ...params, instance: toOpenAIInstance(params.instance) });
   }
-
-  if (signal?.aborted) {
-    throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
+  if (type === ENGINE_TYPE_IDS.BAIDU) {
+    return translateBaiduBatch(params);
   }
-
-  const engine = String(instance.type ?? '');
-  const model = String(instance.model ?? '');
-  const reasoningEffort = normalizeReasoningEffort(instance.reasoningEffort);
-  const promptDefault = isDefaultPrompt(instance.systemPrompt);
-  const startedAt = Date.now();
-  log.debug('engine.request', '调用翻译引擎', {
-    engine,
-    model,
-    reasoningEffort,
-    promptVersion: PROMPT_VERSION,
-    promptDefault,
-    mode: 'batch',
-    batchItems: list.length,
-    encodingVersion: BATCH_ENCODING_VERSION,
-  });
-
-  const parser = createBatchParser(
-    list.map((item) => item.groupId),
-    {
-      onItem: (entry) => onItem?.({ groupId: entry.id, text: normalizeOutput(entry.text) }),
-    }
-  );
-
-  // 批量总超时与外部取消合并；任一触发都中断上游。
-  const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS.batchTotal);
-  const abortSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-
-  let result = null;
-  try {
-    result = streamText({
-      model: buildModel(instance),
-      system: buildSystemPrompt({
-        targetLang,
-        template: instance.systemPrompt,
-        mode: 'batch',
-      }),
-      prompt: encodeBatchInput(list),
-      abortSignal,
-      providerOptions: deepseekProviderOptions(instance),
-    });
-
-    for await (const delta of result.textStream) parser.push(delta);
-    parser.end();
-
-    const usage = await result.usage;
-    log.debug('engine.done', '引擎返回', {
-      engine,
-      model,
-      reasoningEffort,
-      mode: 'batch',
-      batchItems: list.length,
-      elapsedMs: Date.now() - startedAt,
-      totalTokens: usage?.totalTokens ?? null,
-    });
-    return {
-      usage: usage
-        ? {
-            promptTokens: usage.promptTokens ?? null,
-            completionTokens: usage.completionTokens ?? null,
-            totalTokens: usage.totalTokens ?? null,
-          }
-        : null,
-    };
-  } catch (error) {
-    observePendingUsage(result);
-
-    if (signal?.aborted) {
-      log.info('engine.cancel', '翻译已取消', {
-        engine,
-        model,
-        mode: 'batch',
-        elapsedMs: Date.now() - startedAt,
-      });
-      throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
-    }
-    if (error instanceof TranslateError) {
-      log.warn('engine.error', '引擎调用失败', {
-        engine,
-        model,
-        mode: 'batch',
-        code: error.code,
-        elapsedMs: Date.now() - startedAt,
-      });
-      throw error;
-    }
-    if (error instanceof BatchAlignError) {
-      log.warn('batch.align', '批量结果对齐失败', {
-        engine,
-        model,
-        mode: 'batch',
-        counts: error.counts,
-        elapsedMs: Date.now() - startedAt,
-      });
-      throw error;
-    }
-    const mapped = mapError(error);
-    log.warn('engine.error', '引擎调用失败', {
-      engine,
-      model,
-      mode: 'batch',
-      code: mapped.code,
-      elapsedMs: Date.now() - startedAt,
-    });
-    throw new TranslateError(mapped.code, mapped.message);
-  }
+  throw new TranslateError(ERROR_CODES.CONFIG, '不支持的实例类型');
 }

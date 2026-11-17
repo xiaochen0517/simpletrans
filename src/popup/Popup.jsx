@@ -30,6 +30,7 @@ import {
 import './popup.css';
 import { MESSAGE_TYPES } from '../shared/protocol.js';
 import { getSettings, saveSettings } from '../shared/settings.js';
+import { languageLabel } from '../shared/languages.js';
 import { createLogger, getLogMeta, newTraceId, setLogLevel } from '../shared/log/logger.js';
 import { openTestPage } from './open-test-page.js';
 
@@ -37,9 +38,6 @@ const log = createLogger('B2');
 
 /** 两个命令的取值，与 `ST_ROUTE.payload.command` 一致。 */
 const COMMAND = Object.freeze({ start: 'start', clear: 'clear' });
-
-/** 目标语言显示名；P8 增加语言选择后收敛到共享映射。 */
-const TARGET_LANG_LABELS = Object.freeze({ zh: '中文' });
 
 /** 设置页在扩展内的路径；与 vite 的 web 入口保持一致。 */
 const OPTIONS_PAGE_PATH = 'options/index.html';
@@ -125,14 +123,26 @@ function clearMessage(data = {}) {
 }
 
 /**
- * 引擎下拉的显示名：`名称 · 模型`；缺字段时退化。
+ * 引擎下拉的显示名：`名称 · 类型/预设 · 模型`；缺字段时退化。
  * @param {Record<string, unknown>} instance
  * @returns {string}
  */
 function engineOptionLabel(instance) {
-  const name = String(instance.name ?? '').trim() || '未命名引擎';
+  const name = String(instance.name ?? '').trim() || '未命名实例';
+  const typeLabel = String(instance.typeLabel ?? '').trim();
+  const preset = String(instance.preset ?? '').trim();
   const model = String(instance.model ?? '').trim();
-  return model ? `${name} · ${model}` : name;
+  const kind = typeLabel && preset ? `${typeLabel}/${preset}` : typeLabel;
+  return [name, kind, model].filter(Boolean).join(' · ');
+}
+
+/**
+ * 判断实例是否可在弹窗中选用：已启用且凭据完整（无认证实例 `hasKey` 为 true）。
+ * @param {Record<string, unknown>} instance
+ * @returns {boolean}
+ */
+function isUsableInstance(instance) {
+  return instance?.enabled !== false && instance?.hasKey === true;
 }
 
 export default function Popup() {
@@ -169,7 +179,7 @@ export default function Popup() {
       }
 
       const instances = enginesResult.status === 'fulfilled' ? enginesResult.value : [];
-      const usable = instances.filter((instance) => instance.hasKey === true);
+      const usable = instances.filter(isUsableInstance);
       const preferred = typeof settings?.activeInstanceId === 'string' ? settings.activeInstanceId : '';
       const active = usable.find((instance) => instance.id === preferred) ?? usable[0] ?? null;
       const lang = typeof settings?.targetLang === 'string' ? settings.targetLang : '';
@@ -272,11 +282,13 @@ export default function Popup() {
   );
 
   const disabled = busy !== null;
-  const usableInstances = info.instances.filter((instance) => instance.hasKey === true);
+  const usableInstances = info.instances.filter(isUsableInstance);
   const selected = usableInstances.find((instance) => instance.id === selectedId) ?? null;
-  const langLabel = info.settingsFailed ? '未知' : TARGET_LANG_LABELS[info.lang] ?? '未知';
+  const langLabel = info.settingsFailed ? '未知' : languageLabel(info.lang) || '未知';
   const configFailed = info.settingsFailed || info.enginesFailed;
   const selectedHasKey = Boolean(selected?.hasKey);
+  const selectedRequiresKey = selected?.requiresKey !== false;
+  const noUsableInstance = !configFailed && usableInstances.length === 0;
 
   return (
     <main className="popup bg-base-100 text-base-content p-4 space-y-3">
@@ -358,9 +370,20 @@ export default function Popup() {
               <span className={`st-chip ${selectedHasKey ? 'is-ok' : 'is-idle'}`}>
                 <span className="st-dot" aria-hidden="true" />
                 <KeyRound size={12} aria-hidden="true" />
-                {selectedHasKey ? '密钥已配置' : '密钥未配置'}
+                {selectedRequiresKey
+                  ? selectedHasKey
+                    ? '密钥已配置'
+                    : '密钥未配置'
+                  : '无需密钥'}
               </span>
             </div>
+
+            {noUsableInstance && (
+              <p className="st-hint">
+                <CircleX size={13} aria-hidden="true" />
+                <span>没有可用的翻译实例，请到设置页新增或启用</span>
+              </p>
+            )}
 
             {configFailed && (
               <p className="st-hint">
