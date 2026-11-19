@@ -1,0 +1,18 @@
+version: 2
+
+# Actions 版本每周检查一次；第三方 action 固定 SHA 时也能自动更新。
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'ci'
+    groups:
+      github-actions:
+        patterns:
+          - '*'

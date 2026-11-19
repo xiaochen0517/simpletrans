@@ -1,0 +1,168 @@
+name: Build and Release
+
+# 触发方式
+# 1. 推送 vX.Y.Z tag：门禁 → 打包 → 创建/更新 GitHub Release
+# 2. Actions 页面手动运行：门禁 → 打包 → 上传 Artifact，不创建 Release
+#
+# 版本规则：tag（去掉 v）、package.json、public/manifest.json 三者必须一致。
+# 手动运行使用 GitHub 内置的 “Use workflow from” 分支下拉；所选分支必须包含本文件。
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  build:
+    name: 门禁与打包
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 校验版本
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -p "require('./public/manifest.json').version")"
+          if [[ "$PKG_VERSION" != "$MANIFEST_VERSION" ]]; then
+            echo "::error::package.json ($PKG_VERSION) 与 public/manifest.json ($MANIFEST_VERSION) 版本不一致"
+            exit 1
+          fi
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            if [[ ! "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::标签 $REF_NAME 不符合 vX.Y.Z（仅三段数字，无预发布后缀）"
+              exit 1
+            fi
+            VERSION="${REF_NAME#v}"
+            if [[ "$VERSION" != "$PKG_VERSION" ]]; then
+              echo "::error::标签版本 ($VERSION) 与 package.json ($PKG_VERSION) 不一致"
+              echo "修复：同步 package.json 与 public/manifest.json 的 version 后重新打 tag"
+              exit 1
+            fi
+          else
+            VERSION="$PKG_VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "打包版本：v$VERSION"
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 质量门禁（test → build → smoke）
+        run: npm run gate
+
+      - name: 打包扩展
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ZIP="SimpleTrans-v${VERSION}.zip"
+          (cd dist && zip -r -9 "../${ZIP}" .)
+          sha256sum "${ZIP}" > "${ZIP}.sha256"
+          unzip -l "${ZIP}" > /tmp/zip-list.txt
+          grep -Eq ' manifest\.json$' /tmp/zip-list.txt
+          unzip -p "${ZIP}" manifest.json | node -e '
+            let s = "";
+            process.stdin.on("data", (d) => (s += d)).on("end", () => {
+              const v = JSON.parse(s).version;
+              if (v !== process.env.VERSION) {
+                console.error(`zip 内版本 ${v} != ${process.env.VERSION}`);
+                process.exit(1);
+              }
+            });'
+          ls -lh "${ZIP}" "${ZIP}.sha256"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: simpletrans-build
+          path: |
+            SimpleTrans-v${{ steps.version.outputs.version }}.zip
+            SimpleTrans-v${{ steps.version.outputs.version }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: 写入运行摘要
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## SimpleTrans 构建结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| ---- | ---- |"
+            echo "| 版本 | v${VERSION} |"
+            echo "| 触发 | ${EVENT_NAME}（${REF_TYPE}:${REF_NAME}） |"
+            echo "| 提交 | ${COMMIT_SHA} |"
+            echo "| 产物 | SimpleTrans-v${VERSION}.zip / .sha256 |"
+            echo ""
+            if [[ "$EVENT_NAME" == "push" && "$REF_TYPE" == "tag" ]]; then
+              echo "Release 由 **发布 Release** job 创建或更新。"
+            else
+              echo "本次为测试构建，**不会创建 Release**；请在运行页面底部 Artifacts 下载 \`simpletrans-build\`。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: 发布 Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v8
+        with:
+          name: simpletrans-build
+          path: release-assets
+
+      - name: 生成构建来源证明
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/*.zip
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          name: SimpleTrans ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.zip
+            release-assets/*.sha256
