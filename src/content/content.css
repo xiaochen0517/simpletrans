@@ -3,8 +3,9 @@
  *
  * 模块：页面注入（D）/ D3
  * 职责：提交与译文状态标记内嵌在原文宿主末尾，继承宿主字体与颜色；提交中、已提交、翻译中、流式、
- *       译文与失败只做轻量状态区分。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为提交状态；本轮恢复翻译中、流式与译文样式。
+ *       译文与失败只做轻量状态区分；P9 起失败态的「刷新」按钮使用灰黑/绿色固定色。
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为提交状态；本轮恢复翻译中、流式与译文样式；
+ *           P9 增加失败段「刷新」按钮样式。
  *
  * 只匹配 data-st-* 标记；容器保持行内，换行由容器内部的 br 完成。
  */
@@ -27,6 +28,35 @@
   font: inherit;
   color: inherit;
   white-space: inherit;
+}
+
+/*
+ * 失败段的「刷新」：链接样式但与错误文字同一行；只匹配 data-st-retry，不影响页面原有按钮。
+ * `all: unset` 会清掉 display，因此隐藏态需要显式规则，否则 hidden 属性失效。
+ */
+[data-st-retry] {
+  all: unset;
+  display: inline;
+  margin-left: 0.5em;
+  color: #3f3f3f;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+
+[data-st-retry][hidden] {
+  display: none;
+}
+
+[data-st-retry]:hover {
+  color: #1a7f37;
+  text-decoration: underline;
+}
+
+[data-st-retry]:focus-visible {
+  outline: 2px solid #1a7f37;
+  outline-offset: 2px;
 }
 
 [data-st-translation][data-st-state='submitting'] {

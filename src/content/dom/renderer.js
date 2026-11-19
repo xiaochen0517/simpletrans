@@ -3,9 +3,10 @@
  *
  * 模块：页面注入（D）/ D3
  * 职责：把提交与译文状态内嵌到被翻译节点末尾、更新、隐藏与清除；提交中、已提交、翻译中、流式、
- *       译文与失败共用一套 DOM 契约。
+ *       译文与失败共用一套 DOM 契约；P9 起错误态在提示文字后提供链接样式的「刷新」按钮。
  * 依赖：D1 的 DOM 标记常量与块级判定（P4 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为提交状态；本轮恢复翻译中、流式与译文显示。
+ * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为提交状态；本轮恢复翻译中、流式与译文显示；
+ *           P9 增加错误态「刷新」按钮（`data-st-retry`，span + role=button）。
  *
  * 约束：状态文本只写 textContent，不使用 innerHTML；不改动原文文字与行内元素；不读 storage。
  * DOM 结构与样式见 docs/modules/D3-译文渲染.md。
@@ -34,9 +35,19 @@ const TRANSLATE_ERROR_PREFIX = '翻译失败：';
 /** 行内模式的固定分隔：两个不换行空格（U+00A0）。 */
 const INLINE_SEPARATOR = '\u00A0\u00A0';
 
+/** 失败段「刷新」按钮的标记属性；CSS 只匹配该属性，不影响页面原有按钮。 */
+export const RETRY_ATTR = 'data-st-retry';
+
+/** 「刷新」按钮文字与无障碍标签。 */
+const RETRY_TEXT = '刷新';
+const RETRY_LABEL = '重新翻译此段';
+
 /**
- * 创建渲染器。
- * @param {{ document?: Document }} [options]
+ * 创建渲染器。`onRetry` 由页面入口注入，指向 D5 的单段刷新；点击只重发当前段。
+ * @param {{
+ *   document?: Document,
+ *   onRetry?: (host: Element) => unknown,
+ * }} [options]
  * @returns {{
  *   showSubmitting: (host: Element) => boolean,
  *   showSubmitted: (host: Element, text?: string) => boolean,
@@ -51,14 +62,44 @@ const INLINE_SEPARATOR = '\u00A0\u00A0';
  *   has: (host: Element) => boolean,
  * }}
  */
-export function createRenderer({ document: doc = globalThis.document } = {}) {
-  /** @type {Map<Element, { container: Element, textElement: Element, mode: string, state: string }>} */
+export function createRenderer({ document: doc = globalThis.document, onRetry } = {}) {
+  /** @type {Map<Element, { container: Element, textElement: Element, retryButton: Element | null, mode: string, state: string }>} */
   const entries = new Map();
 
   /**
-   * 创建「外层容器 + 固定格式节点 + 内层文本 font」。
+   * 触发单段刷新：不触发宿主按钮/链接的点击，也不导航。
+   * 只有错误态才响应，避免隐藏按钮被程序化触发。
+   * @param {Event} event
    * @param {Element} host
-   * @returns {{ container: Element, textElement: Element, mode: string } | null}
+   */
+  function triggerRetry(event, host) {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    if (entries.get(host)?.state !== 'error') return;
+    if (typeof onRetry !== 'function') return;
+    try {
+      onRetry(host);
+    } catch {
+      // 单段刷新失败不影响页面其它标记。
+    }
+  }
+
+  /**
+   * 键盘触发：Enter / Space 与点击走同一条路径，Space 需阻止页面滚动。
+   * @param {KeyboardEvent} event
+   * @param {Element} host
+   */
+  function onRetryKeyDown(event, host) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.repeat) return;
+    triggerRetry(event, host);
+  }
+
+  /**
+   * 创建「外层容器 + 固定格式节点 + 内层文本 font + 刷新按钮」。
+   * 按钮只创建一次，默认隐藏；宿主本身可能是 button / a，因此用 span + role=button 而不是嵌套原生控件。
+   * @param {Element} host
+   * @returns {{ container: Element, textElement: Element, retryButton: Element | null, mode: string } | null}
    */
   function createContainer(host) {
     if (!doc) return null;
@@ -79,13 +120,27 @@ export function createRenderer({ document: doc = globalThis.document } = {}) {
       container.appendChild(textElement);
     }
 
-    return { container, textElement, mode };
+    let retryButton = null;
+    if (typeof doc.createElement === 'function') {
+      retryButton = doc.createElement('span');
+      retryButton.setAttribute(RETRY_ATTR, '');
+      retryButton.setAttribute('role', 'button');
+      retryButton.setAttribute('tabindex', '0');
+      retryButton.setAttribute('aria-label', RETRY_LABEL);
+      retryButton.textContent = RETRY_TEXT;
+      retryButton.hidden = true;
+      retryButton.addEventListener?.('click', (event) => triggerRetry(event, host));
+      retryButton.addEventListener?.('keydown', (event) => onRetryKeyDown(event, host));
+      container.appendChild(retryButton);
+    }
+
+    return { container, textElement, retryButton, mode };
   }
 
   /**
    * 确保宿主有容器；容器被页面删除时重建。宿主在文档外时清理并返回 null。
    * @param {Element} host
-   * @returns {{ container: Element, textElement: Element, mode: string, state: string } | null}
+   * @returns {{ container: Element, textElement: Element, retryButton: Element | null, mode: string, state: string } | null}
    */
   function ensureEntry(host) {
     if (!host || host.nodeType !== 1) return null;
@@ -126,6 +181,8 @@ export function createRenderer({ document: doc = globalThis.document } = {}) {
     entry.state = state;
     entry.container.setAttribute('data-st-state', state);
     entry.textElement.textContent = String(text ?? '');
+    // 「刷新」只在错误态出现；容器与按钮复用，不叠加。
+    if (entry.retryButton) entry.retryButton.hidden = state !== 'error';
     return true;
   }
 

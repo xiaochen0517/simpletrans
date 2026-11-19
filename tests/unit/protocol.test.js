@@ -37,12 +37,12 @@ describe('E1 错误码与分类标志', () => {
     expect(ERROR_FLAGS[ERROR_CODES.AUTH].splittable).toBe(false);
   });
 
-  it('fallbackable：配置/鉴权/限流为真，网络/取消为假', () => {
-    expect(ERROR_FLAGS[ERROR_CODES.CONFIG].fallbackable).toBe(true);
-    expect(ERROR_FLAGS[ERROR_CODES.AUTH].fallbackable).toBe(true);
-    expect(ERROR_FLAGS[ERROR_CODES.RATE_LIMIT].fallbackable).toBe(true);
-    expect(ERROR_FLAGS[ERROR_CODES.NETWORK].fallbackable).toBe(false);
-    expect(ERROR_FLAGS[ERROR_CODES.CANCELLED].fallbackable).toBe(false);
+  it('错误标志只有 retryable / splittable，没有实例切换标志', () => {
+    for (const code of Object.values(ERROR_CODES)) {
+      expect(Object.keys(ERROR_FLAGS[code]).sort()).toEqual(['retryable', 'splittable']);
+      expect(ERROR_FLAGS[code]).not.toHaveProperty('fallbackable');
+    }
+    expect(errorInfo(ERROR_CODES.NETWORK)).toEqual({ retryable: true, splittable: false });
   });
 
   it('isKnownCode 与 errorInfo 对未知码回退 OTHER', () => {
@@ -72,6 +72,9 @@ describe('E1 消息名与载荷校验', () => {
     expect(MESSAGE_TYPES.PONG).toBe('ST_PONG');
     expect(MESSAGE_TYPES.CLOSE).toBe('ST_CLOSE');
     expect(MESSAGE_TYPES.LOG_CONFIG).toBe('ST_LOG_CONFIG');
+    // P9：失败段刷新复用 ST_PAGE_SUBMIT，没有独立的刷新消息，也没有实例切换消息。
+    expect(MESSAGE_TYPES).not.toHaveProperty('ENGINE_CHANGED');
+    expect(MESSAGE_TYPES).not.toHaveProperty('RETRY');
   });
 
   it('isKnownMessageType 只认架构 4.6 的名字', () => {
@@ -79,6 +82,7 @@ describe('E1 消息名与载荷校验', () => {
     expect(isKnownMessageType('ST_LOG_CONFIG')).toBe(true);
     expect(isKnownMessageType('ST_STOP')).toBe(false);
     expect(isKnownMessageType('ST_RETRY')).toBe(false);
+    expect(isKnownMessageType('ST_ENGINE_CHANGED')).toBe(false);
     expect(isKnownMessageType('ST_GET_STATUS')).toBe(false);
     expect(isKnownMessageType(42)).toBe(false);
   });

@@ -7,7 +7,8 @@
  * 实现阶段：P1–P5（错误码在 P1 落地；消息名、端口名与报文在 P2 落地；`traceId` 在 P3；
  *           `normalizeDomain` 与两条缓存消息在 P5 落地；`ST_ROUTE` / `ST_START` / `ST_TOGGLE` /
  *           `ST_PAGE_SUBMIT` 在 P6.1 落地，见 docs/modules/E1-消息协议.md；本轮段落去掉上下文，
- *           `hostId` 兼作结果帧 `itemId`）
+ *           `hostId` 兼作结果帧 `itemId`）；P9 删除 `ST_ENGINE_CHANGED` 与 `fallbackable`，
+ *           失败段「刷新」复用 `ST_PAGE_SUBMIT(scope='single')`
  */
 
 /** 统一错误码。分类依据见项目架构 6.8。 */
@@ -22,20 +23,20 @@ export const ERROR_CODES = Object.freeze({
 });
 
 /**
- * 每个错误码的分类标志。
+ * 每个错误码的分类标志（P9 起）。
  * - retryable：是否可重试（仅限流、网络、超时、流中断重试）。
  * - splittable：是否通过拆批解决（仅批量对齐）。
- * - fallbackable：是否可切换备用引擎（配置/鉴权/额度，以及重试仍失败的限流）。
+ *
+ * 失败只在同一实例内重试，不存在切换到其它实例或引擎的分支，因此没有额外的切换标志。
  */
 export const ERROR_FLAGS = Object.freeze({
-  [ERROR_CODES.CONFIG]: Object.freeze({ retryable: false, splittable: false, fallbackable: true }),
-  [ERROR_CODES.AUTH]: Object.freeze({ retryable: false, splittable: false, fallbackable: true }),
-  // 限流重试仍失败后才切换备用（见架构 6.8）；切换时机由 P9 决定。
-  [ERROR_CODES.RATE_LIMIT]: Object.freeze({ retryable: true, splittable: false, fallbackable: true }),
-  [ERROR_CODES.NETWORK]: Object.freeze({ retryable: true, splittable: false, fallbackable: false }),
-  [ERROR_CODES.BATCH_ALIGN]: Object.freeze({ retryable: false, splittable: true, fallbackable: false }),
-  [ERROR_CODES.CANCELLED]: Object.freeze({ retryable: false, splittable: false, fallbackable: false }),
-  [ERROR_CODES.OTHER]: Object.freeze({ retryable: false, splittable: false, fallbackable: false }),
+  [ERROR_CODES.CONFIG]: Object.freeze({ retryable: false, splittable: false }),
+  [ERROR_CODES.AUTH]: Object.freeze({ retryable: false, splittable: false }),
+  [ERROR_CODES.RATE_LIMIT]: Object.freeze({ retryable: true, splittable: false }),
+  [ERROR_CODES.NETWORK]: Object.freeze({ retryable: true, splittable: false }),
+  [ERROR_CODES.BATCH_ALIGN]: Object.freeze({ retryable: false, splittable: true }),
+  [ERROR_CODES.CANCELLED]: Object.freeze({ retryable: false, splittable: false }),
+  [ERROR_CODES.OTHER]: Object.freeze({ retryable: false, splittable: false }),
 });
 
 /**
@@ -50,7 +51,7 @@ export function isKnownCode(code) {
 /**
  * 取错误码的分类标志；未知码归入 OTHER。
  * @param {string} code
- * @returns {{ retryable: boolean, splittable: boolean, fallbackable: boolean }}
+ * @returns {{ retryable: boolean, splittable: boolean }}
  */
 export function errorInfo(code) {
   return ERROR_FLAGS[code] ?? ERROR_FLAGS[ERROR_CODES.OTHER];
@@ -87,7 +88,6 @@ export const MESSAGE_TYPES = Object.freeze({
   CANCEL_BATCH: 'ST_CANCEL_BATCH',
   CANCEL_ITEM: 'ST_CANCEL_ITEM',
   CLOSE: 'ST_CLOSE',
-  ENGINE_CHANGED: 'ST_ENGINE_CHANGED', // 后台 → 页面注入：切备用（P9）
   LOG_CONFIG: 'ST_LOG_CONFIG', // 后台 → 页面注入：连接建立后下发日志级别（P3）
 });
 

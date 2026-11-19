@@ -425,7 +425,7 @@ async function testEngine(payload) {
       } finally {
         elapsedMs = Math.round(performance.now() - startedAt);
       }
-    }, normalizeConcurrency(instance.maxConcurrency));
+    }, normalizeConcurrency(instance.maxConcurrency), instance);
 
     traceLog.info('engine.test.done', '测试翻译完成', {
       ok: true,

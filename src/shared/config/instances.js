@@ -22,6 +22,7 @@ import {
   BAIDU_BATCH_SIZE,
   BAIDU_MAX_CONCURRENCY,
   BAIDU_MODEL,
+  BAIDU_QPS,
   DEFAULT_BATCH_MAX_CHARS,
   DEFAULT_BATCH_SIZE,
   DEFAULT_MAX_CONCURRENCY,
@@ -234,6 +235,10 @@ export function normalizeInstance(instance, options = {}) {
         BAIDU_MAX_CONCURRENCY.default,
         { max: BAIDU_MAX_CONCURRENCY.max }
       ),
+      qps: normalizePositiveInt(source.qps, BAIDU_QPS.default, {
+        min: BAIDU_QPS.min,
+        max: BAIDU_QPS.max,
+      }),
       name: base.name || getDefaultInstanceName(ENGINE_TYPE_IDS.BAIDU),
     };
   }
@@ -570,6 +575,7 @@ export function toPublicInstance(instance) {
       batchSize: instance.batchSize,
       batchMaxChars: instance.batchMaxChars,
       maxConcurrency: instance.maxConcurrency,
+      qps: instance.qps,
     };
   }
 

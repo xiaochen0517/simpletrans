@@ -9,6 +9,7 @@ import {
   BAIDU_BATCH_MAX_CHARS,
   BAIDU_BATCH_SIZE,
   BAIDU_MAX_CONCURRENCY,
+  BAIDU_QPS,
   DEFAULT_BATCH_MAX_CHARS,
   DEFAULT_BATCH_SIZE,
   DEFAULT_MAX_CONCURRENCY,
@@ -64,6 +65,7 @@ function validBaidu(patch = {}) {
     batchSize: BAIDU_BATCH_SIZE.default,
     batchMaxChars: BAIDU_BATCH_MAX_CHARS.default,
     maxConcurrency: BAIDU_MAX_CONCURRENCY.default,
+    qps: BAIDU_QPS.default,
     ...patch,
   };
 }
@@ -166,6 +168,13 @@ describe('E3 引擎类型目录', () => {
     expect(validateInstance(validBaidu({ maxConcurrency: 11 })).ok).toBe(false);
     expect(validateInstance(validBaidu({ maxConcurrency: 10 })).ok).toBe(true);
     expect(validateInstance(validBaidu({ batchSize: 2.5 })).ok).toBe(false);
+    // P9：百度接口 QPS 必须是 1–100 的整数。
+    expect(validateInstance(validBaidu({ qps: 0 })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ qps: 101 })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ qps: 2.5 })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ qps: 'x' })).ok).toBe(false);
+    expect(validateInstance(validBaidu({ qps: BAIDU_QPS.min })).ok).toBe(true);
+    expect(validateInstance(validBaidu({ qps: BAIDU_QPS.max })).ok).toBe(true);
   });
 
   it('validateInstance：不支持的类型被拒绝', () => {
@@ -177,5 +186,9 @@ describe('E3 引擎类型目录', () => {
     expect(BAIDU_BATCH_SIZE).toEqual({ min: 1, max: 20, default: 8 });
     expect(BAIDU_BATCH_MAX_CHARS).toEqual({ min: 1, max: 2000, default: 1000 });
     expect(BAIDU_MAX_CONCURRENCY).toEqual({ min: 1, max: 10, default: 1 });
+    expect(BAIDU_QPS).toEqual({ min: 1, max: 100, default: 1 });
+    // 百度字段目录增加 qps；OpenAI 没有该字段。
+    expect(ENGINE_TYPES.baidu.fields).toContain('qps');
+    expect(ENGINE_TYPES.openai.fields).not.toContain('qps');
   });
 });

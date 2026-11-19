@@ -12,7 +12,7 @@
  * P7 补 runtime.openOptionsPage（打开设置页，记录调用次数与可注入的失败）；
  * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`；
  * P8-2 补 permissions（contains / request / remove 与已授权集合）；P8-3 让 getManifest 返回
- * 与清单一致的名字、版本与权限，供设置页「关于」使用。
+ * 与清单一致的名字、版本与权限，供设置页「关于」使用；P9 补 tabs.onRemoved（标签页关闭兜底清理）。
  */
 
 let portSequence = 0;
@@ -223,6 +223,8 @@ export function createChrome() {
   };
 
   const tabs = {
+    /** 标签页关闭事件；P9 起用于兜底清理。 */
+    onRemoved: makeEvent(),
     /** 下一次 query 的结果；测试可整体替换。 */
     __queryResult: [{ id: 1, active: true }],
     /** sendMessage 收到的消息，按调用顺序记录。 */

@@ -12,7 +12,8 @@
  *           按 `batchMaxChars` / `batchSize` 切批、`inFlightByKey` 在途复用与临时逐 group 执行器；
  *           P6.4 把临时执行器替换为 A3 翻译队列；
  *           P8-2 改为多实例：按当前实例分发 OpenAI/百度、每实例凭据、endpoint 权限、
- *           缓存 key v3、百度字节切批与 30 秒超时。
+ *           缓存 key v3、百度字节切批与 30 秒超时；
+ *           P9 增加百度实例 QPS 门控、批量对齐二分拆批、重试交接与标签页关闭兜底清理。
  */
 
 import {
@@ -36,6 +37,7 @@ import {
   MAX_CONTEXT_CHARS,
   MAX_INFLIGHT_BATCHES_PER_PORT,
   MAX_SEGMENT_CHARS,
+  QPS_WINDOW_MS,
 } from '../shared/constants.js';
 import { getSettings } from '../shared/settings.js';
 import { isSupportedTargetLang } from '../shared/languages.js';
@@ -47,6 +49,7 @@ import {
   resolveActiveInstance,
 } from '../shared/config/instances.js';
 import {
+  BAIDU_QPS,
   DEFAULT_BATCH_MAX_CHARS,
   DEFAULT_MAX_CONCURRENCY,
   ENGINE_TYPE_IDS,
@@ -210,20 +213,125 @@ function releaseSlot() {
   pumpSlots();
 }
 
+/** QPS 门控状态：实例 id → { times: number[], chain: Promise }。只在后台内存中，不持久化。 */
+const qpsGates = new Map();
+
+/**
+ * 取实例的应用层 QPS：只有百度翻译需要；其它类型与非法值返回 0（不门控）。
+ * @param {Record<string, unknown> | null | undefined} instance
+ * @returns {number}
+ */
+function qpsLimitOf(instance) {
+  if (!instance || instance.type !== ENGINE_TYPE_IDS.BAIDU) return 0;
+  const value = Number(instance.qps);
+  if (!Number.isFinite(value)) return BAIDU_QPS.default;
+  return Math.max(0, Math.min(Math.floor(value), BAIDU_QPS.max));
+}
+
+/**
+ * 取实例的 QPS 门控：每个实例一条串行链，保证并发调用不会同时抢到同一窗口。
+ * @param {string} instanceId
+ * @returns {{ times: number[], chain: Promise<void> }}
+ */
+function getQpsGate(instanceId) {
+  let gate = qpsGates.get(instanceId);
+  if (!gate) {
+    gate = { times: [], chain: Promise.resolve() };
+    qpsGates.set(instanceId, gate);
+  }
+  return gate;
+}
+
+/**
+ * 可被 abort 提前结束的等待；`signal` 已中止时立即返回。
+ * @param {number} ms
+ * @param {AbortSignal | undefined} signal
+ * @returns {Promise<void>}
+ */
+function delayWithSignal(ms, signal) {
+  if (!(Number(ms) > 0)) return Promise.resolve();
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer = null;
+    const finish = () => {
+      if (timer != null) clearTimeout(timer);
+      timer = null;
+      signal?.removeEventListener?.('abort', finish);
+      resolve();
+    };
+    timer = setTimeout(finish, ms);
+    signal?.addEventListener?.('abort', finish, { once: true });
+  });
+}
+
+/**
+ * 在实例的 QPS 滑动窗口内取得一次上游请求额度；等待不占全局并发名额。
+ * 已中止时抛 `CANCELLED`，不发请求。
+ * @param {Record<string, unknown> | null | undefined} instance
+ * @param {AbortSignal | undefined} signal
+ * @returns {Promise<void>}
+ */
+async function acquireQps(instance, signal) {
+  const qps = qpsLimitOf(instance);
+  if (qps <= 0 || typeof instance?.id !== 'string' || instance.id === '') return;
+
+  const gate = getQpsGate(instance.id);
+  const previous = gate.chain;
+  let release;
+  gate.chain = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    for (;;) {
+      if (signal?.aborted) {
+        log.debug('qps.reject', 'QPS 等待已取消', {
+          instanceId: instance.id,
+          qps,
+          reason: 'cancelled',
+        });
+        throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
+      }
+
+      const now = Date.now();
+      gate.times = gate.times.filter((time) => now - time < QPS_WINDOW_MS);
+      if (gate.times.length < qps) {
+        gate.times.push(now);
+        return;
+      }
+
+      const waitMs = QPS_WINDOW_MS - (now - gate.times[0]) + 1;
+      log.debug('qps.wait', '等待实例 QPS 窗口', {
+        instanceId: instance.id,
+        qps,
+        waitMs,
+        pending: gate.times.length,
+      });
+      await delayWithSignal(waitMs, signal);
+    }
+  } finally {
+    release();
+  }
+}
+
 /**
  * 在全局并发名额内执行一次上游调用。所有上游出口（批次与测试翻译）都必须经过这里。
+ * 百度实例先等 QPS 窗口再占并发名额；未传实例或实例没有 QPS 时跳过门控。
  * @template T
  * @param {() => Promise<T>} fn
  * @param {number} [limit] 实例 `maxConcurrency`；省略时读当前生效实例
+ * @param {Record<string, unknown> | null} [instance] 提交时快照的实例；决定 QPS 额度
+ * @param {AbortSignal} [signal] 提交的取消信号；QPS 等待可被提前结束
  * @returns {Promise<T>}
  */
-export async function withUpstreamSlot(fn, limit) {
-  const effective =
-    limit == null
-      ? normalizeConcurrency(
-          (await getActiveInstance({ requireKey: false, requirePermission: false }))?.maxConcurrency
-        )
-      : normalizeConcurrency(limit);
+export async function withUpstreamSlot(fn, limit, instance, signal) {
+  const target =
+    instance ??
+    (limit == null
+      ? await getActiveInstance({ requireKey: false, requirePermission: false })
+      : null);
+  const effective = normalizeConcurrency(limit ?? target?.maxConcurrency);
+  await acquireQps(target, signal);
   slotLimit = effective;
   pumpSlots();
   await acquireSlot();
@@ -999,18 +1107,24 @@ function onBatchTimeout(batch) {
 }
 
 /**
+ * 清理一个连接：结束提交、摘除订阅、abort 在途请求并移除映射；重复调用幂等。
  * @param {object} conn
+ * @returns {{ pendingSubmissions: number, pendingBatches: number, sharedReleased: number }}
  */
 function cleanupConnection(conn) {
-  if (conn.disconnected) return;
+  if (conn.disconnected) {
+    return { pendingSubmissions: 0, pendingBatches: 0, sharedReleased: 0 };
+  }
   conn.disconnected = true;
+  const pendingSubmissions = conn.submissions.size;
+  const pendingBatches = conn.batches.size;
   connections.delete(conn.port);
   if (conn.tabId != null && tabConnections.get(conn.tabId) === conn) {
     tabConnections.delete(conn.tabId);
   }
   log.info('gateway.disconnect', '网关已断开', {
-    pendingBatches: conn.batches.size,
-    pendingSubmissions: conn.submissions.size,
+    pendingBatches,
+    pendingSubmissions,
   });
 
   const touchedShared = new Set();
@@ -1037,6 +1151,38 @@ function cleanupConnection(conn) {
     }
   }
   conn.batches.clear();
+
+  return { pendingSubmissions, pendingBatches, sharedReleased: touchedShared.size };
+}
+
+/**
+ * 标签页关闭兜底清理：按 `tabId` 找到连接并清理；与端口断开的 `cleanupConnection` 幂等。
+ * 关闭标签页不一定触发端口 `onDisconnect`（Service Worker 重启、连接异常），这里显式兜底。
+ * @param {number} tabId
+ * @returns {boolean} 是否清理了一个仍在活动的连接
+ */
+export function cleanupTab(tabId) {
+  if (!Number.isInteger(tabId)) return false;
+
+  const conn = tabConnections.get(tabId) ?? null;
+  if (!conn) {
+    tabConnections.delete(tabId);
+    log.debug('tab.cleanup', '标签页已关闭，没有需要清理的连接', { tabId });
+    return false;
+  }
+  if (conn.disconnected) {
+    tabConnections.delete(tabId);
+    return false;
+  }
+
+  const counts = cleanupConnection(conn);
+  log.info('tab.cleanup', '标签页已关闭，已清理网关连接', {
+    tabId,
+    pendingSubmissions: counts.pendingSubmissions,
+    pendingBatches: counts.pendingBatches,
+    sharedReleased: counts.sharedReleased,
+  });
+  return true;
 }
 
 /**
@@ -1116,6 +1262,7 @@ export function splitBatches(groups, { batchSize, batchMaxChars, batchMaxBytes }
       oversize: current.some(
         (group) => group.text.length > maxChars || utf8Bytes(group.text) > maxBytes
       ),
+      emitted: false,
       state: 'pending',
     });
     current = [];
@@ -1451,6 +1598,8 @@ export async function acceptPageSubmit({
     cacheGeneration,
     domain: cacheDomain,
   };
+  // 拆批后的子批次沿用同一份上下文（实例、语言、凭据、缓存与 QPS 配置）。
+  submission.context = context;
 
   // 已在途 group：只订阅既有共享执行，不重复入队。
   for (const group of inFlightGroups) {
@@ -1487,6 +1636,7 @@ export async function acceptPageSubmit({
 
 /**
  * 把一个批次包装成 A3 队列 job；job 只负责执行与回调，缓存、帧与计数仍由 A2 处理。
+ * `canRetry` 交给队列：已产生输出、已取消或提交已超时的批次不重试，避免重复译文。
  * @param {object} submission
  * @param {object} batch
  * @param {object} context
@@ -1501,8 +1651,9 @@ function createBatchJob(submission, batch, context) {
     sourceLang: context.sourceLang,
     instance: { ...context.instance, ...context.credentials },
     concurrency: context.limit,
-    withSlot: (fn, limit) => withUpstreamSlot(fn, limit),
-    onDelta: (delta) => forwardJobDelta(batch.groups[0], delta),
+    withSlot: (fn, limit, signal) => withUpstreamSlot(fn, limit, context.instance, signal),
+    canRetry: () => !batch.emitted && !batch.cancelled && !submission.timedOut,
+    onDelta: (delta) => forwardJobDelta(batch, delta),
     onItem: ({ group, text, usage }) => handleJobItem(submission, batch, group, text, usage),
     onBatchDone: () => handleJobDone(submission, batch),
     onBatchError: (error) => handleJobError(submission, batch, error),
@@ -1511,12 +1662,14 @@ function createBatchJob(submission, batch, context) {
 
 /**
  * 单段批的流式增量只转发给 owner；多段批没有增量。
- * @param {object} group
+ * 发出过增量即视为已产生输出，该批次不再自动重试。
+ * @param {object} batch
  * @param {string} delta
  */
-function forwardJobDelta(group, delta) {
-  const owner = group?.shared?.owner;
+function forwardJobDelta(batch, delta) {
+  const owner = batch?.groups?.[0]?.shared?.owner;
   if (!owner || owner.item.settled || typeof delta !== 'string') return;
+  batch.emitted = true;
   send(owner.submission.conn, {
     type: MESSAGE_TYPES.ITEM_DELTA,
     payload: {
@@ -1544,32 +1697,122 @@ function handleJobItem(submission, batch, group, text, usage) {
     failShared(submission.traceId, shared, ERROR_CODES.OTHER, '引擎返回空译文');
     return;
   }
+  batch.emitted = true;
   resolveShared(submission.traceId, shared, value, usage, batch.groups.length === 1 ? 'single' : 'batch');
 }
 
 /**
- * 批次成功结束：已解析段落已结算；仍未被解析的 group 按批量对齐失败处理。
+ * 批次结束时仍未解析的 group（共享执行仍在运行）；已解析与已失败的 group 不再参与拆分。
+ * @param {object} batch
+ * @returns {object[]}
+ */
+function unparsedGroups(batch) {
+  return batch.groups.filter((group) => group.shared && group.shared.state === 'running');
+}
+
+/**
+ * 批量对齐失败时二分拆批：未结算 group 按原顺序对半分给两个子批次，用新的 batchId 重新入队。
+ * 子批次沿用同一 group 对象与共享执行记录，因此 `ST_ITEM_START` 状态、缓存 key 与订阅不变。
+ * @param {object} submission
+ * @param {object} batch
+ * @param {object[]} groups 未结算 group
+ * @returns {boolean} 是否拆出子批次
+ */
+function splitBatch(submission, batch, groups) {
+  if (!Array.isArray(groups) || groups.length < 2) return false;
+  const context = submission.context;
+  if (!context || submission.finished || submission.conn?.disconnected) return false;
+
+  const mid = Math.ceil(groups.length / 2);
+  const depth = (batch.depth ?? 0) + 1;
+  const parentId = batch.id ?? null;
+  const children = [
+    createChildBatch(submission, batch, groups.slice(0, mid), 'a', depth),
+    createChildBatch(submission, batch, groups.slice(mid), 'b', depth),
+  ];
+  batch.state = 'split';
+
+  log.withTrace(submission.traceId).info('batch.split', '批量结果对不上，拆成两个子批次', {
+    requestId: submission.requestId,
+    batchId: parentId,
+    parentGroups: groups.length,
+    leftGroups: children[0].groups.length,
+    rightGroups: children[1].groups.length,
+    depth,
+  });
+
+  for (const child of children) enqueueChildBatch(submission, child);
+  return true;
+}
+
+/**
+ * 构造一个子批次：沿用父批次的上下文与 group 对象，只替换 id 与 group 切片。
+ * @param {object} submission
+ * @param {object} batch
+ * @param {object[]} groups
+ * @param {string} suffix
+ * @param {number} depth
+ * @returns {object}
+ */
+function createChildBatch(submission, batch, groups, suffix, depth) {
+  const chars = groups.reduce((sum, group) => sum + String(group?.text ?? '').length, 0);
+  const child = {
+    id: `${batch.id ?? 'b'}${suffix}`,
+    groups,
+    chars,
+    bytes: 0,
+    oversize: false,
+    emitted: false,
+    state: 'pending',
+    depth,
+    parentId: batch.id ?? null,
+  };
+  submission.batches.push(child);
+  return child;
+}
+
+/**
+ * 子批次重新入队；每个 group 的 `jobHandle` 改指子批次，取消时才能摘到正确的 job。
+ * @param {object} submission
+ * @param {object} batch
+ */
+function enqueueChildBatch(submission, batch) {
+  const context = submission.context;
+  if (!context) return;
+  batch.state = 'running';
+  translationQueue.setConcurrency(normalizeConcurrency(context.limit));
+  const handle = translationQueue.enqueueBatch(createBatchJob(submission, batch, context));
+  for (const group of batch.groups) {
+    if (group.shared && group.shared.state === 'running') group.shared.jobHandle = handle;
+  }
+}
+
+/**
+ * 批次成功结束：已解析段落已结算；仍未被解析的 group 先尝试二分拆批，单段仍失败才标 `BATCH_ALIGN`。
  * @param {object} submission
  * @param {object} batch
  */
 function handleJobDone(submission, batch) {
+  const pending = unparsedGroups(batch);
+  if (pending.length >= 2 && splitBatch(submission, batch, pending)) {
+    finishIfAllSettled(submission);
+    return;
+  }
+
   batch.state = 'done';
-  for (const group of batch.groups) {
-    const shared = group.shared;
-    if (!shared || shared.state !== 'running') continue;
-    failShared(submission.traceId, shared, ERROR_CODES.BATCH_ALIGN, '批量结果缺少该段');
+  for (const group of pending) {
+    failShared(submission.traceId, group.shared, ERROR_CODES.BATCH_ALIGN, '批量结果缺少该段');
   }
   finishIfAllSettled(submission);
 }
 
 /**
- * 批次失败：未结算 group 按统一错误码失败；已解析 group 保留。
+ * 批次失败：`BATCH_ALIGN` 且未结算 group ≥ 2 时二分拆批；其余情况按统一错误码失败，已解析 group 保留。
  * @param {object} submission
  * @param {object} batch
  * @param {unknown} error
  */
 function handleJobError(submission, batch, error) {
-  batch.state = 'failed';
   const code =
     error instanceof TranslateError
       ? error.code
@@ -1577,6 +1820,16 @@ function handleJobError(submission, batch, error) {
         ? ERROR_CODES.BATCH_ALIGN
         : ERROR_CODES.OTHER;
   const message = error?.message ?? '翻译失败';
+
+  if (code === ERROR_CODES.BATCH_ALIGN) {
+    const pending = unparsedGroups(batch);
+    if (pending.length >= 2 && splitBatch(submission, batch, pending)) {
+      finishIfAllSettled(submission);
+      return;
+    }
+  }
+
+  batch.state = 'failed';
   for (const group of batch.groups) {
     const shared = group.shared;
     if (!shared || shared.state !== 'running') continue;

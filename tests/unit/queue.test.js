@@ -7,6 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ERROR_CODES } from '../../src/shared/protocol.js';
+import { RETRY_DELAYS_MS, RETRY_JITTER_MS } from '../../src/shared/constants.js';
 import { DEFAULT_MAX_CONCURRENCY } from '../../src/shared/config/registry.js';
 import { createTranslationQueue } from '../../src/shared/translate/queue.js';
 import { initLogging, resetLogging } from '../../src/shared/log/logger.js';
@@ -265,5 +266,136 @@ describe('A3 翻译队列（P6.4）', () => {
       ['cancelled', 'done', 'failed', 'limit', 'maxRunning', 'pending', 'running', 'started'].sort()
     );
     expect(stats).not.toHaveProperty('jobs');
+  });
+});
+
+describe('A3 翻译队列：重试（P9）', () => {
+  /**
+   * 构造带错误码的失败。
+   * @param {string} code
+   * @returns {Error & { code: string }}
+   */
+  function failWith(code) {
+    return Object.assign(new Error(`fail-${code}`), { code });
+  }
+
+  it('可重试错误按 1 秒、2 秒 + 抖动重试，第三次成功只回调一次 onBatchDone', async () => {
+    const waits = [];
+    const execute = vi
+      .fn()
+      .mockRejectedValueOnce(failWith(ERROR_CODES.NETWORK))
+      .mockRejectedValueOnce(failWith(ERROR_CODES.RATE_LIMIT))
+      .mockResolvedValueOnce({ usage: { totalTokens: 3 }, mode: 'batch' });
+    const queue = createTranslationQueue({
+      execute,
+      wait: async (ms) => {
+        waits.push(ms);
+      },
+      random: () => 0.5,
+    });
+    const onBatchDone = vi.fn();
+    const onBatchError = vi.fn();
+
+    queue.enqueueBatch(makeJob(0, { onBatchDone, onBatchError }));
+    await flush();
+
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([
+      RETRY_DELAYS_MS[0] + Math.floor(RETRY_JITTER_MS * 0.5),
+      RETRY_DELAYS_MS[1] + Math.floor(RETRY_JITTER_MS * 0.5),
+    ]);
+    expect(onBatchDone).toHaveBeenCalledTimes(1);
+    expect(onBatchDone.mock.calls[0][0]).toMatchObject({ mode: 'batch' });
+    expect(onBatchError).not.toHaveBeenCalled();
+    expect(queue.getQueueStats()).toMatchObject({ done: 1, failed: 0 });
+  });
+
+  it('最多 3 次尝试：用尽后只回调一次 onBatchError', async () => {
+    const execute = vi.fn().mockRejectedValue(failWith(ERROR_CODES.NETWORK));
+    const queue = createTranslationQueue({ execute, wait: async () => {}, random: () => 0 });
+    const onBatchDone = vi.fn();
+    const onBatchError = vi.fn();
+
+    queue.enqueueBatch(makeJob(0, { onBatchDone, onBatchError }));
+    await flush();
+
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(onBatchDone).not.toHaveBeenCalled();
+    expect(onBatchError).toHaveBeenCalledTimes(1);
+    expect(onBatchError.mock.calls[0][0]).toMatchObject({ code: ERROR_CODES.NETWORK });
+    expect(queue.getQueueStats()).toMatchObject({ failed: 1, done: 0 });
+  });
+
+  it('不可重试错误（鉴权、批量对齐、未知码）只执行一次', async () => {
+    for (const code of [ERROR_CODES.AUTH, ERROR_CODES.BATCH_ALIGN, 'NOPE']) {
+      const execute = vi.fn().mockRejectedValue(failWith(code));
+      const queue = createTranslationQueue({ execute, wait: async () => {}, random: () => 0 });
+      const onBatchError = vi.fn();
+
+      queue.enqueueBatch(makeJob(0, { onBatchError }));
+      await flush();
+
+      expect(execute, code).toHaveBeenCalledTimes(1);
+      expect(onBatchError).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('canRetry 返回 false（已产生输出）时不再重试', async () => {
+    const execute = vi.fn().mockRejectedValue(failWith(ERROR_CODES.NETWORK));
+    const queue = createTranslationQueue({ execute, wait: async () => {}, random: () => 0 });
+    const canRetry = vi.fn(() => false);
+    const onBatchError = vi.fn();
+
+    queue.enqueueBatch(makeJob(0, { canRetry, onBatchError }));
+    await flush();
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(canRetry).toHaveBeenCalledTimes(1);
+    expect(onBatchError).toHaveBeenCalledTimes(1);
+  });
+
+  it('自定义 maxAttempts / retryDelays 生效', async () => {
+    const waits = [];
+    const execute = vi.fn().mockRejectedValue(failWith(ERROR_CODES.RATE_LIMIT));
+    const queue = createTranslationQueue({
+      execute,
+      wait: async (ms) => {
+        waits.push(ms);
+      },
+      random: () => 0,
+    });
+
+    queue.enqueueBatch(makeJob(0, { maxAttempts: 2, retryDelays: [50] }));
+    await flush();
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(waits).toEqual([50]);
+  });
+
+  it('取消重试等待：立即停止，不再执行也不回调 onBatchError', async () => {
+    let releaseWait = null;
+    const execute = vi.fn().mockRejectedValue(failWith(ERROR_CODES.NETWORK));
+    const queue = createTranslationQueue({
+      execute,
+      wait: () =>
+        new Promise((resolve) => {
+          releaseWait = resolve;
+        }),
+      random: () => 0,
+    });
+    const onBatchError = vi.fn();
+    const onBatchDone = vi.fn();
+
+    const handle = queue.enqueueBatch(makeJob(0, { onBatchError, onBatchDone }));
+    await vi.waitFor(() => expect(typeof releaseWait).toBe('function'));
+
+    expect(handle.cancel()).toBe(true);
+    releaseWait();
+    await flush();
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(onBatchError).not.toHaveBeenCalled();
+    expect(onBatchDone).not.toHaveBeenCalled();
+    expect(queue.getQueueStats()).toMatchObject({ cancelled: 1, failed: 0 });
   });
 });

@@ -6,9 +6,9 @@
  * 六种状态、文本写入安全、隐藏与清除；不加载真实 chrome，不联网。
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HOST_ATTR, TRANSLATION_ATTR, ensureHost } from '../../src/content/dom/scanner.js';
-import { createRenderer } from '../../src/content/dom/renderer.js';
+import { RETRY_ATTR, createRenderer } from '../../src/content/dom/renderer.js';
 
 let renderer;
 
@@ -230,6 +230,121 @@ describe('D3 结果回显状态（P6.1）', () => {
 
     expect(translationOf(p).querySelector('b')).toBe(null);
     expect(textOf(p)).toBe('<b>不是标签</b>');
+  });
+});
+
+describe('D3 失败段刷新按钮（P9）', () => {
+  /**
+   * 取宿主容器里的「刷新」按钮。
+   * @param {Element} hostElement
+   * @returns {Element | null}
+   */
+  function retryOf(hostElement) {
+    return translationOf(hostElement)?.querySelector(`[${RETRY_ATTR}]`) ?? null;
+  }
+
+  it('只在错误态显示「刷新」，其它状态隐藏', () => {
+    const p = host('<p id="p">Original</p>');
+    renderer.showSubmitting(p);
+    const button = retryOf(p);
+    expect(button).not.toBeNull();
+    expect(button.hidden).toBe(true);
+
+    renderer.showSubmitted(p);
+    expect(button.hidden).toBe(true);
+
+    renderer.showDone(p, '译文');
+    expect(button.hidden).toBe(true);
+
+    renderer.showError(p, '网络连接失败');
+    expect(button.hidden).toBe(false);
+
+    renderer.showSubmitError(p, '离线');
+    expect(button.hidden).toBe(false);
+
+    renderer.showLoading(p);
+    expect(button.hidden).toBe(true);
+  });
+
+  it('按钮元素契约：span + role=button + 可聚焦 + 无障碍标签', () => {
+    const p = host('<p id="p">Original</p>');
+    renderer.showError(p, '失败');
+    const button = retryOf(p);
+
+    expect(button.tagName).toBe('SPAN');
+    expect(button.getAttribute('role')).toBe('button');
+    expect(button.getAttribute('tabindex')).toBe('0');
+    expect(button.getAttribute('aria-label')).toBe('重新翻译此段');
+    expect(button.textContent).toBe('刷新');
+    // 同一宿主只保留一个按钮，且按钮不参与状态文字。
+    renderer.showError(p, '再次失败');
+    expect(translationOf(p).querySelectorAll(`[${RETRY_ATTR}]`)).toHaveLength(1);
+    expect(textOf(p)).toBe('翻译失败：再次失败');
+    expect(translationOf(p).textContent).toContain('刷新');
+  });
+
+  it('点击只回调宿主，不触发宿主按钮/链接的点击', () => {
+    const onRetry = vi.fn();
+    renderer = createRenderer({ document, onRetry });
+    const buttonHost = host('<p><button id="p">Submit</button></p>');
+    const hostClick = vi.fn();
+    buttonHost.addEventListener('click', hostClick);
+    renderer.showError(buttonHost, '失败');
+
+    const button = retryOf(buttonHost);
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry.mock.calls[0][0]).toBe(buttonHost);
+    expect(hostClick).not.toHaveBeenCalled();
+  });
+
+  it('Enter / Space 与点击同路径触发，Space 阻止页面滚动，其它键忽略', () => {
+    const onRetry = vi.fn();
+    renderer = createRenderer({ document, onRetry });
+    const p = host('<p id="p">Original</p>');
+    renderer.showError(p, '失败');
+    const button = retryOf(p);
+
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    button.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(true);
+
+    const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+    button.dispatchEvent(space);
+    expect(space.defaultPrevented).toBe(true);
+
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    button.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+
+    const repeat = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+      repeat: true,
+    });
+    button.dispatchEvent(repeat);
+
+    expect(onRetry).toHaveBeenCalledTimes(2);
+    expect(onRetry.mock.calls.every(([target]) => target === p)).toBe(true);
+  });
+
+  it('非错误态点击不回调；容器移除后按钮一并移除', () => {
+    const onRetry = vi.fn();
+    renderer = createRenderer({ document, onRetry });
+    const p = host('<p id="p">Original</p>');
+    renderer.showDone(p, '译文');
+    retryOf(p).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(onRetry).not.toHaveBeenCalled();
+
+    renderer.showError(p, '失败');
+    expect(renderer.remove(p)).toBe(true);
+    expect(document.querySelector(`[${RETRY_ATTR}]`)).toBe(null);
+
+    renderer.showError(p, '失败');
+    expect(renderer.clearAll()).toBe(1);
+    expect(document.querySelector(`[${RETRY_ATTR}]`)).toBe(null);
   });
 });
 

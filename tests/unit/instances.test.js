@@ -34,6 +34,7 @@ import {
   BAIDU_BATCH_MAX_CHARS,
   BAIDU_BATCH_SIZE,
   BAIDU_MAX_CONCURRENCY,
+  BAIDU_QPS,
   DEFAULT_SYSTEM_PROMPT,
   MAX_INSTANCES,
 } from '../../src/shared/config/registry.js';
@@ -97,6 +98,7 @@ describe('E3 实例 CRUD 与默认值', () => {
       batchSize: 99,
       batchMaxChars: 9999,
       maxConcurrency: 99,
+      qps: 500,
     });
 
     expect(created).toMatchObject({
@@ -108,11 +110,41 @@ describe('E3 实例 CRUD 与默认值', () => {
       batchSize: BAIDU_BATCH_SIZE.max,
       batchMaxChars: BAIDU_BATCH_MAX_CHARS.max,
       maxConcurrency: BAIDU_MAX_CONCURRENCY.max,
+      qps: BAIDU_QPS.max,
       requiresKey: true,
       hasKey: false,
     });
     const local = await readLocal([`systemPrompt:${created.id}`]);
     expect(local[`systemPrompt:${created.id}`]).toBeUndefined();
+  });
+
+  it('旧百度实例缺 qps 时读取默认 1；OpenAI 实例没有该字段', async () => {
+    await chrome.storage.sync.set({
+      [STORAGE_KEYS.instances]: [
+        {
+          id: 'inst-legacy-baidu',
+          type: 'baidu',
+          name: '旧百度',
+          enabled: true,
+          baseUrl: 'https://fanyi-api.baidu.com',
+          model: 'general',
+          batchSize: 8,
+          batchMaxChars: 1000,
+          maxConcurrency: 1,
+        },
+      ],
+    });
+    const [legacy] = await getInstances();
+    expect(legacy.qps).toBe(BAIDU_QPS.default);
+
+    const openai = await createInstance({ type: 'openai' });
+    expect(openai).not.toHaveProperty('qps');
+
+    const { instances } = await getPublicSettings();
+    const baiduItem = instances.find((item) => item.type === 'baidu');
+    const openaiItem = instances.find((item) => item.type === 'openai');
+    expect(baiduItem.qps).toBe(BAIDU_QPS.default);
+    expect(openaiItem).not.toHaveProperty('qps');
   });
 
   it('实例名称唯一（忽略大小写与首尾空白），默认名自动加序号', async () => {

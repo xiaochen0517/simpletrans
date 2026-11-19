@@ -3,11 +3,11 @@
  *
  * 模块：插件独立页面（C）/ 设置页组件
  * 职责：按类型编辑一个已保存实例：基础信息、连接（baseUrl/path/query/stream）、认证、模型、
- *       生成参数（temperature/top_p/max_tokens/思考强度/额外参数）、批次与并发、提示词与凭据；
- *       域名权限在保存手势内按需申请；未保存离开需确认。
+ *       生成参数（temperature/top_p/max_tokens/思考强度/额外参数）、批次与并发（含百度接口 QPS）、
+ *       提示词与凭据；域名权限在保存手势内按需申请；未保存离开需确认。
  * 依赖：React、`lucide-react`、E3（instances CRUD、registry 校验常量、openai 配置）、
  *       设置页共享工具与字段/徽标/对话框组件。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
+ * 实现阶段：P8-3（设置页内容分类与 UI 规范化）；P9 增加百度实例「接口 QPS」。
  *
  * 本组件不读取凭据明文：凭据输入框始终为空，占位文字说明「留空表示不修改」。
  */
@@ -47,6 +47,7 @@ import {
   BAIDU_BATCH_MAX_CHARS,
   BAIDU_BATCH_SIZE,
   BAIDU_MAX_CONCURRENCY,
+  BAIDU_QPS,
   DEFAULT_SYSTEM_PROMPT,
   MAX_INSTANCE_NAME_CHARS,
   MAX_MODEL_CHARS,
@@ -150,6 +151,7 @@ export function toDraft(instance) {
     batchSize: String(instance.batchSize ?? (isOpenAI ? 8 : 8)),
     batchMaxChars: String(instance.batchMaxChars ?? 1000),
     maxConcurrency: String(instance.maxConcurrency ?? (isOpenAI ? 4 : 1)),
+    qps: String(instance.qps ?? 1),
     systemPrompt: String(instance.systemPrompt ?? DEFAULT_SYSTEM_PROMPT),
   };
 }
@@ -313,6 +315,13 @@ function validateDraft(draft, instances, selfId) {
     errors.maxConcurrency = `最大并发数不能超过 ${batchLimits.maxConcurrency}`;
   }
 
+  if (draft.type === 'baidu') {
+    const qps = Number(draft.qps);
+    if (!Number.isInteger(qps) || qps < BAIDU_QPS.min || qps > BAIDU_QPS.max) {
+      errors.qps = `接口 QPS 必须是 ${BAIDU_QPS.min}–${BAIDU_QPS.max} 的整数`;
+    }
+  }
+
   return errors;
 }
 
@@ -329,7 +338,9 @@ export function toInstancePatch(draft) {
     batchMaxChars: Number(draft.batchMaxChars),
     maxConcurrency: Number(draft.maxConcurrency),
   };
-  if (draft.type !== 'openai') return patch;
+  if (draft.type !== 'openai') {
+    return draft.type === 'baidu' ? { ...patch, qps: Number(draft.qps) } : patch;
+  }
 
   return {
     ...patch,
@@ -1618,6 +1629,31 @@ export default function InstanceEditor({
                   />
                 </Field>
               </div>
+              {instance.type === 'baidu' ? (
+                <Field
+                  id="ed-qps"
+                  label="接口 QPS"
+                  error={errors.qps}
+                  help="标准版 1、高级版 10、尊享版 100；每个上游请求计 1 次，批量请求按 1 次计算。同一账号建议只配置一个百度实例。"
+                >
+                  <input
+                    id="ed-qps"
+                    type="number"
+                    className="input input-bordered input-sm w-full"
+                    value={draft.qps}
+                    onChange={(event) => update('qps', event.target.value)}
+                    min={BAIDU_QPS.min}
+                    max={BAIDU_QPS.max}
+                    step={1}
+                    disabled={saving}
+                    aria-invalid={Boolean(errors.qps)}
+                    aria-describedby={describedBy('ed-qps', {
+                      error: errors.qps,
+                      help: '标准版 1、高级版 10、尊享版 100；每个上游请求计 1 次，批量请求按 1 次计算。同一账号建议只配置一个百度实例。',
+                    })}
+                  />
+                </Field>
+              ) : null}
             </div>
           </details>
 

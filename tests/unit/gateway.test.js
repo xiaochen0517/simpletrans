@@ -111,7 +111,7 @@ import {
   PORT_NAME,
 } from '../../src/shared/protocol.js';
 import { DEFAULT_MAX_CONCURRENCY } from '../../src/shared/config/registry.js';
-import { AI_TIMEOUT_MS, BAIDU_TIMEOUT_MS, MAX_SEGMENT_CHARS } from '../../src/shared/constants.js';
+import { AI_TIMEOUT_MS, BAIDU_TIMEOUT_MS, MAX_SEGMENT_CHARS, QPS_WINDOW_MS } from '../../src/shared/constants.js';
 import {
   createInstance,
   getOrCreateDefaultInstance,
@@ -129,6 +129,7 @@ import { buildCacheKey } from '../../src/shared/cache/key.js';
 import { buildLLMProfile } from '../../src/shared/translate/openai-profile.js';
 import {
   acceptPageSubmit,
+  cleanupTab,
   handleConnect,
   normalizeConcurrency,
   splitBatches,
@@ -2272,5 +2273,379 @@ describe('A2 批次切分（P8-2）', () => {
     });
     expect(batches).toHaveLength(1);
     expect(batches[0].oversize).toBe(false);
+  });
+});
+
+describe('A2 网关：QPS、拆批与标签页清理（P9）', () => {
+  /** 以页面 sender 建立连接（带 tab.id）。 */
+  function connectPage(tabId = 7) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: { id: chrome.runtime.id, tab: { id: tabId } },
+    });
+    clients.push(client);
+    const frames = [];
+    client.onMessage.addListener((message) => frames.push(message));
+    return { client, frames };
+  }
+
+  /** 创建百度实例（可覆盖批次/并发/QPS）、写入凭据并设为当前实例。 */
+  async function useBaidu(patch = {}) {
+    const baidu = await createInstance({ type: 'baidu', name: 'Baidu', ...patch });
+    await writeCredentials(baidu.id, { appId: 'appid-1', secretKey: 'secret-1' });
+    await setActiveInstance(baidu.id);
+    return baidu;
+  }
+
+  /**
+   * 取某个事件的全部日志数据（按输出顺序）。
+   * @param {string} event
+   * @returns {object[]}
+   */
+  function logEntries(event) {
+    const lines = [
+      ...console.debug.mock.calls,
+      ...console.info.mock.calls,
+      ...console.warn.mock.calls,
+    ].map(([line]) => String(line));
+    const out = [];
+    for (const line of lines) {
+      const index = line.indexOf(`] ${event} `);
+      if (index < 0) continue;
+      const brace = line.indexOf('{', index);
+      if (brace < 0) {
+        out.push({});
+        continue;
+      }
+      try {
+        out.push(JSON.parse(line.slice(brace)).data ?? {});
+      } catch {
+        out.push({});
+      }
+    }
+    return out;
+  }
+
+  it('百度 QPS=1：同一实例的第二次上游请求等窗口，批量内多段只计 1 次', async () => {
+    vi.useFakeTimers();
+    try {
+      await useBaidu({ qps: 1, batchSize: 1, maxConcurrency: 2 });
+      const { frames } = connectPage();
+      await acceptPageSubmit({
+        requestId: 'qps-batches',
+        paragraphs: [
+          { hostId: 'h1', text: 'One' },
+          { hostId: 'h2', text: 'Two' },
+        ],
+        tabId: 7,
+      });
+
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(20);
+      expect(translate).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(QPS_WINDOW_MS);
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(2));
+
+      const done = await waitForBatchDoneFor(frames, 'qps-batches');
+      expect(done.payload).toMatchObject({ ok: true, done: 2, failed: 0 });
+      // 两次单段请求各计 1 次，窗口内不会出现第三次。
+      expect(translate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('一个批量请求只计 1 次 QPS：组数不影响速率', async () => {
+    await useBaidu({ qps: 1, batchSize: 8, maxConcurrency: 2 });
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'qps-one-batch',
+      paragraphs: [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+        { hostId: 'h3', text: 'Three' },
+      ],
+      tabId: 7,
+    });
+    const done = await waitForBatchDoneFor(frames, 'qps-one-batch');
+    expect(done.payload).toMatchObject({ ok: true, done: 3 });
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('OpenAI 兼容实例不做 QPS 门控：多个批次立即发出', async () => {
+    await updateInstance(instance.id, { batchSize: 1, maxConcurrency: 2 });
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'openai-no-qps',
+      paragraphs: [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+      ],
+      tabId: 7,
+    });
+    // 若被 QPS 门控，第二次请求至少要等 1 秒；这里 500ms 内必须都已发出。
+    await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(2), { timeout: 500 });
+    const done = await waitForBatchDoneFor(frames, 'openai-no-qps');
+    expect(done.payload).toMatchObject({ ok: true, done: 2 });
+  });
+
+  it('QPS 等待期间取消提交：不再发请求，也不发错误帧', async () => {
+    vi.useFakeTimers();
+    try {
+      await useBaidu({ qps: 1, batchSize: 1, maxConcurrency: 2 });
+      translate.mockImplementation(abortableTranslate);
+      const { client, frames } = connectPage();
+      await acceptPageSubmit({
+        requestId: 'qps-cancel',
+        paragraphs: [
+          { hostId: 'h1', text: 'One' },
+          { hostId: 'h2', text: 'Two' },
+        ],
+        tabId: 7,
+      });
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+
+      client.postMessage({
+        type: MESSAGE_TYPES.CANCEL_BATCH,
+        payload: { requestId: 'qps-cancel' },
+      });
+      const done = await waitForBatchDoneFor(frames, 'qps-cancel');
+      expect(done.payload).toMatchObject({ cancelled: 2, failed: 0 });
+
+      await vi.advanceTimersByTimeAsync(QPS_WINDOW_MS * 2);
+      expect(translate).toHaveBeenCalledTimes(1);
+      expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('批量对齐失败：未结算段二分拆批，直到单段后全部出译文', async () => {
+    translateBatch.mockImplementation(async ({ items }) => {
+      if (items.length > 1) throw new BatchAlignError({ missing: 1 });
+      return { usage: null };
+    });
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'split-all',
+      paragraphs: [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+        { hostId: 'h3', text: 'Three' },
+        { hostId: 'h4', text: 'Four' },
+      ],
+      tabId: 7,
+    });
+
+    const done = await waitForBatchDoneFor(frames, 'split-all');
+    expect(done.payload).toMatchObject({ ok: true, done: 4, failed: 0 });
+
+    // 4 段 → 两次 2 段批 → 4 个单段批走单段 translate。
+    expect(translateBatch).toHaveBeenCalledTimes(3);
+    expect(translate).toHaveBeenCalledTimes(4);
+    expect(
+      frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)
+    ).toHaveLength(4);
+    expect(
+      frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)
+    ).toHaveLength(0);
+
+    const splits = logEntries('batch.split');
+    expect(splits.length).toBeGreaterThanOrEqual(3);
+    expect(splits[0]).toMatchObject({ parentGroups: 4, leftGroups: 2, rightGroups: 2, depth: 1 });
+    expect(splits.every((entry) => entry.parentGroups >= 2)).toBe(true);
+  });
+
+  it('已解析段保留：只对未结算段拆批，已解析段不重发', async () => {
+    let call = 0;
+    translateBatch.mockImplementation(async ({ items, onItem }) => {
+      call += 1;
+      if (call === 1) {
+        onItem?.({ groupId: items[0].groupId, text: '已解析一' });
+        onItem?.({ groupId: items[1].groupId, text: '已解析二' });
+        throw new BatchAlignError({ missing: 2 });
+      }
+      for (const item of items) onItem?.({ groupId: item.groupId, text: `补:${item.text}` });
+      return { usage: null };
+    });
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'split-partial',
+      paragraphs: [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+        { hostId: 'h3', text: 'Three' },
+        { hostId: 'h4', text: 'Four' },
+      ],
+      tabId: 7,
+    });
+
+    const done = await waitForBatchDoneFor(frames, 'split-partial');
+    expect(done.payload).toMatchObject({ ok: true, done: 4 });
+    const dones = frames
+      .filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)
+      .map((frame) => [frame.payload.itemId, frame.payload.text]);
+    expect(dones).toEqual([
+      ['h1', '已解析一'],
+      ['h2', '已解析二'],
+      ['h3', '译:Three'],
+      ['h4', '译:Four'],
+    ]);
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(translate).toHaveBeenCalledTimes(2);
+    expect(logEntries('batch.split')[0]).toMatchObject({ parentGroups: 2, depth: 1 });
+  });
+
+  it('单段仍对齐失败时按 BATCH_ALIGN 结束，不无限拆批', async () => {
+    const alignError = () => new BatchAlignError({ missing: 1 });
+    translateBatch.mockRejectedValue(alignError());
+    translate.mockRejectedValue(alignError());
+
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'split-single',
+      paragraphs: [
+        { hostId: 'h1', text: 'One' },
+        { hostId: 'h2', text: 'Two' },
+      ],
+      tabId: 7,
+    });
+
+    const done = await waitForBatchDoneFor(frames, 'split-single');
+    expect(done.payload).toMatchObject({ ok: false, failed: 2, done: 0 });
+    const errors = frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR);
+    expect(errors).toHaveLength(2);
+    for (const frame of errors) {
+      expect(frame.payload.code).toBe(ERROR_CODES.BATCH_ALIGN);
+    }
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(translate).toHaveBeenCalledTimes(2);
+    expect(logEntries('batch.split')).toHaveLength(1);
+  });
+
+  it('可重试错误自动重试同一实例：网络抖动后成功只发一次 DONE', async () => {
+    vi.useFakeTimers();
+    try {
+      translate
+        .mockRejectedValueOnce(new TranslateError(ERROR_CODES.NETWORK, 'net'))
+        .mockImplementationOnce(async ({ text, onDelta }) => {
+          onDelta?.(`[${text}]`);
+          return { text: `译:${text}`, usage: { totalTokens: 1 } };
+        });
+      const { frames } = connectPage();
+      await acceptPageSubmit({
+        requestId: 'retry-single',
+        scope: 'single',
+        paragraphs: [{ hostId: 'h1', text: 'Hi' }],
+        tabId: 7,
+      });
+
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(1500);
+      await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(2));
+
+      const done = await waitForBatchDoneFor(frames, 'retry-single');
+      expect(done.payload).toMatchObject({ ok: true, done: 1, failed: 0 });
+      expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toHaveLength(1);
+      expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR)).toHaveLength(0);
+      expect(logEntries('queue.retry')[0]).toMatchObject({
+        attempt: 1,
+        maxAttempts: 3,
+        code: ERROR_CODES.NETWORK,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('已产生增量后失败不重试，避免重复译文', async () => {
+    translate.mockImplementation(async ({ onDelta }) => {
+      onDelta?.('半句');
+      throw new TranslateError(ERROR_CODES.NETWORK, 'stream broken');
+    });
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'retry-emitted',
+      scope: 'single',
+      paragraphs: [{ hostId: 'h1', text: 'Hi' }],
+      tabId: 7,
+    });
+
+    const done = await waitForBatchDoneFor(frames, 'retry-emitted');
+    expect(done.payload).toMatchObject({ ok: false, failed: 1 });
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.ITEM_DELTA)).toHaveLength(1);
+    expect(
+      frames.find((frame) => frame.type === MESSAGE_TYPES.ITEM_ERROR).payload
+    ).toMatchObject({ code: ERROR_CODES.NETWORK });
+  });
+
+  it('鉴权失败不自动重试', async () => {
+    translate.mockRejectedValue(new TranslateError(ERROR_CODES.AUTH, 'bad key'));
+    const { frames } = connectPage();
+    await acceptPageSubmit({
+      requestId: 'no-retry-auth',
+      scope: 'single',
+      paragraphs: [{ hostId: 'h1', text: 'Hi' }],
+      tabId: 7,
+    });
+    const done = await waitForBatchDoneFor(frames, 'no-retry-auth');
+    expect(done.payload).toMatchObject({ ok: false, failed: 1 });
+    expect(translate).toHaveBeenCalledTimes(1);
+  });
+
+  it('标签页关闭兜底清理：中止在途请求、清空提交，其它标签页不受影响', async () => {
+    translate.mockImplementation(abortableTranslate);
+    const first = connectPage(7);
+    const second = connectPage(8);
+
+    await acceptPageSubmit({
+      requestId: 'tab-close',
+      paragraphs: [{ hostId: 'h1', text: 'Slow' }],
+      tabId: 7,
+    });
+    await vi.waitFor(() => expect(translate).toHaveBeenCalledTimes(1));
+    const signal = translate.mock.calls[0][0].signal;
+
+    expect(cleanupTab(7)).toBe(true);
+    expect(signal.aborted).toBe(true);
+    expect(first.frames.some((frame) => frame.type === MESSAGE_TYPES.BATCH_DONE)).toBe(false);
+
+    const [entry] = logEntries('tab.cleanup');
+    expect(entry).toMatchObject({ tabId: 7, pendingSubmissions: 1, pendingBatches: 0 });
+
+    // 其它标签页仍可正常提交与翻译。
+    translate.mockImplementation(async ({ text }) => ({
+      text: `译:${text}`,
+      usage: { totalTokens: 1 },
+    }));
+    await acceptPageSubmit({
+      requestId: 'other-tab',
+      scope: 'single',
+      paragraphs: [{ hostId: 'o1', text: 'Other' }],
+      tabId: 8,
+    });
+    const done = await waitForBatchDoneFor(second.frames, 'other-tab');
+    expect(done.payload).toMatchObject({ ok: true, done: 1 });
+
+    // 幂等：重复清理与未知标签页都不抛错、不重复计数。
+    expect(cleanupTab(7)).toBe(false);
+    expect(cleanupTab(999)).toBe(false);
+  });
+
+  it('端口断开后标签页关闭事件幂等处理', async () => {
+    const { client, frames } = connectPage(7);
+    await acceptPageSubmit({
+      requestId: 'tab-disconnect',
+      paragraphs: [{ hostId: 'h1', text: 'Hi' }],
+      tabId: 7,
+    });
+    await waitForBatchDoneFor(frames, 'tab-disconnect');
+
+    client.disconnect();
+    expect(() => cleanupTab(7)).not.toThrow();
+    expect(cleanupTab(7)).toBe(false);
   });
 });

@@ -4,10 +4,11 @@
  * 模块：页面注入（D）/ D5（任务调度属流程机制，见项目架构 6.2）
  * 职责：Ctrl 单段与整页翻译共用同一提交函数，经 `ST_PAGE_SUBMIT` 把段落发到后台；整页提交当前视口
  *       附近的段落，并在页面会话期间按 200ms 防抖增量提交新出现的段落；按提交记录把逐段结果帧
- *       （含流式增量）显示到对应段落。
+ *       （含流式增量）显示到对应段落；P9 起支持失败段单段刷新、清除前取消后台提交与重连后续传一次。
  * 依赖：D1（视口附近段落与段落 id）、D3（渲染）、E1、公共数值、E4。
  * 实现阶段：P4（悬停单段任务）、P5（批次 `domain`）、P6.1（统一提交、页面会话与滚动增量）；
- *           P6.3 结果来源改为后台 D4 帧：提交前登记临时提交记录，命中帧可早到，提交失败时标错并清理。
+ *           P6.3 结果来源改为后台 D4 帧：提交前登记临时提交记录，命中帧可早到，提交失败时标错并清理；
+ *           P9 增加 `retry()`、`clearAll()` 前取消、`resumeAfterReconnect()` 与 `applyBatchDone()`。
  *
  * 页面不做分批、不做同文本去重、不负责真实翻译：这些都属于后台（P6.3 / P6.4）。
  * 提交是一次性控制消息（`ST_PAGE_SUBMIT`），后台收到并回执即视为提交成功；
@@ -112,6 +113,7 @@ function ok(action) {
  *     has: Function,
  *   },
  *   submit?: (payload: object) => Promise<{ ok: boolean, data?: object, error?: object }>,
+ *   cancelRequest?: (requestId: string) => void,
  *   logger?: object,
  *   now?: () => number,
  *   schedule?: (fn: () => void, ms: number) => unknown,
@@ -123,6 +125,7 @@ function ok(action) {
 export function createTask({
   renderer,
   submit,
+  cancelRequest,
   logger = log,
   now = () => Date.now(),
   schedule = (fn, ms) => setTimeout(fn, ms),
@@ -161,6 +164,10 @@ export function createTask({
     labelEpoch: 0,
     startedAt: 0,
     lastError: null,
+    /** 本次断连是否已经自动续传过；每次断连最多续传一次。 */
+    resumeUsed: false,
+    /** 重连次数，只用于日志。 */
+    reconnectCount: 0,
   };
 
   /** 结果来源：后台 D4 帧经 `applyResultFrame` 进入，页面不再生成假数据。 */
@@ -651,6 +658,7 @@ export function createTask({
     page.sessionToken += 1;
     const token = page.sessionToken;
     page.labelEpoch += 1;
+    page.resumeUsed = false;
     stopScroll();
     stopResultPipeline();
     renderer.clearAll();
@@ -764,6 +772,7 @@ export function createTask({
 
     const paragraph = { index: 0, hostId: itemId, text, host };
     const epoch = page.labelEpoch;
+    page.resumeUsed = false;
     renderer.showSubmitting(host);
     const { requestId, submission, response } = await submitBatch(
       'single',
@@ -801,12 +810,162 @@ export function createTask({
   }
 
   /**
+   * 失败段「刷新」：只在渲染状态为 `error` 时重发当前段，复用 `ST_PAGE_SUBMIT(scope='single')`。
+   * 不启动滚动监听、不清除其它标记、不影响同页其它段。
+   * @param {Element} host
+   * @param {string} [traceId]
+   * @returns {Promise<{ ok: true, data: { action: string } } | { ok: false, error: object }>}
+   */
+  async function retry(host, traceId) {
+    if (!host || host.nodeType !== 1 || host.isConnected === false) return ok('no-target');
+    if (renderer.getState(host) !== 'error') return ok('ignored');
+
+    const itemId = ensureHost(host);
+    const text = normalizeText(extractText(host));
+    if (!text || !hasLetter(text)) return ok('no-target');
+
+    const traceLog = traceOf(traceId ?? page.traceId);
+    const epoch = page.labelEpoch;
+    page.resumeUsed = false;
+    renderer.showSubmitting(host);
+
+    const { requestId, submission, response } = await submitBatch(
+      'single',
+      [{ index: 0, hostId: itemId, text, host }],
+      traceId ?? page.traceId
+    );
+
+    // 提交期间页面被清除或重新触发：丢弃旧结果，避免清除后又冒出一条标记。
+    if (epoch !== page.labelEpoch) {
+      traceLog.debug('task.retry', '单段刷新结果已过期', { requestId, itemId, action: 'hidden' });
+      return ok('hidden');
+    }
+
+    if (response?.ok && response.data?.accepted) {
+      completeSubmission(submission);
+      page.attemptedHosts.add(itemId);
+      traceLog.info('task.retry', '失败段已重新提交', {
+        requestId,
+        itemId,
+        action: 'submitted',
+        code: null,
+      });
+      return ok('submitted');
+    }
+
+    const code = response?.error?.code ?? ERROR_CODES.NETWORK;
+    const message = response?.error?.message ?? MESSAGES.submitFailed;
+    failSubmission(submission, message);
+    traceLog.warn('task.retry', '失败段重新提交失败', {
+      requestId,
+      itemId,
+      action: 'failed',
+      code,
+    });
+    return { ok: false, error: makeError(code, message, response?.error?.reason) };
+  }
+
+  /**
+   * 后台回收重连后的续传：只在页面会话处于 `submitted` 且有未完成段时执行，每次断连最多一次。
+   * 未完成段 = 渲染状态不是 `done` 的已登记段落；已完成段不重发。
+   * @returns {Promise<object | null>} 续传后的状态；未续传时返回 null
+   */
+  async function resumeAfterReconnect() {
+    if (page.phase !== 'submitted') return null;
+    if (page.resumeUsed) return null;
+
+    const token = page.sessionToken;
+    const pending = [...page.registry.entries()].filter(([itemId, entry]) => {
+      if (!entry?.host || entry.host.isConnected === false) return false;
+      if (page.inFlightHosts.has(itemId)) return false;
+      return renderer.getState(entry.host) !== 'done';
+    });
+    if (pending.length === 0) return null;
+
+    page.resumeUsed = true;
+    page.reconnectCount += 1;
+    page.submissions.clear();
+    page.latestRequest.clear();
+    stopResultPipeline();
+
+    const paragraphs = pending.map(([itemId, entry]) => ({
+      hostId: itemId,
+      text: entry.text,
+      host: entry.host,
+    }));
+    renderSubmitting(paragraphs);
+
+    const traceLog = traceOf(page.traceId);
+    const { requestId, submission, response } = await submitBatch(
+      'page',
+      paragraphs,
+      page.traceId
+    );
+    if (token !== page.sessionToken) return null;
+
+    if (response?.ok && response.data?.accepted) {
+      completeSubmission(submission);
+      traceLog.info('task.resume', '重连后已续传未完成段', {
+        requestId,
+        pending: paragraphs.length,
+        reconnectCount: page.reconnectCount,
+      });
+      return status();
+    }
+
+    const code = response?.error?.code ?? ERROR_CODES.NETWORK;
+    const message = response?.error?.message ?? MESSAGES.submitFailed;
+    failSubmission(submission, message);
+    traceLog.warn('task.resume', '重连后续传失败，等待手动刷新', {
+      requestId,
+      pending: paragraphs.length,
+      reconnectCount: page.reconnectCount,
+      code,
+    });
+    return status();
+  }
+
+  /**
+   * 后台批次结束：清理该提交的临时记录与段落索引，之后迟到帧按 `no-submission` 丢弃。
+   * 渲染状态、段落注册表与已提交集合保留，失败段仍可点「刷新」。
+   * @param {{ payload?: object }} frame
+   * @returns {boolean} 是否清理了提交记录
+   */
+  function applyBatchDone(frame) {
+    const requestId = frame?.payload?.requestId;
+    if (typeof requestId !== 'string') return false;
+    const submission = page.submissions.get(requestId);
+    if (!submission) return false;
+
+    for (const itemId of submission.items.keys()) {
+      cancelFlush(itemId);
+      if (page.latestRequest.get(itemId) === requestId) page.latestRequest.delete(itemId);
+    }
+    page.submissions.delete(requestId);
+    if (page.requestId === requestId) page.requestId = null;
+    return true;
+  }
+
+  /**
    * 清除全部标记、译文与结果状态，并结束页面会话与滚动监听。
+   * 清除前先对当前页面所有未结束提交发取消（尽力而为），避免后台继续请求与写缓存。
    * @returns {{ ok: true, data: { removed: number } }}
    */
   function clearAll() {
+    let cancelled = 0;
+    for (const requestId of page.submissions.keys()) {
+      if (typeof cancelRequest !== 'function') break;
+      try {
+        cancelRequest(requestId);
+        cancelled += 1;
+      } catch {
+        // 连接已断开等情况：取消失败不阻塞清除。
+      }
+    }
+
     page.sessionToken += 1;
     page.labelEpoch += 1;
+    page.resumeUsed = false;
     stopScroll();
     stopResultPipeline();
     resetSessionData();
@@ -814,7 +973,7 @@ export function createTask({
     page.lastError = null;
 
     const removed = renderer.clearAll();
-    logger.info('task.cancel', '已清除全部标记', { removed });
+    logger.info('task.cancel', '已清除全部标记', { removed, cancelled, reason: 'clear' });
     return { ok: true, data: { removed } };
   }
 
@@ -825,6 +984,7 @@ export function createTask({
     page.sessionToken += 1;
     stopScroll();
     stopResultPipeline();
+    logger.info('task.cancel', '页面卸载，停止任务', { cancelled: 0, reason: 'dispose' });
   }
 
   /**
@@ -845,9 +1005,12 @@ export function createTask({
   return {
     start,
     toggle,
+    retry,
     clearAll,
     dispose,
     resume,
+    resumeAfterReconnect,
+    applyBatchDone,
     applyResultFrame,
     getStatus,
   };

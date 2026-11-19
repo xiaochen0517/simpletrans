@@ -6,7 +6,7 @@
  * 依赖：E9 公共数值（constants.js）、E3 OpenAI 兼容配置（openai.js，P8-1 起）。
  * 实现阶段：P1（引擎层与密钥配置）；P6.2 增加思考强度、批次/并发与提示词校验；
  *           P8-2 改为 `openai | baidu` 双类型目录，OpenAI 字段与预设引用 P8-1 定义，
- *           增加实例名称、数量与字节上限和百度批次范围。
+ *           增加实例名称、数量与字节上限和百度批次范围；P9 增加百度实例 `qps` 字段与范围。
  *
  * 本文件含引擎地址与默认模型，属于 config/，页面注入（content）禁止引用（架构 5.1）。
  */
@@ -59,10 +59,16 @@ export const DEFAULT_BATCH_MAX_CHARS = 1000;
 /** 最大并发数默认值（OpenAI）。 */
 export const DEFAULT_MAX_CONCURRENCY = 4;
 
-/** 百度翻译批次、字符与并发范围（P8-2 起）。 */
+/** 百度翻译批次、字符、并发与 QPS 范围（P8-2 起；QPS 为 P9 起）。 */
 export const BAIDU_BATCH_SIZE = Object.freeze({ min: 1, max: 20, default: 8 });
 export const BAIDU_BATCH_MAX_CHARS = Object.freeze({ min: 1, max: 2000, default: 1000 });
 export const BAIDU_MAX_CONCURRENCY = Object.freeze({ min: 1, max: 10, default: 1 });
+
+/**
+ * 百度翻译实例的接口 QPS（P9 起）：标准版 1、高级版 10、尊享版 100。
+ * 只用于后台调度门控，不进入缓存 key；OpenAI 兼容实例没有该字段。
+ */
+export const BAIDU_QPS = Object.freeze({ min: 1, max: 100, default: 1 });
 
 /** 百度翻译固定接口地址与虚拟模型名。 */
 export const BAIDU_BASE_URL = 'https://fanyi-api.baidu.com';
@@ -118,6 +124,7 @@ export const ENGINE_TYPES = Object.freeze({
       'batchSize',
       'batchMaxChars',
       'maxConcurrency',
+      'qps',
       'appId',
       'secretKey',
     ]),
@@ -347,6 +354,10 @@ export function validateInstance(instance) {
       },
       errors
     );
+    const qps = Number(instance.qps);
+    if (!Number.isInteger(qps) || qps < BAIDU_QPS.min || qps > BAIDU_QPS.max) {
+      errors.push(`接口 QPS 必须是 ${BAIDU_QPS.min}–${BAIDU_QPS.max} 的整数`);
+    }
   } else {
     errors.push('不支持的实例类型');
   }

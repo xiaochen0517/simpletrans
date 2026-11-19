@@ -858,3 +858,80 @@ describe('页面注入结果回显（P6.3）', () => {
     expect(rendererTextOf(host)).toBe('你好');
   });
 });
+
+describe('页面注入失败刷新与清除取消（P9）', () => {
+  it('失败段显示「刷新」，点击后只重发该段并重新显示「已提交」', async () => {
+    await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p><p id="b">World</p>';
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+
+    const host = document.getElementById('a');
+    const other = document.getElementById('b');
+    const requestId = submissions[0].requestId;
+    const itemId = host.getAttribute(HOST_ATTR);
+    const task = contentMod.getTask();
+
+    task.applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_ERROR, requestId, itemId, {
+        code: ERROR_CODES.NETWORK,
+        message: '网络连接失败',
+      })
+    );
+    const button = translationOf(host).querySelector('[data-st-retry]');
+    expect(button).not.toBeNull();
+    expect(button.hidden).toBe(false);
+    expect(rendererTextOf(host)).toBe('翻译失败：网络连接失败');
+
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    await flush();
+    await flush();
+
+    expect(submissions).toHaveLength(2);
+    const retryPayload = submissions[1];
+    expect(retryPayload.scope).toBe('single');
+    expect(retryPayload.paragraphs).toEqual([{ index: 0, hostId: itemId, text: 'Hello' }]);
+    expect(new Set(retryPayload.paragraphs.map((paragraph) => paragraph.hostId))).toEqual(
+      new Set([itemId])
+    );
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('submitted');
+    // 其它段没有被重发，也没有状态变化。
+    expect(translationOf(other).getAttribute('data-st-state')).toBe('submitted');
+  });
+
+  it('ST_CLEAR 先向后台发 ST_CANCEL_BATCH，再清空标记', async () => {
+    await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p>';
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+    const requestId = submissions[0].requestId;
+    gatewayMessages = [];
+
+    const response = await sendToContent({ type: MESSAGE_TYPES.CLEAR, payload: {} });
+
+    expect(response).toEqual({ ok: true, data: { removed: 1 } });
+    expect(gatewayMessages).toContainEqual(
+      expect.objectContaining({
+        type: MESSAGE_TYPES.CANCEL_BATCH,
+        payload: { requestId },
+      })
+    );
+  });
+
+  it('ST_BATCH_DONE 清理提交记录后，迟到帧不再显示', async () => {
+    await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p>';
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+
+    const host = document.getElementById('a');
+    const requestId = submissions[0].requestId;
+    const itemId = host.getAttribute(HOST_ATTR);
+
+    serverPort.postMessage({
+      type: MESSAGE_TYPES.BATCH_DONE,
+      payload: { requestId, ok: true, done: 1, failed: 0, cancelled: 0 },
+    });
+    serverPort.postMessage(frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '迟到译文' }));
+
+    expect(translationOf(host).getAttribute('data-st-state')).toBe('submitted');
+    expect(rendererTextOf(host)).toBe('已提交，等待翻译');
+  });
+});

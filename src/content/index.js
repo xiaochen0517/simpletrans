@@ -3,11 +3,13 @@
  *
  * 模块：页面注入（D）
  * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5、处理后台命令与日志级别帧；
- *       提供 Ctrl 单键手势作为主快捷键（Chrome commands 不支持裸修饰键）。
+ *       提供 Ctrl 单键手势作为主快捷键（Chrome commands 不支持裸修饰键）；
+ *       P9 起注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段。
  * 依赖：D1–D5、E1 消息协议、E4 日志、content.css（P2 起）。
  * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加 `ST_START` 整页任务入口与统一提交；
  *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务；
- *           P6.3 把后台 `ST_ITEM_*` 结果帧转发给 D5，页面不再生成假数据。
+ *           P6.3 把后台 `ST_ITEM_*` 结果帧转发给 D5，页面不再生成假数据；
+ *           P9 注入 `onRetry` / `cancelBatch`，转发 `ST_BATCH_DONE` 并在重连后触发续传。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -56,6 +58,8 @@ let hover = null;
 /** @type {ReturnType<typeof createLogger> | null} */
 let log = null;
 let readyLogged = false;
+/** 桥断开过就置真；恢复连接后通知 D5 续传一次（首次连接不续传）。 */
+let bridgeDisconnected = false;
 
 /**
  * 焦点是否在可编辑控件内；在输入框里按 Ctrl 不应触发翻译。
@@ -244,6 +248,7 @@ function handleFrame(frame) {
   }
 
   if (type === MESSAGE_TYPES.BATCH_DONE) {
+    task?.applyBatchDone(frame);
     log?.debug('page.batch.done', '批次结束', { requestId: frame.payload?.requestId ?? null });
   }
 }
@@ -362,11 +367,22 @@ function handleMessage(message, sender, sendResponse) {
  * @param {string[]} pendingRequestIds
  */
 function handleDisconnect(pendingRequestIds) {
+  bridgeDisconnected = true;
   if (pendingRequestIds.length > 0) {
     log?.warn('bridge.state', '连接断开，在途请求中断', {
       pending: pendingRequestIds.length,
     });
   }
+}
+
+/**
+ * 取消后台的一次已接受提交（P9 清除前调用）。
+ * 连接未建立或已断开时抛错，由 D5 忽略并继续清除页面。
+ * @param {string} requestId
+ */
+function cancelSubmission(requestId) {
+  if (!bridge) throw new Error('通道未建立');
+  bridge.cancelBatch(requestId);
 }
 
 /**
@@ -386,14 +402,25 @@ function main() {
   bridge = createBridge({
     onFrame: handleFrame,
     onDisconnect: handleDisconnect,
-    onStateChange: (state) => log?.debug('bridge.state', '通道状态变化', { state }),
+    onStateChange: (state) => {
+      log?.debug('bridge.state', '通道状态变化', { state });
+      // 只有「断开后重新连上」才续传；首次连接不改页面会话。
+      if (state === 'connected' && bridgeDisconnected) {
+        bridgeDisconnected = false;
+        void task?.resumeAfterReconnect();
+      }
+    },
   });
 
   if (typeof document !== 'undefined') {
-    const renderer = createRenderer();
+    // 渲染器在创建时注入单段刷新回调；此时 task 尚未创建，闭包在点击时才取。
+    const renderer = createRenderer({
+      onRetry: (host) => task?.retry(host),
+    });
     task = createTask({
       renderer,
       submit: submitPage,
+      cancelRequest: cancelSubmission,
     });
     hover = createHoverTracker();
     hover.start();

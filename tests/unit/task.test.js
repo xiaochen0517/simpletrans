@@ -1175,3 +1175,295 @@ describe('D5 统一提交（P6.1）：日志契约', () => {
     expect(warnCall[2]).toMatchObject({ code: ERROR_CODES.OTHER });
   });
 });
+
+describe('D5 失败刷新（P9）', () => {
+  /**
+   * 让一段进入翻译失败态。
+   * @param {Element} host
+   * @param {object} submit
+   * @returns {string} 原 requestId
+   */
+  function failHost(host, submit) {
+    const requestId = submit.mock.calls.at(-1)[0].requestId;
+    task.applyResultFrame(
+      frameOf(MESSAGE_TYPES.ITEM_ERROR, requestId, host.getAttribute(HOST_ATTR), {
+        code: ERROR_CODES.NETWORK,
+        message: '网络连接失败',
+      })
+    );
+    return requestId;
+  }
+
+  it('retry 只在失败态重发当前段，成功后显示「已提交」', async () => {
+    const hosts = mountTexts(['Hello', 'World']);
+    const submit = acceptedSubmit();
+    pageTask({ submit });
+
+    await task.toggle(hosts[0], 't-1');
+    failHost(hosts[0], submit);
+    expect(renderer.getState(hosts[0])).toBe('error');
+    expect(textOf(hosts[0])).toBe('翻译失败：网络连接失败');
+
+    const result = await task.retry(hosts[0], 't-retry');
+
+    expect(result).toEqual({ ok: true, data: { action: 'submitted' } });
+    expect(submit).toHaveBeenCalledTimes(2);
+    const payload = submit.mock.calls[1][0];
+    expect(payload.scope).toBe('single');
+    expect(payload.traceId).toBe('t-retry');
+    expect(payload.paragraphs).toEqual([
+      { index: 0, hostId: hosts[0].getAttribute(HOST_ATTR), text: 'Hello' },
+    ]);
+    expect(renderer.getState(hosts[0])).toBe('submitted');
+    expect(textOf(hosts[0])).toBe('已提交，等待翻译');
+    // 其它段落没有被登记或提交。
+    expect(renderer.getState(hosts[1])).toBe(null);
+  });
+
+  it('非错误态与断开宿主都会被忽略，不产生新提交', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    pageTask({ submit });
+
+    await task.toggle(hosts[0]);
+    expect(await task.retry(hosts[0])).toEqual({ ok: true, data: { action: 'ignored' } });
+    expect(submit).toHaveBeenCalledTimes(1);
+
+    hosts[0].remove();
+    expect(await task.retry(hosts[0])).toEqual({ ok: true, data: { action: 'no-target' } });
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it('连续点击：第一次点击后状态变为提交中，后续点击被忽略', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    pageTask({ submit });
+
+    await task.toggle(hosts[0]);
+    failHost(hosts[0], submit);
+
+    const [first, second] = await Promise.all([
+      task.retry(hosts[0]),
+      task.retry(hosts[0]),
+    ]);
+    expect(first).toEqual({ ok: true, data: { action: 'submitted' } });
+    expect(second).toEqual({ ok: true, data: { action: 'ignored' } });
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it('刷新失败后重新显示提交错误，仍可再次刷新', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    pageTask({ submit });
+
+    await task.toggle(hosts[0]);
+    failHost(hosts[0], submit);
+
+    submit.mockImplementationOnce(async () => ({
+      ok: false,
+      error: { code: ERROR_CODES.NETWORK, message: '页面通道未连接' },
+    }));
+    const failed = await task.retry(hosts[0]);
+    expect(failed.ok).toBe(false);
+    expect(failed.error.code).toBe(ERROR_CODES.NETWORK);
+    expect(renderer.getState(hosts[0])).toBe('error');
+    expect(textOf(hosts[0])).toBe('提交失败：页面通道未连接');
+
+    const again = await task.retry(hosts[0]);
+    expect(again).toEqual({ ok: true, data: { action: 'submitted' } });
+  });
+
+  it('刷新提交期间清除：结果过期，不写回标记', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = vi.fn(async () => ({ ok: true, data: { accepted: true } }));
+    pageTask({ submit });
+
+    await task.toggle(hosts[0]);
+    task.applyResultFrame(
+      frameOf(MESSAGE_TYPES.ITEM_ERROR, submit.mock.calls[0][0].requestId, hosts[0].getAttribute(HOST_ATTR), {
+        code: ERROR_CODES.NETWORK,
+        message: '失败',
+      })
+    );
+    expect(renderer.getState(hosts[0])).toBe('error');
+
+    let resolveSubmit = null;
+    submit.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSubmit = resolve;
+        })
+    );
+    const pending = task.retry(hosts[0]);
+    await flushMicrotasks();
+    expect(renderer.getState(hosts[0])).toBe('submitting');
+
+    task.clearAll();
+    resolveSubmit({ ok: true, data: { accepted: true } });
+
+    expect(await pending).toEqual({ ok: true, data: { action: 'hidden' } });
+    expect(document.querySelector(`[${TRANSLATION_ATTR}]`)).toBe(null);
+  });
+
+  it('applyBatchDone 清理提交记录：之后的迟到帧被丢弃', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    pageTask({ submit });
+
+    await task.toggle(hosts[0]);
+    const requestId = submit.mock.calls[0][0].requestId;
+    const itemId = hosts[0].getAttribute(HOST_ATTR);
+
+    expect(task.applyBatchDone({ payload: { requestId } })).toBe(true);
+    expect(task.applyBatchDone({ payload: { requestId } })).toBe(false);
+    expect(task.applyBatchDone(null)).toBe(false);
+    expect(
+      task.applyResultFrame(frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '迟到' }))
+    ).toBe(false);
+    // 段落状态与注册表保留，失败段仍可刷新。
+    expect(renderer.getState(hosts[0])).toBe('submitted');
+  });
+});
+
+describe('D5 清除取消与重连续传（P9）', () => {
+  it('clearAll 先对每个未结束提交发取消，再清空页面', async () => {
+    const hosts = mountTexts(['Hello', 'World']);
+    const submit = acceptedSubmit();
+    const cancelRequest = vi.fn();
+    task = createTask({
+      renderer,
+      submit,
+      cancelRequest,
+      scan: async () => paragraphsOf(hosts, ['Hello', 'World']),
+    });
+
+    await task.start({ targetLang: 'zh' });
+    const requestId = submit.mock.calls[0][0].requestId;
+
+    const result = task.clearAll();
+
+    expect(cancelRequest).toHaveBeenCalledTimes(1);
+    expect(cancelRequest).toHaveBeenCalledWith(requestId);
+    expect(result).toEqual({ ok: true, data: { removed: 2 } });
+    expect(document.querySelector(`[${TRANSLATION_ATTR}]`)).toBe(null);
+  });
+
+  it('取消失败不影响清除；没有 cancelRequest 时照常清除', () => {
+    const hosts = mountTexts(['Hello']);
+    task = createTask({
+      renderer,
+      submit: acceptedSubmit(),
+      cancelRequest: () => {
+        throw new Error('disconnected');
+      },
+      scan: async () => paragraphsOf(hosts, ['Hello']),
+    });
+
+    expect(() => task.clearAll()).not.toThrow();
+    expect(document.querySelector(`[${TRANSLATION_ATTR}]`)).toBe(null);
+  });
+
+  it('重连后只续传未完成段一次，已完成段不重发', async () => {
+    const hosts = mountTexts(['Hello', 'World']);
+    const submit = acceptedSubmit();
+    task = createTask({
+      renderer,
+      submit,
+      scan: async () => paragraphsOf(hosts, ['Hello', 'World']),
+    });
+
+    await task.start({ targetLang: 'zh' });
+    const requestId = submit.mock.calls[0][0].requestId;
+    task.applyResultFrame(
+      frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, hosts[0].getAttribute(HOST_ATTR), { text: '你好' })
+    );
+
+    await task.resumeAfterReconnect();
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    const payload = submit.mock.calls[1][0];
+    expect(payload.scope).toBe('page');
+    expect(payload.paragraphs).toEqual([
+      { index: 0, hostId: hosts[1].getAttribute(HOST_ATTR), text: 'World' },
+    ]);
+    expect(renderer.getState(hosts[0])).toBe('done');
+    expect(renderer.getState(hosts[1])).toBe('submitted');
+
+    // 同一断连只续传一次。
+    await task.resumeAfterReconnect();
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it('页面会话非 submitted 或没有未完成段时不续传', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    task = createTask({
+      renderer,
+      submit,
+      scan: async () => paragraphsOf(hosts, ['Hello']),
+    });
+
+    // 尚未开始：phase 为 idle。
+    expect(await task.resumeAfterReconnect()).toBeNull();
+    expect(submit).not.toHaveBeenCalled();
+
+    await task.start({ targetLang: 'zh' });
+    const requestId = submit.mock.calls[0][0].requestId;
+    task.applyResultFrame(
+      frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, hosts[0].getAttribute(HOST_ATTR), { text: '你好' })
+    );
+    expect(await task.resumeAfterReconnect()).toBeNull();
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it('续传失败只标错并保留会话；start 或单段刷新后重置续传次数', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    task = createTask({
+      renderer,
+      submit,
+      scan: async () => paragraphsOf(hosts, ['Hello']),
+    });
+
+    await task.start({ targetLang: 'zh' });
+    submit.mockImplementationOnce(async () => ({
+      ok: false,
+      error: { code: ERROR_CODES.NETWORK, message: '仍然断线' },
+    }));
+    await task.resumeAfterReconnect();
+    expect(renderer.getState(hosts[0])).toBe('error');
+    expect(textOf(hosts[0])).toBe('提交失败：仍然断线');
+
+    // 同一次断连不再自动续传。
+    await task.resumeAfterReconnect();
+    expect(submit).toHaveBeenCalledTimes(2);
+
+    // 用户点「刷新」属于新一次用户触发，重置续传次数。
+    const retried = await task.retry(hosts[0]);
+    expect(retried).toEqual({ ok: true, data: { action: 'submitted' } });
+    expect(submit).toHaveBeenCalledTimes(3);
+
+    submit.mockImplementationOnce(async () => ({
+      ok: false,
+      error: { code: ERROR_CODES.NETWORK, message: '第三次断线' },
+    }));
+    await task.resumeAfterReconnect();
+    expect(submit).toHaveBeenCalledTimes(4);
+  });
+
+  it('清除后不再续传', async () => {
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    task = createTask({
+      renderer,
+      submit,
+      scan: async () => paragraphsOf(hosts, ['Hello']),
+    });
+
+    await task.start({ targetLang: 'zh' });
+    task.clearAll();
+
+    expect(await task.resumeAfterReconnect()).toBeNull();
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+});

@@ -299,3 +299,50 @@ describe('未保存离开', () => {
     expect(stored.find((item) => item.id === fixtures.deepseek.id).name).toBe('DeepSeek');
   });
 });
+
+describe('百度接口 QPS（P9）', () => {
+  it('百度实例显示默认 QPS=1，保存 10 后写入实例并回填', async () => {
+    const container = await mountOptions(harness, '#/instances');
+    let drawer = await openEditor(container, '百度翻译');
+
+    const qps = drawer.querySelector('#ed-qps');
+    expect(qps).toBeTruthy();
+    expect(qps.value).toBe('1');
+    expect(drawer.textContent).toContain('标准版 1、高级版 10、尊享版 100');
+
+    await setValue(qps, '10');
+    await save(container);
+
+    const stored = await readInstances(harness);
+    expect(stored.find((item) => item.id === fixtures.baidu.id).qps).toBe(10);
+
+    drawer = await openEditor(container, '百度翻译');
+    expect(drawer.querySelector('#ed-qps').value).toBe('10');
+  });
+
+  it('QPS 非法时给出行内错误且不保存', async () => {
+    const container = await mountOptions(harness, '#/instances');
+    const drawer = await openEditor(container, '百度翻译');
+
+    for (const value of ['0', '101', '2.5', '']) {
+      await setValue(drawer.querySelector('#ed-qps'), value);
+      await save(container);
+      expect(drawer.textContent, `QPS=${value}`).toContain('接口 QPS 必须是');
+      const stored = await readInstances(harness);
+      expect(stored.find((item) => item.id === fixtures.baidu.id).qps, `QPS=${value}`).toBe(1);
+    }
+
+    await setValue(drawer.querySelector('#ed-qps'), '100');
+    await save(container);
+    const stored = await readInstances(harness);
+    expect(stored.find((item) => item.id === fixtures.baidu.id).qps).toBe(100);
+  });
+
+  it('OpenAI 实例没有「接口 QPS」字段', async () => {
+    const container = await mountOptions(harness, '#/instances');
+    const drawer = await openEditor(container, 'DeepSeek');
+
+    expect(drawer.querySelector('#ed-qps')).toBeNull();
+    expect(drawer.textContent).not.toContain('接口 QPS');
+  });
+});

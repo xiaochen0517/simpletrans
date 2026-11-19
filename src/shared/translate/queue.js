@@ -3,15 +3,17 @@
  *
  * 模块：后台服务（A）/ A3
  * 职责：按 P6.3 切好的批次排队执行；以实例 `maxConcurrency` 限制同时在途的 job 数；
- *       单段批走单段 `translate` 保留逐字流式，多段批走 `translateBatch` 按段解析并回调。
+ *       单段批走单段 `translate` 保留逐字流式，多段批走 `translateBatch` 按段解析并回调；
+ *       P9 起对可重试错误（网络、限流）在同一实例内重试，退避带随机抖动。
  * 依赖：A3 adapter（translate / translateBatch / TranslateError）、A3 batch（编码版本）、
- *       E1 protocol（错误码）、E3 registry（默认并发）、E4 logger。
- * 实现阶段：P6.4（批量翻译）
+ *       E1 protocol（错误码与可重试标志）、E3 registry（默认并发）、E4 logger、公共数值（重试间隔）。
+ * 实现阶段：P6.4（批量翻译）；P9 增加重试、退避/抖动与取消重试等待。
  *
  * 队列只在 Service Worker 内存中存在：不持久化、不写缓存、不持有页面连接，结果通过回调交给 A2。
  */
 
-import { ERROR_CODES } from '../protocol.js';
+import { ERROR_CODES, errorInfo } from '../protocol.js';
+import { RETRY_DELAYS_MS, RETRY_JITTER_MS } from '../constants.js';
 import { DEFAULT_MAX_CONCURRENCY } from '../config/registry.js';
 import { createLogger } from '../log/logger.js';
 import { BATCH_ENCODING_VERSION } from './batch.js';
@@ -42,6 +44,99 @@ function invoke(fn, arg) {
     fn(arg);
   } catch (error) {
     log.warn('queue.callback', '队列回调异常', { reason: error?.name ?? 'Error' });
+  }
+}
+
+/**
+ * 默认等待实现：`setTimeout` Promise；测试可注入同步或可控等待。
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function defaultWait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 取错误的统一错误码：`TranslateError` 与批量对齐错误都带 `code`。
+ * @param {unknown} error
+ * @returns {string | undefined}
+ */
+function errorCodeOf(error) {
+  const code = error instanceof TranslateError ? error.code : error?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+/**
+ * 执行 job，并对可重试错误按 1 秒 / 2 秒 + 抖动重试；最多 3 次尝试。
+ *
+ * - 只重试 `retryable` 错误码（网络、限流）；
+ * - 取消中的 job 立即停止等待，不再发请求；
+ * - `canRetry` 由 A2 注入：已产生输出、已取消或提交已超时返回 false；
+ * - 等待期间 job 仍处于 running，占用队列名额（最长约 2 秒）。
+ *
+ * @param {object} job
+ * @param {{ execute: Function, wait: (ms: number) => Promise<unknown>, random: () => number }} runner
+ * @returns {Promise<{ usage?: object | null, mode?: string }>}
+ */
+async function executeWithRetry(job, { execute, wait, random }) {
+  const maxAttempts =
+    Number.isInteger(job?.maxAttempts) && job.maxAttempts > 0
+      ? job.maxAttempts
+      : RETRY_DELAYS_MS.length + 1;
+  const delays =
+    Array.isArray(job?.retryDelays) && job.retryDelays.length > 0
+      ? job.retryDelays
+      : RETRY_DELAYS_MS;
+
+  for (let attempt = 1; ; attempt += 1) {
+    job.attempt = attempt;
+    try {
+      return await execute(job);
+    } catch (error) {
+      const code = errorCodeOf(error);
+      const cancelled = job.state === 'cancelled' || code === ERROR_CODES.CANCELLED;
+      const retryable = Boolean(errorInfo(code).retryable);
+      const canRetry = typeof job.canRetry === 'function' ? job.canRetry(error) !== false : true;
+      const skipReason = cancelled
+        ? 'cancelled'
+        : !retryable
+          ? 'not-retryable'
+          : !canRetry
+            ? 'emitted'
+            : null;
+
+      if (skipReason || attempt >= maxAttempts) {
+        if (skipReason) {
+          log.debug('queue.retry.skip', '翻译任务不重试', {
+            jobId: job.jobId,
+            requestId: job.requestId ?? null,
+            code: code ?? null,
+            reason: skipReason,
+            attempt,
+          });
+        }
+        throw error;
+      }
+
+      const base = Number(delays[Math.min(attempt - 1, delays.length - 1)]);
+      const jitterLimit = Math.max(0, Number(RETRY_JITTER_MS) || 0);
+      const jitter = Math.floor(Math.max(0, Math.min(1, Number(random()) || 0)) * jitterLimit);
+      const delayMs = Math.max(0, Number.isFinite(base) ? base : 0) + jitter;
+
+      log.info('queue.retry', '翻译任务失败，等待重试', {
+        jobId: job.jobId,
+        requestId: job.requestId ?? null,
+        attempt,
+        maxAttempts,
+        code: code ?? null,
+        delayMs,
+      });
+
+      await wait(delayMs);
+      if (job.state === 'cancelled') {
+        throw new TranslateError(ERROR_CODES.CANCELLED, '翻译已取消');
+      }
+    }
   }
 }
 
@@ -138,15 +233,26 @@ async function runJob(job) {
     }
     return mode === 'single' ? runSingleJob(job, groups[0]) : runBatchJob(job, groups);
   };
-  return typeof job.withSlot === 'function' ? job.withSlot(run, job.concurrency) : run();
+  return typeof job.withSlot === 'function'
+    ? job.withSlot(run, job.concurrency, job.controller?.signal)
+    : run();
 }
 
 /**
- * 创建翻译队列实例。测试可注入 `execute` 控制完成顺序，不依赖真实计时器与上游。
+ * 创建翻译队列实例。测试可注入 `execute` 控制完成顺序、`wait` 跳过真实等待、`random` 固定抖动，
+ * 不依赖真实计时器与上游。
  *
- * @param {{ execute?: (job: object) => Promise<{ usage?: object | null, mode?: string }> }} [options]
+ * @param {{
+ *   execute?: (job: object) => Promise<{ usage?: object | null, mode?: string }>,
+ *   wait?: (ms: number) => Promise<unknown>,
+ *   random?: () => number,
+ * }} [options]
  */
-export function createTranslationQueue({ execute = runJob } = {}) {
+export function createTranslationQueue({
+  execute = runJob,
+  wait = defaultWait,
+  random = Math.random,
+} = {}) {
   const pending = [];
   const running = new Map();
   const stats = {
@@ -182,7 +288,7 @@ export function createTranslationQueue({ execute = runJob } = {}) {
       });
 
       void Promise.resolve()
-        .then(() => execute(job))
+        .then(() => executeWithRetry(job, { execute, wait, random }))
         .then((result) => {
           if (job.state === 'cancelled') return;
           job.state = 'done';
