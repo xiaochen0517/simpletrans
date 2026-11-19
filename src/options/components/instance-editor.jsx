@@ -23,8 +23,9 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import Field, { describedBy } from './field.jsx';
-import StatusBadge from './status-badge.jsx';
+import Field, { describedBy } from '../../shared/ui/field.jsx';
+import StatusBadge from '../../shared/ui/status-badge.jsx';
+import Select from '../../shared/ui/select.jsx';
 import ConfirmDialog from './confirm-dialog.jsx';
 import {
   AUTH_LABELS,
@@ -706,20 +707,20 @@ export default function InstanceEditor({
   const promptCount = draft.systemPrompt.length;
 
   return (
-    <div className="op-overlay">
+    <div className="modal modal-open items-stretch justify-items-end p-0">
       <div
-        className="op-drawer"
+        className="flex h-full w-full max-w-md flex-col bg-base-100 max-md:max-w-none"
         role="dialog"
         aria-modal="true"
         aria-labelledby="editor-title"
         ref={drawerRef}
       >
-        <header className="op-drawer-header">
-          <div className="op-drawer-titles">
-            <h2 className="op-drawer-title" id="editor-title">
+        <header className="flex items-start gap-2.5 border-b border-base-300 p-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="m-0 text-base font-bold break-words" id="editor-title">
               {draft.name.trim() || instance.name}
             </h2>
-            <div className="op-badge-row" style={{ marginTop: 6 }}>
+            <div className="flex flex-wrap items-center gap-1.5">
               <StatusBadge tone="primary">{typeBadgeLabel(instance)}</StatusBadge>
               {active ? <StatusBadge tone="primary">当前</StatusBadge> : null}
               {dirty ? <StatusBadge tone="warn">有未保存更改</StatusBadge> : null}
@@ -735,12 +736,12 @@ export default function InstanceEditor({
           </button>
         </header>
 
-        <div className="op-drawer-body">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
           {conflictOpen && !dirty ? (
-            <div className="op-warning is-warn" role="status">
+            <div className="alert alert-warning" role="status">
               <AlertTriangle size={15} aria-hidden="true" />
-              <span className="op-warning-text">该实例已在别处更新。</span>
-              <span className="op-warning-action">
+              <span className="min-w-0 break-words">该实例已在别处更新。</span>
+              <span className="ml-auto shrink-0">
                 <button
                   type="button"
                   className="btn btn-xs"
@@ -757,12 +758,12 @@ export default function InstanceEditor({
           ) : null}
 
           {conflictOpen && dirty ? (
-            <div className="op-warning is-warn" role="status">
+            <div className="alert alert-warning" role="status">
               <AlertTriangle size={15} aria-hidden="true" />
-              <span className="op-warning-text">
+              <span className="min-w-0 break-words">
                 该实例已在别处更新。当前草稿不会被覆盖；重新加载会丢弃草稿。
               </span>
-              <span className="op-warning-action">
+              <span className="ml-auto shrink-0">
                 <button
                   type="button"
                   className="btn btn-xs"
@@ -778,8 +779,8 @@ export default function InstanceEditor({
             </div>
           ) : null}
 
-          <section className="op-section">
-            <h3 className="op-h3">基础信息</h3>
+          <section className="flex flex-col gap-3">
+            <h3 className="text-sm font-semibold">基础信息</h3>
             <Field
               id="ed-name"
               label="名称"
@@ -790,7 +791,7 @@ export default function InstanceEditor({
               <input
                 id="ed-name"
                 type="text"
-                className="input input-bordered input-sm w-full"
+                className="input input-sm w-full"
                 value={draft.name}
                 onChange={(event) => update('name', event.target.value)}
                 aria-invalid={Boolean(errors.name)}
@@ -803,8 +804,8 @@ export default function InstanceEditor({
               />
             </Field>
 
-            <div className="op-switch-row">
-              <label className="op-check">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="inline-flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   className="toggle toggle-sm"
@@ -815,11 +816,11 @@ export default function InstanceEditor({
                 />
                 <span>启用该实例</span>
               </label>
-              <span className="op-help">停用后不会用于翻译，已打开页面需重新提交。</span>
+              <span className="text-xs leading-relaxed text-base-content/60 break-words">停用后不会用于翻译，已打开页面需重新提交。</span>
             </div>
 
             {!active ? (
-              <div className="op-inline">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   className="btn btn-sm btn-primary"
@@ -830,26 +831,26 @@ export default function InstanceEditor({
                   设为当前翻译方式
                 </button>
                 {!canSetActive ? (
-                  <span className="op-help">{eligibility.reason ?? '当前不可设为当前实例'}</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">{eligibility.reason ?? '当前不可设为当前实例'}</span>
                 ) : (
-                  <span className="op-help">切换只影响之后提交的段落。</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">切换只影响之后提交的段落。</span>
                 )}
               </div>
             ) : (
-              <span className="op-help">该实例已是当前翻译方式。</span>
+              <span className="text-xs leading-relaxed text-base-content/60 break-words">该实例已是当前翻译方式。</span>
             )}
 
             {isOpenAI ? (
-              <div className="op-field">
-                <label className="op-label" htmlFor="ed-preset">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-semibold" htmlFor="ed-preset">
                   预设
                 </label>
-                <div className="op-inline">
+                <div className="flex flex-wrap items-center gap-2">
                   {['deepseek', 'custom'].map((preset) => (
                     <button
                       key={preset}
                       type="button"
-                      className="op-chip"
+                      className={`btn btn-sm${draft.preset === preset ? ' btn-active' : ''}`}
                       aria-pressed={draft.preset === preset}
                       onClick={() => switchPreset(preset)}
                       disabled={saving}
@@ -858,7 +859,7 @@ export default function InstanceEditor({
                     </button>
                   ))}
                 </div>
-                <span className="op-help">
+                <span className="text-xs leading-relaxed text-base-content/60 break-words">
                   切到 DeepSeek 会套用预设默认地址、模型与参数（可再修改）；切到自定义会保留当前配置。
                 </span>
               </div>
@@ -867,8 +868,8 @@ export default function InstanceEditor({
 
           {isOpenAI ? (
             <>
-              <section className="op-section">
-                <h3 className="op-h3">连接</h3>
+              <section className="flex flex-col gap-3">
+                <h3 className="text-sm font-semibold">连接</h3>
                 <Field
                   id="ed-baseurl"
                   label="接口地址（baseUrl）"
@@ -879,7 +880,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-baseurl"
                     type="url"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={draft.baseUrl}
                     onChange={(event) => update('baseUrl', event.target.value)}
                     aria-invalid={Boolean(errors.baseUrl)}
@@ -897,7 +898,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-path"
                     type="text"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={draft.path}
                     onChange={(event) => update('path', event.target.value)}
                     disabled={saving}
@@ -906,8 +907,8 @@ export default function InstanceEditor({
                   />
                 </Field>
 
-                <div className="op-switch-row">
-                  <label className="op-check">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="inline-flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       className="toggle toggle-sm"
@@ -918,12 +919,12 @@ export default function InstanceEditor({
                     />
                     <span>使用流式响应（stream）</span>
                   </label>
-                  <span className="op-help">关闭后等待完整 JSON 响应，页面没有增量文本。</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">关闭后等待完整 JSON 响应，页面没有增量文本。</span>
                 </div>
 
-                <div className="op-field">
-                  <span className="op-label">域名权限</span>
-                  <div className="op-inline">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold">域名权限</span>
+                  <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge
                       tone={permission === 'granted' ? 'ok' : 'warn'}
                       icon={
@@ -936,12 +937,12 @@ export default function InstanceEditor({
                     >
                       {permission === 'granted' ? '已授权' : '未授权'}
                     </StatusBadge>
-                    <span className="op-help">
+                    <span className="text-xs leading-relaxed text-base-content/60 break-words">
                       {hostedOnOrigin ? `授权后允许请求 ${hostedOnOrigin}` : '填写接口地址后可申请域名权限'}
                     </span>
                   </div>
                   {originPattern && permission !== 'granted' ? (
-                    <div className="op-inline">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         className="btn btn-sm btn-warning"
@@ -950,20 +951,20 @@ export default function InstanceEditor({
                       >
                         {authorizing ? '申请中…' : '授权访问'}
                       </button>
-                      <span className="op-help">未授权时不能测试、设为当前与翻译。</span>
+                      <span className="text-xs leading-relaxed text-base-content/60 break-words">未授权时不能测试、设为当前与翻译。</span>
                     </div>
                   ) : null}
                 </div>
 
-                <div className="op-field">
-                  <span className="op-label">查询参数</span>
-                  <span className="op-help">静态参数，例如 api-version；不要放密钥。</span>
-                  <div className="op-rows">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold">查询参数</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">静态参数，例如 api-version；不要放密钥。</span>
+                  <div className="flex flex-col gap-2">
                     {draft.query.map((row, index) => (
-                      <div className="op-pair-row" key={`query-${index}`}>
+                      <div className="grid gap-2 sm:grid-cols-[1fr_1.2fr_auto]" key={`query-${index}`}>
                         <input
                           type="text"
-                          className="input input-bordered input-sm w-full"
+                          className="input input-sm w-full"
                           value={row.name}
                           onChange={(event) =>
                             update(
@@ -981,7 +982,7 @@ export default function InstanceEditor({
                         />
                         <input
                           type="text"
-                          className="input input-bordered input-sm w-full"
+                          className="input input-sm w-full"
                           value={row.value}
                           onChange={(event) =>
                             update(
@@ -1014,7 +1015,7 @@ export default function InstanceEditor({
                       </div>
                     ))}
                   </div>
-                  <div className="op-inline">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       className="btn btn-xs"
@@ -1024,18 +1025,18 @@ export default function InstanceEditor({
                       添加查询参数
                     </button>
                   </div>
-                  {errors.query ? <span className="op-error">{errors.query}</span> : null}
+                  {errors.query ? <span className="text-xs leading-relaxed text-error">{errors.query}</span> : null}
                 </div>
 
-                <div className="op-field">
-                  <span className="op-label">静态请求头</span>
-                  <span className="op-help">例如 X-Title；不要放密钥，禁止 Authorization / api-key / Cookie / Host。</span>
-                  <div className="op-rows">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold">静态请求头</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">例如 X-Title；不要放密钥，禁止 Authorization / api-key / Cookie / Host。</span>
+                  <div className="flex flex-col gap-2">
                     {draft.headers.map((row, index) => (
-                      <div className="op-pair-row" key={`header-${index}`}>
+                      <div className="grid gap-2 sm:grid-cols-[1fr_1.2fr_auto]" key={`header-${index}`}>
                         <input
                           type="text"
-                          className="input input-bordered input-sm w-full"
+                          className="input input-sm w-full"
                           value={row.name}
                           onChange={(event) =>
                             update(
@@ -1053,7 +1054,7 @@ export default function InstanceEditor({
                         />
                         <input
                           type="text"
-                          className="input input-bordered input-sm w-full"
+                          className="input input-sm w-full"
                           value={row.value}
                           onChange={(event) =>
                             update(
@@ -1086,7 +1087,7 @@ export default function InstanceEditor({
                       </div>
                     ))}
                   </div>
-                  <div className="op-inline">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       className="btn btn-xs"
@@ -1096,42 +1097,37 @@ export default function InstanceEditor({
                       添加请求头
                     </button>
                   </div>
-                  {errors.headers ? <span className="op-error">{errors.headers}</span> : null}
+                  {errors.headers ? <span className="text-xs leading-relaxed text-error">{errors.headers}</span> : null}
                 </div>
               </section>
 
-              <section className="op-section">
-                <h3 className="op-h3">认证</h3>
+              <section className="flex flex-col gap-3">
+                <h3 className="text-sm font-semibold">认证</h3>
                 <Field
                   id="ed-auth"
                   label="认证方式"
                   help="密钥的实际值在下方凭据区填写；每个实例独立保存自己的密钥。"
                 >
-                  <select
+                  <Select
                     id="ed-auth"
-                    className="select select-bordered select-sm w-full"
                     value={draft.authType}
-                    onChange={(event) => update('authType', event.target.value)}
-                    aria-describedby={describedBy('ed-auth', {
+                    options={AUTH_TYPES.map((type) => ({ value: type, label: AUTH_LABELS[type] }))}
+                    onChange={(next) => update('authType', next)}
+                    ariaLabel="认证方式"
+                    ariaDescribedBy={describedBy('ed-auth', {
                       help: '密钥的实际值在下方凭据区填写；每个实例独立保存自己的密钥。',
                     })}
                     disabled={saving}
-                  >
-                    {AUTH_TYPES.map((type) => (
-                      <option key={type} value={type}>
-                        {AUTH_LABELS[type]}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </Field>
 
                 {draft.authType === 'header' ? (
-                  <div className="op-row">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <Field id="ed-auth-header" label="请求头名称" required error={errors.authHeaderName}>
                       <input
                         id="ed-auth-header"
                         type="text"
-                        className="input input-bordered input-sm w-full"
+                        className="input input-sm w-full"
                         value={draft.authHeaderName}
                         onChange={(event) => update('authHeaderName', event.target.value)}
                         placeholder="api-key"
@@ -1144,7 +1140,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-auth-prefix"
                         type="text"
-                        className="input input-bordered input-sm w-full"
+                        className="input input-sm w-full"
                         value={draft.authPrefix}
                         onChange={(event) => update('authPrefix', event.target.value)}
                         placeholder="留空表示不加前缀"
@@ -1161,7 +1157,7 @@ export default function InstanceEditor({
                     <input
                       id="ed-auth-query"
                       type="text"
-                      className="input input-bordered input-sm w-full"
+                      className="input input-sm w-full"
                       value={draft.authQueryName}
                       onChange={(event) => update('authQueryName', event.target.value)}
                       placeholder="key"
@@ -1173,12 +1169,12 @@ export default function InstanceEditor({
                 ) : null}
 
                 {draft.authType === 'none' ? (
-                  <p className="op-sub">该实例不使用认证，无需填写密钥；请确认接口本身可匿名访问。</p>
+                  <p className="text-sm leading-relaxed text-base-content/70 break-words">该实例不使用认证，无需填写密钥；请确认接口本身可匿名访问。</p>
                 ) : null}
               </section>
 
-              <section className="op-section">
-                <h3 className="op-h3">模型</h3>
+              <section className="flex flex-col gap-3">
+                <h3 className="text-sm font-semibold">模型</h3>
                 <Field
                   id="ed-model"
                   label="模型名称"
@@ -1189,7 +1185,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-model"
                     type="text"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={draft.model}
                     onChange={(event) => update('model', event.target.value)}
                     disabled={saving}
@@ -1199,12 +1195,12 @@ export default function InstanceEditor({
                 </Field>
               </section>
 
-              <section className="op-section">
-                <h3 className="op-h3">生成参数</h3>
-                <p className="op-sub">参数默认关闭；关闭后不发送该字段，模型不支持时保持关闭即可。</p>
+              <section className="flex flex-col gap-3">
+                <h3 className="text-sm font-semibold">生成参数</h3>
+                <p className="text-sm leading-relaxed text-base-content/70 break-words">参数默认关闭；关闭后不发送该字段，模型不支持时保持关闭即可。</p>
 
-                <div className="op-switch-row">
-                  <label className="op-check">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="inline-flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       className="toggle toggle-sm"
@@ -1215,10 +1211,10 @@ export default function InstanceEditor({
                     />
                     <span>temperature</span>
                   </label>
-                  <div style={{ maxWidth: 160, width: '100%' }}>
+                  <div className="w-40">
                     <input
                       type="number"
-                      className="input input-bordered input-sm w-full"
+                      className="input input-sm w-full"
                       value={draft.temperature}
                       onChange={(event) => update('temperature', event.target.value)}
                       min={0}
@@ -1229,10 +1225,10 @@ export default function InstanceEditor({
                     />
                   </div>
                 </div>
-                {errors.temperature ? <span className="op-error">{errors.temperature}</span> : null}
+                {errors.temperature ? <span className="text-xs leading-relaxed text-error">{errors.temperature}</span> : null}
 
-                <div className="op-switch-row">
-                  <label className="op-check">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="inline-flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       className="toggle toggle-sm"
@@ -1243,10 +1239,10 @@ export default function InstanceEditor({
                     />
                     <span>top_p</span>
                   </label>
-                  <div style={{ maxWidth: 160, width: '100%' }}>
+                  <div className="w-40">
                     <input
                       type="number"
-                      className="input input-bordered input-sm w-full"
+                      className="input input-sm w-full"
                       value={draft.topP}
                       onChange={(event) => update('topP', event.target.value)}
                       min={0}
@@ -1257,10 +1253,10 @@ export default function InstanceEditor({
                     />
                   </div>
                 </div>
-                {errors.topP ? <span className="op-error">{errors.topP}</span> : null}
+                {errors.topP ? <span className="text-xs leading-relaxed text-error">{errors.topP}</span> : null}
 
-                <div className="op-switch-row">
-                  <label className="op-check">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="inline-flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       className="toggle toggle-sm"
@@ -1271,24 +1267,19 @@ export default function InstanceEditor({
                     />
                     <span>max_tokens</span>
                   </label>
-                  <div className="op-inline" style={{ justifyContent: 'flex-end' }}>
-                    <select
-                      className="select select-bordered select-sm"
-                      value={draft.maxTokensField}
-                      onChange={(event) => update('maxTokensField', event.target.value)}
-                      disabled={saving || !draft.maxTokensEnabled}
-                      aria-label="max_tokens 字段名"
-                    >
-                      {MAX_TOKEN_FIELDS.map((field) => (
-                        <option key={field} value={field}>
-                          {field}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <div className="w-40">
+                      <Select
+                        value={draft.maxTokensField}
+                        options={MAX_TOKEN_FIELDS.map((field) => ({ value: field, label: field }))}
+                        onChange={(next) => update('maxTokensField', next)}
+                        ariaLabel="max_tokens 字段名"
+                        disabled={saving || !draft.maxTokensEnabled}
+                      />
+                    </div>
                     <input
                       type="number"
-                      className="input input-bordered input-sm"
-                      style={{ maxWidth: 120 }}
+                      className="input input-sm w-[120px]"
                       value={draft.maxTokens}
                       onChange={(event) => update('maxTokens', event.target.value)}
                       min={1}
@@ -1298,31 +1289,29 @@ export default function InstanceEditor({
                     />
                   </div>
                 </div>
-                {errors.maxTokens ? <span className="op-error">{errors.maxTokens}</span> : null}
+                {errors.maxTokens ? <span className="text-xs leading-relaxed text-error">{errors.maxTokens}</span> : null}
 
                 <Field id="ed-reasoning" label="思考强度模式">
-                  <select
+                  <Select
                     id="ed-reasoning"
-                    className="select select-bordered select-sm w-full"
                     value={draft.reasoningMode}
-                    onChange={(event) => update('reasoningMode', event.target.value)}
+                    options={REASONING_MODES.map((mode) => ({
+                      value: mode,
+                      label: REASONING_MODE_LABELS[mode],
+                    }))}
+                    onChange={(next) => update('reasoningMode', next)}
+                    ariaLabel="思考强度模式"
                     disabled={saving}
-                  >
-                    {REASONING_MODES.map((mode) => (
-                      <option key={mode} value={mode}>
-                        {REASONING_MODE_LABELS[mode]}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </Field>
 
                 {draft.reasoningMode === 'effort' ? (
-                  <div className="op-row">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <Field id="ed-reasoning-field" label="强度字段" required error={errors.reasoningField}>
                       <input
                         id="ed-reasoning-field"
                         type="text"
-                        className="input input-bordered input-sm w-full"
+                        className="input input-sm w-full"
                         value={draft.reasoningField}
                         onChange={(event) => update('reasoningField', event.target.value)}
                         placeholder="reasoning_effort"
@@ -1332,24 +1321,19 @@ export default function InstanceEditor({
                     </Field>
                     <Field id="ed-reasoning-value" label="强度取值" required error={errors.reasoningValue}>
                       {draft.reasoningValues.length > 0 ? (
-                        <select
+                        <Select
                           id="ed-reasoning-value"
-                          className="select select-bordered select-sm w-full"
                           value={draft.reasoningValue}
-                          onChange={(event) => update('reasoningValue', event.target.value)}
+                          options={draft.reasoningValues.map((value) => ({ value, label: value }))}
+                          onChange={(next) => update('reasoningValue', next)}
+                          ariaLabel="强度取值"
                           disabled={saving}
-                        >
-                          {draft.reasoningValues.map((value) => (
-                            <option key={value} value={value}>
-                              {value}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       ) : (
                         <input
                           id="ed-reasoning-value"
                           type="text"
-                          className="input input-bordered input-sm w-full"
+                          className="input input-sm w-full"
                           value={draft.reasoningValue}
                           onChange={(event) => update('reasoningValue', event.target.value)}
                           disabled={saving}
@@ -1361,12 +1345,12 @@ export default function InstanceEditor({
                 ) : null}
 
                 {draft.reasoningMode === 'budget' ? (
-                  <div className="op-row">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <Field id="ed-budget-field" label="预算字段" required error={errors.reasoningBudgetField}>
                       <input
                         id="ed-budget-field"
                         type="text"
-                        className="input input-bordered input-sm w-full"
+                        className="input input-sm w-full"
                         value={draft.reasoningBudgetField}
                         onChange={(event) => update('reasoningBudgetField', event.target.value)}
                         placeholder="thinking.budget_tokens"
@@ -1378,7 +1362,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-budget"
                         type="number"
-                        className="input input-bordered input-sm w-full"
+                        className="input input-sm w-full"
                         value={draft.reasoningBudget}
                         onChange={(event) => update('reasoningBudget', event.target.value)}
                         min={1}
@@ -1390,12 +1374,12 @@ export default function InstanceEditor({
                 ) : null}
 
                 {draft.reasoningMode === 'toggle' ? (
-                  <div className="op-row">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <Field id="ed-toggle-field" label="开关字段" required error={errors.reasoningToggleField}>
                       <input
                         id="ed-toggle-field"
                         type="text"
-                        className="input input-bordered input-sm w-full"
+                        className="input input-sm w-full"
                         value={draft.reasoningToggleField}
                         onChange={(event) => update('reasoningToggleField', event.target.value)}
                         placeholder="thinking.type"
@@ -1407,7 +1391,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-toggle-on"
                         type="text"
-                        className="input input-bordered input-sm w-full"
+                        className="input input-sm w-full"
                         value={draft.reasoningOn}
                         onChange={(event) => update('reasoningOn', event.target.value)}
                         disabled={saving}
@@ -1417,15 +1401,15 @@ export default function InstanceEditor({
                   </div>
                 ) : null}
 
-                <div className="op-field">
-                  <span className="op-label">额外参数</span>
-                  <span className="op-help">点路径写入请求体，例如 top_k；不能覆盖 messages / model / stream。</span>
-                  <div className="op-rows">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold">额外参数</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">点路径写入请求体，例如 top_k；不能覆盖 messages / model / stream。</span>
+                  <div className="flex flex-col gap-2">
                     {draft.extra.map((row, index) => (
-                      <div className="op-pair-row op-pair-row-4" key={`extra-${index}`}>
+                      <div className="grid gap-2 sm:grid-cols-[1fr_1.2fr_auto] sm:grid-cols-[1fr_0.7fr_1.2fr_auto]" key={`extra-${index}`}>
                         <input
                           type="text"
-                          className="input input-bordered input-sm w-full"
+                          className="input input-sm w-full"
                           value={row.path}
                           onChange={(event) =>
                             update(
@@ -1440,29 +1424,21 @@ export default function InstanceEditor({
                           disabled={saving}
                           spellCheck={false}
                         />
-                        <select
-                          className="select select-bordered select-sm w-full"
+                        <Select
                           value={row.type}
-                          onChange={(event) =>
+                          options={EXTRA_TYPES.map((type) => ({ value: type, label: type }))}
+                          onChange={(next) =>
                             update(
                               'extra',
-                              draft.extra.map((item, i) =>
-                                i === index ? { ...item, type: event.target.value } : item
-                              )
+                              draft.extra.map((item, i) => (i === index ? { ...item, type: next } : item))
                             )
                           }
-                          aria-label={`额外参数 ${index + 1} 类型`}
+                          ariaLabel={`额外参数 ${index + 1} 类型`}
                           disabled={saving}
-                        >
-                          {EXTRA_TYPES.map((type) => (
-                            <option key={type} value={type}>
-                              {type}
-                            </option>
-                          ))}
-                        </select>
+                        />
                         <input
                           type="text"
-                          className="input input-bordered input-sm w-full"
+                          className="input input-sm w-full"
                           value={row.value}
                           onChange={(event) =>
                             update(
@@ -1477,7 +1453,7 @@ export default function InstanceEditor({
                           disabled={saving}
                           spellCheck={false}
                         />
-                        <div className="op-inline">
+                        <div className="flex flex-wrap items-center gap-2">
                           <input
                             type="checkbox"
                             className="checkbox checkbox-sm"
@@ -1511,7 +1487,7 @@ export default function InstanceEditor({
                       </div>
                     ))}
                   </div>
-                  <div className="op-inline">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       className="btn btn-xs"
@@ -1526,13 +1502,13 @@ export default function InstanceEditor({
                       添加额外参数
                     </button>
                   </div>
-                  {errors.extra ? <span className="op-error">{errors.extra}</span> : null}
+                  {errors.extra ? <span className="text-xs leading-relaxed text-error">{errors.extra}</span> : null}
                 </div>
               </section>
 
-              <details className="op-details">
+              <details className="collapse bg-base-200">
                 <summary>高级参数（提示词）</summary>
-                <div className="op-details-body">
+                <div className="flex flex-col gap-3 pt-3">
                   <Field
                     id="ed-prompt"
                     label="翻译 system 提示词"
@@ -1542,7 +1518,7 @@ export default function InstanceEditor({
                     <textarea
                       id="ed-prompt"
                       ref={promptRef}
-                      className="textarea textarea-bordered w-full op-mono"
+                      className="textarea w-full font-mono text-xs"
                       rows={10}
                       value={draft.systemPrompt}
                       onChange={(event) => update('systemPrompt', event.target.value)}
@@ -1550,7 +1526,7 @@ export default function InstanceEditor({
                       disabled={saving}
                     />
                   </Field>
-                  <div className="op-inline">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       className="btn btn-xs btn-outline"
@@ -1575,7 +1551,7 @@ export default function InstanceEditor({
                     >
                       恢复默认提示词
                     </button>
-                    <span className="op-help" style={{ marginLeft: 'auto' }}>
+                    <span className="text-xs leading-relaxed text-base-content/60 break-words">
                       {promptCount} / {MAX_PROMPT_CHARS}
                     </span>
                   </div>
@@ -1584,16 +1560,16 @@ export default function InstanceEditor({
             </>
           ) : null}
 
-          <details className="op-details" open={!isOpenAI}>
+          <details className="collapse bg-base-200" open={!isOpenAI}>
             <summary>批次与并发</summary>
-            <div className="op-details-body">
-              <p className="op-sub">{batchLimitText}</p>
-              <div className="op-row-3">
+            <div className="flex flex-col gap-3 pt-3">
+              <p className="text-sm leading-relaxed text-base-content/70 break-words">{batchLimitText}</p>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 <Field id="ed-batch-size" label="单批段数" error={errors.batchSize}>
                   <input
                     id="ed-batch-size"
                     type="number"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={draft.batchSize}
                     onChange={(event) => update('batchSize', event.target.value)}
                     min={MIN_BATCH_SIZE}
@@ -1606,7 +1582,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-batch-chars"
                     type="number"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={draft.batchMaxChars}
                     onChange={(event) => update('batchMaxChars', event.target.value)}
                     min={1}
@@ -1619,7 +1595,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-concurrency"
                     type="number"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={draft.maxConcurrency}
                     onChange={(event) => update('maxConcurrency', event.target.value)}
                     min={1}
@@ -1639,7 +1615,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-qps"
                     type="number"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={draft.qps}
                     onChange={(event) => update('qps', event.target.value)}
                     min={BAIDU_QPS.min}
@@ -1657,18 +1633,18 @@ export default function InstanceEditor({
             </div>
           </details>
 
-          <section className="op-section">
-            <h3 className="op-h3">
+          <section className="flex flex-col gap-3">
+            <h3 className="text-sm font-semibold">
               <KeyRound size={14} aria-hidden="true" /> 凭据
             </h3>
-            <div className="op-badge-row">
+            <div className="flex flex-wrap items-center gap-1.5">
               <StatusBadge
                 tone={credentials.key === 'ok' || credentials.key === 'none' ? 'ok' : credentials.key === 'partial' ? 'warn' : 'idle'}
               >
                 {credentials.label}
               </StatusBadge>
-              {!requiresKey ? <span className="op-help">该实例无需密钥。</span> : null}
-              <span className="op-help">只显示是否已配置，不显示明文。</span>
+              {!requiresKey ? <span className="text-xs leading-relaxed text-base-content/60 break-words">该实例无需密钥。</span> : null}
+              <span className="text-xs leading-relaxed text-base-content/60 break-words">只显示是否已配置，不显示明文。</span>
             </div>
 
             {!requiresKey ? null : isOpenAI ? (
@@ -1682,11 +1658,11 @@ export default function InstanceEditor({
                 }
                 help="留空表示不修改；这里不会显示明文。"
               >
-                <div className="op-inline">
+                <div className="flex flex-wrap items-center gap-2">
                   <input
                     id="ed-apikey"
                     type={showSecret ? 'text' : 'password'}
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={apiKey}
                     onChange={(event) => setApiKey(event.target.value)}
                     placeholder={instance.hasKey ? '已配置，留空表示不修改' : '填写 API Key'}
@@ -1704,7 +1680,7 @@ export default function InstanceEditor({
                 </div>
               </Field>
             ) : (
-              <div className="op-row">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <Field
                   id="ed-appid"
                   label="APPID"
@@ -1718,7 +1694,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-appid"
                     type="text"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-sm w-full"
                     value={appId}
                     onChange={(event) => setAppId(event.target.value)}
                     placeholder={instance.credentialFields?.appId ? '已配置，留空表示不修改' : '百度 APPID'}
@@ -1736,11 +1712,11 @@ export default function InstanceEditor({
                   }
                   help="留空表示不修改；这里不会显示明文。"
                 >
-                  <div className="op-inline">
+                  <div className="flex flex-wrap items-center gap-2">
                     <input
                       id="ed-secret"
                       type={showSecret ? 'text' : 'password'}
-                      className="input input-bordered input-sm w-full"
+                      className="input input-sm w-full"
                       value={secretKey}
                       onChange={(event) => setSecretKey(event.target.value)}
                       placeholder={instance.credentialFields?.secretKey ? '已配置，留空表示不修改' : '百度密钥'}
@@ -1761,7 +1737,7 @@ export default function InstanceEditor({
             )}
 
             {(instance.hasKey || instance.credentialFields?.apiKey || instance.credentialFields?.appId || instance.credentialFields?.secretKey) ? (
-              <div className="op-inline">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   className="btn btn-sm btn-error btn-outline"
@@ -1772,25 +1748,25 @@ export default function InstanceEditor({
                   清除凭据
                 </button>
                 {active ? (
-                  <span className="op-help">清除当前实例的凭据会自动改选下一个可用实例。</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">清除当前实例的凭据会自动改选下一个可用实例。</span>
                 ) : null}
               </div>
             ) : null}
           </section>
 
           {saveError ? (
-            <div className="op-warning is-warn" role="alert">
+            <div className="alert alert-warning" role="alert">
               <AlertTriangle size={15} aria-hidden="true" />
-              <span className="op-warning-text">{saveError}</span>
+              <span className="min-w-0 break-words">{saveError}</span>
             </div>
           ) : null}
         </div>
 
-        <footer className="op-drawer-footer">
+        <footer className="flex items-center gap-2 border-t border-base-300 p-3">
           <button type="button" className="btn btn-sm" onClick={requestClose} disabled={saving}>
             取消
           </button>
-          <span className="op-footer-spacer" />
+          <span className="ml-auto" />
           <button
             type="button"
             className="btn btn-sm btn-primary"

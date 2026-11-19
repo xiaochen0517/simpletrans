@@ -10,6 +10,8 @@
  * 约束：普通网页不受影响；本页只在扩展页面内使用，不经过清单注入。
  */
 
+import '../shared/global.css';
+import './testpage.css';
 import { getTask } from '../content/index.js';
 
 const startButton = document.getElementById('test-start');
@@ -26,7 +28,7 @@ const task = getTask();
 function setStatus(message, tone = 'info') {
   if (!status) return;
   status.textContent = message;
-  status.dataset.tone = tone;
+  status.className = tone === 'error' ? 'badge badge-sm badge-error' : 'badge badge-sm';
 }
 
 /**

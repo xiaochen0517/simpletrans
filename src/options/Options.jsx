@@ -19,11 +19,9 @@ import {
   FlaskConical,
   Info,
   LayoutDashboard,
-  LoaderCircle,
   Settings2,
   Sparkles,
 } from 'lucide-react';
-import './options.css';
 import { MESSAGE_TYPES } from '../shared/protocol.js';
 import { STORAGE_KEYS } from '../shared/storage.js';
 import { getSettings } from '../shared/settings.js';
@@ -461,105 +459,112 @@ export default function Options() {
 
   return (
     <AppContext.Provider value={appValue}>
-      <div className="op-shell">
-        <aside className="op-sidebar">
-          <div className="op-brand">
-            <span className="op-brand-mark" aria-hidden="true">
-              <Sparkles size={16} />
-            </span>
-            <div>
-              <h1 className="op-brand-title">SimpleTrans</h1>
-              <span className="op-brand-sub">网页双语对照翻译</span>
-            </div>
-          </div>
-
-          <nav className="op-nav" aria-label="设置分类">
-            {ROUTES.map((item) => {
-              const Icon = ROUTE_ICONS[item.id] ?? Activity;
-              const active = route === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="op-nav-item"
-                  aria-current={active ? 'page' : undefined}
-                  onClick={() => navigate(item.path)}
-                >
-                  <Icon size={15} aria-hidden="true" />
-                  <span className="op-nav-label">
-                    <span className="op-nav-full">{item.label}</span>
-                    <span className="op-nav-short">{item.short}</span>
-                  </span>
-                  {item.id === 'instances' && instances.length > 0 ? (
-                    needsAttention ? (
-                      <span className="op-nav-dot" aria-label="有实例需要处理" />
-                    ) : (
-                      <span className="op-nav-count">{instances.length}</span>
-                    )
-                  ) : null}
-                </button>
-              );
-            })}
-          </nav>
-
-          {version ? <div className="op-sidebar-footer">v{version}</div> : null}
-        </aside>
-
-        <div className="op-main">
-          <header className="op-topbar">
-            <h2 className="op-title">{currentRoute.label}</h2>
-            <div className="op-topbar-right">
-              <span
-                className={`op-status${saveError ? ' is-error' : savingCount > 0 ? '' : ' is-ok'}`}
-                aria-live="polite"
-                title={saveError ?? undefined}
-              >
-                {savingCount > 0 ? <LoaderCircle size={13} className="op-spin" aria-hidden="true" /> : null}
-                {statusText}
+      <div className="min-h-screen bg-base-200 text-base-content">
+        <div className="mx-auto grid min-h-screen w-full max-w-[1440px] grid-cols-1 bg-base-200 lg:grid-cols-[14rem_minmax(0,1fr)]">
+          <aside className="sticky top-0 z-20 flex flex-col gap-2 border-b border-base-300 bg-base-100 p-3 lg:h-screen lg:border-b-0 lg:border-r lg:gap-3.5 lg:p-4">
+            <div className="flex items-center gap-2 px-1">
+              <span className="grid size-8 shrink-0 place-items-center rounded-box bg-primary text-primary-content" aria-hidden="true">
+                <Sparkles size={16} />
               </span>
-              {version ? <span className="op-version">v{version}</span> : null}
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost"
-                aria-label="打开翻译测试页"
-                title="打开翻译测试页"
-                onClick={async () => {
-                  const result = await openTestPage();
-                  notify(result.ok ? 'ok' : 'error', result.ok ? '已打开翻译测试页' : result.message);
-                }}
-              >
-                <FlaskConical size={15} aria-hidden="true" />
-              </button>
+              <div>
+                <h1 className="m-0 whitespace-nowrap text-base font-bold">SimpleTrans</h1>
+                <span className="block text-xs text-base-content/60">网页双语对照翻译</span>
+              </div>
             </div>
-          </header>
 
-          <div className="op-content">
-            {loadError && !settings ? (
-              <div className="op-card">
-                <div className="op-warning is-warn">
-                  <span className="op-warning-text">{loadError}</span>
-                  <span className="op-warning-action">
+            <nav aria-label="设置分类">
+              <ul className="menu menu-sm flex flex-row gap-1 overflow-x-auto p-0 lg:flex-col">
+                {ROUTES.map((item) => {
+                  const Icon = ROUTE_ICONS[item.id] ?? Activity;
+                  const active = route === item.id;
+                  return (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm${active ? ' menu-active' : ''}`}
+                        aria-current={active ? 'page' : undefined}
+                        onClick={() => navigate(item.path)}
+                      >
+                        <Icon size={15} aria-hidden="true" />
+                        <span className="min-w-0 truncate">
+                          <span className="hidden lg:inline">{item.label}</span>
+                          <span className="lg:hidden">{item.short}</span>
+                        </span>
+                        {item.id === 'instances' && instances.length > 0 ? (
+                          needsAttention ? (
+                            <span className="status status-warning ml-auto" aria-label="有实例需要处理" />
+                          ) : (
+                            <span className="badge badge-xs ml-auto">{instances.length}</span>
+                          )
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </nav>
+
+            {version ? <div className="mt-auto px-1.5 text-xs text-base-content/60">v{version}</div> : null}
+          </aside>
+
+          <div className="flex min-w-0 flex-col">
+            <header className="z-10 flex flex-wrap items-center gap-3 border-b border-base-300 bg-base-100 px-4 py-3 sm:px-6 lg:sticky lg:top-0">
+              <h2 className="m-0 text-xl font-bold">{currentRoute.label}</h2>
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-flex min-h-5 items-center gap-1 text-xs ${
+                    saveError ? 'text-error' : savingCount > 0 ? 'text-base-content/70' : 'text-success'
+                  }`}
+                  aria-live="polite"
+                  title={saveError ?? undefined}
+                >
+                  {savingCount > 0 ? (
+                    <span className="loading loading-spinner loading-xs" aria-hidden="true" />
+                  ) : null}
+                  {statusText}
+                </span>
+                {version ? <span className="badge badge-sm badge-ghost">v{version}</span> : null}
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  aria-label="打开翻译测试页"
+                  title="打开翻译测试页"
+                  onClick={async () => {
+                    const result = await openTestPage();
+                    notify(result.ok ? 'ok' : 'error', result.ok ? '已打开翻译测试页' : result.message);
+                  }}
+                >
+                  <FlaskConical size={15} aria-hidden="true" />
+                </button>
+              </div>
+            </header>
+
+            <div className="w-full px-4 py-5 pb-16 sm:px-6">
+              {loadError && !settings ? (
+                <div className="alert alert-warning">
+                  <span className="min-w-0 break-words">{loadError}</span>
+                  <span className="ml-auto shrink-0">
                     <button type="button" className="btn btn-xs" onClick={() => void loadAll()}>
                       重试
                     </button>
                   </span>
                 </div>
-              </div>
-            ) : (
-              <div className="op-stack">
-                {enginesError ? (
-                  <div className="op-warning is-warn">
-                    <span className="op-warning-text">读取实例列表失败：{enginesError}</span>
-                    <span className="op-warning-action">
-                      <button type="button" className="btn btn-xs" onClick={() => void refreshInstances()}>
-                        重试
-                      </button>
-                    </span>
-                  </div>
-                ) : null}
-                <View />
-              </div>
-            )}
+              ) : (
+                <div className="flex flex-col gap-4">
+                  {enginesError ? (
+                    <div className="alert alert-warning">
+                      <span className="min-w-0 break-words">读取实例列表失败：{enginesError}</span>
+                      <span className="ml-auto shrink-0">
+                        <button type="button" className="btn btn-xs" onClick={() => void refreshInstances()}>
+                          重试
+                        </button>
+                      </span>
+                    </div>
+                  ) : null}
+                  <View />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

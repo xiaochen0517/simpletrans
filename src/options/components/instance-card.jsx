@@ -24,7 +24,7 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-import StatusBadge from './status-badge.jsx';
+import StatusBadge from '../../shared/ui/status-badge.jsx';
 import {
   credentialState,
   instanceDetail,
@@ -70,15 +70,15 @@ export default function InstanceCard({
 
   return (
     <article
-      className={`op-instance${active ? ' is-current' : ''}${unsupported ? ' is-unsupported' : ''}`}
+      className={`card gap-2 bg-base-100 p-3.5${active ? ' card-border border-primary' : ''}${unsupported ? ' opacity-70' : ''}`}
       aria-label={`翻译实例 ${instance.name}`}
     >
-      <div className="op-instance-head">
-        <span className="op-instance-icon" aria-hidden="true">
+      <div className="flex items-start gap-2">
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-base-200 text-primary" aria-hidden="true">
           <Icon size={15} />
         </span>
-        <div className="op-instance-titles">
-          <div className="op-instance-name">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-sm font-semibold break-words">
             <span>{instance.name}</span>
             {active ? (
               <StatusBadge tone="primary" icon={<Star size={11} aria-hidden="true" />}>
@@ -91,12 +91,12 @@ export default function InstanceCard({
               </StatusBadge>
             ) : null}
           </div>
-          <div className="op-instance-meta">{typeBadgeLabel(instance)}</div>
-          <div className="op-instance-meta">{instanceDetail(instance)}</div>
+          <div className="text-xs leading-relaxed text-base-content/60 break-words">{typeBadgeLabel(instance)}</div>
+          <div className="text-xs leading-relaxed text-base-content/60 break-words">{instanceDetail(instance)}</div>
         </div>
       </div>
 
-      <div className="op-badge-row">
+      <div className="flex flex-wrap items-center gap-1.5">
         {unsupported ? (
           <StatusBadge tone="warn" icon={<AlertTriangle size={11} aria-hidden="true" />}>
             类型不受支持
@@ -131,7 +131,7 @@ export default function InstanceCard({
       </div>
 
       {!unsupported ? (
-        <label className="op-check">
+        <label className="inline-flex items-center gap-2 text-sm">
           <input
             type="checkbox"
             className="toggle toggle-sm"
@@ -145,8 +145,8 @@ export default function InstanceCard({
       ) : null}
 
       {permission && permission.key !== 'ok' ? (
-        <div className="op-inline">
-          <span className="op-help">接口域名未授权，测试与翻译会失败。</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">接口域名未授权，测试与翻译会失败。</span>
           <button
             type="button"
             className="btn btn-xs btn-warning"
@@ -158,7 +158,7 @@ export default function InstanceCard({
         </div>
       ) : null}
 
-      <div className="op-instance-actions">
+      <div className="flex flex-wrap gap-1.5 pt-0.5">
         {!unsupported ? (
           <>
             <button type="button" className="btn btn-xs" onClick={onEdit} disabled={busy}>

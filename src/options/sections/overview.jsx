@@ -24,7 +24,7 @@ import {
   Trash2,
   ExternalLink,
 } from 'lucide-react';
-import StatusBadge from '../components/status-badge.jsx';
+import StatusBadge from '../../shared/ui/status-badge.jsx';
 import {
   activeUsability,
   credentialState,
@@ -53,9 +53,9 @@ function logLevelLabel(level) {
  */
 function Card({ title, icon, children, action }) {
   return (
-    <div className="op-card">
-      <div className="op-card-head">
-        <span className="op-card-title">
+    <div className="card gap-2 bg-base-100 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
           {icon}
           {title}
         </span>
@@ -87,19 +87,19 @@ export default function Overview() {
 
   if (loading) {
     return (
-      <div className="op-stack" aria-busy="true" aria-live="polite">
-        <div className="op-card">
-          <div className="op-skeleton" aria-label="正在读取设置">
-            <span className="op-skeleton-line" style={{ width: '40%' }} />
-            <span className="op-skeleton-line" style={{ width: '70%' }} />
+      <div className="flex flex-col gap-4" aria-busy="true" aria-live="polite">
+        <div className="card gap-2 bg-base-100 p-4">
+          <div className="grid gap-2.5" aria-label="正在读取设置">
+            <span className="skeleton block h-3 w-[40%]" />
+            <span className="skeleton block h-3 w-[70%]" />
           </div>
         </div>
-        <div className="op-grid op-grid-3">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {[0, 1, 2, 3, 4, 5].map((index) => (
-            <div className="op-card" key={index}>
-              <div className="op-skeleton">
-                <span className="op-skeleton-line" style={{ width: '45%' }} />
-                <span className="op-skeleton-line" style={{ width: '80%' }} />
+            <div className="card gap-2 bg-base-100 p-4" key={index}>
+              <div className="grid gap-2.5">
+                <span className="skeleton block h-3 w-[45%]" />
+                <span className="skeleton block h-3 w-[80%]" />
               </div>
             </div>
           ))}
@@ -112,16 +112,16 @@ export default function Overview() {
   const permission = permissionState(active);
 
   return (
-    <div className="op-stack">
-      <section className={`op-warning${summary.tone === 'warn' ? ' is-warn' : ''}`} aria-live="polite">
+    <div className="flex flex-col gap-4">
+      <section className={`alert ${summary.tone === 'warn' ? 'alert-warning' : 'alert-info'}`} aria-live="polite">
         {summary.tone === 'warn' ? (
           <AlertTriangle size={16} aria-hidden="true" />
         ) : (
           <CheckCircle2 size={16} aria-hidden="true" />
         )}
-        <span className="op-warning-text">{summary.text}</span>
+        <span className="min-w-0 break-words">{summary.text}</span>
         {summary.action ? (
-          <span className="op-warning-action">
+          <span className="ml-auto shrink-0">
             <button
               type="button"
               className="btn btn-xs btn-primary"
@@ -138,14 +138,14 @@ export default function Overview() {
       </section>
 
       {warnings.length > 0 ? (
-        <section className="op-section" aria-label="待办与警告">
-          <div className="op-stack" style={{ gap: 8 }}>
+        <section className="flex flex-col gap-3" aria-label="待办与警告">
+          <div className="flex flex-col gap-2">
             {warnings.map((warning) => (
-              <div key={warning.id} className={`op-warning${warning.tone === 'warn' ? ' is-warn' : ''}`}>
+              <div key={warning.id} className={`alert ${warning.tone === 'warn' ? 'alert-warning' : 'alert-info'}`}>
                 <AlertTriangle size={15} aria-hidden="true" />
-                <span className="op-warning-text">{warning.text}</span>
+                <span className="min-w-0 break-words">{warning.text}</span>
                 {warning.action ? (
-                  <span className="op-warning-action">
+                  <span className="ml-auto shrink-0">
                     <button
                       type="button"
                       className="btn btn-xs"
@@ -161,7 +161,7 @@ export default function Overview() {
         </section>
       ) : null}
 
-      <section className="op-grid op-grid-3" aria-label="当前状态">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-label="当前状态">
         <Card
           title="当前翻译方式"
           icon={<Sparkles size={13} aria-hidden="true" />}
@@ -173,27 +173,27 @@ export default function Overview() {
         >
           {active ? (
             <>
-              <span className="op-card-value">{active.name}</span>
-              <div className="op-badge-row">
+              <span className="text-base font-semibold break-words">{active.name}</span>
+              <div className="flex flex-wrap items-center gap-1.5">
                 <StatusBadge tone="primary">{typeBadgeLabel(active)}</StatusBadge>
                 <StatusBadge tone={usability.usable ? 'ok' : 'warn'}>
                   {usability.usable ? '可用' : '不可用'}
                 </StatusBadge>
               </div>
-              <span className="op-card-meta">{instanceDetail(active)}</span>
-              <div className="op-badge-row">
+              <span className="text-xs leading-relaxed text-base-content/60 break-words">{instanceDetail(active)}</span>
+              <div className="flex flex-wrap items-center gap-1.5">
                 <StatusBadge tone={credentials.key === 'ok' || credentials.key === 'none' ? 'ok' : 'warn'}>
                   {credentials.label}
                 </StatusBadge>
                 {permission ? <StatusBadge tone={permission.key === 'ok' ? 'ok' : 'warn'}>{permission.label}</StatusBadge> : null}
                 {active.enabled === false ? <StatusBadge tone="idle">已停用</StatusBadge> : null}
               </div>
-              {!usability.usable ? <span className="op-card-meta">{usability.reason}</span> : null}
+              {!usability.usable ? <span className="text-xs leading-relaxed text-base-content/60 break-words">{usability.reason}</span> : null}
             </>
           ) : (
             <>
-              <span className="op-card-value">未选择翻译方式</span>
-              <span className="op-card-meta">新增或启用一个实例后即可翻译。</span>
+              <span className="text-base font-semibold break-words">未选择翻译方式</span>
+              <span className="text-xs leading-relaxed text-base-content/60 break-words">新增或启用一个实例后即可翻译。</span>
             </>
           )}
         </Card>
@@ -207,10 +207,10 @@ export default function Overview() {
             </button>
           }
         >
-          <span className="op-card-value">
+          <span className="text-base font-semibold break-words">
             {languageLabel(settings?.sourceLang) || '未知'} → {languageLabel(settings?.targetLang) || '未知'}
           </span>
-          <span className="op-card-meta">语言进入缓存 key，切换后不会串用旧缓存。</span>
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">语言进入缓存 key，切换后不会串用旧缓存。</span>
         </Card>
 
         <Card
@@ -222,13 +222,13 @@ export default function Overview() {
             </button>
           }
         >
-          <div className="op-badge-row">
+          <div className="flex flex-wrap items-center gap-1.5">
             <StatusBadge tone={settings?.cacheEnabled === false ? 'idle' : 'ok'}>
               {settings?.cacheEnabled === false ? '已关闭' : '已开启'}
             </StatusBadge>
             {cacheError ? <StatusBadge tone="warn">占用不可用</StatusBadge> : null}
           </div>
-          <span className="op-card-value">
+          <span className="text-base font-semibold break-words">
             {cacheLoading
               ? '正在读取…'
               : cacheStats
@@ -237,7 +237,7 @@ export default function Overview() {
                   ? '占用信息暂不可用'
                   : '—'}
           </span>
-          <span className="op-card-meta">
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">
             {cacheStats ? `${formatCount(cacheStats.entries)} 条` : '只保存在本机 IndexedDB'}
           </span>
         </Card>
@@ -251,10 +251,10 @@ export default function Overview() {
             </button>
           }
         >
-          <span className="op-card-value">
+          <span className="text-base font-semibold break-words">
             {settings?.keyStorage === 'sync' ? '跟随账号同步' : '仅本机'}
           </span>
-          <span className="op-card-meta">
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">
             已配置 {configuredCount} / {instances.length} 个实例；每个实例独立保存自己的密钥。
           </span>
           {settings?.keyStorage === 'sync' ? (
@@ -271,8 +271,8 @@ export default function Overview() {
             </button>
           }
         >
-          <span className="op-card-value">{logLevelLabel(settings?.logLevel)}</span>
-          <span className="op-card-meta">只输出浏览器控制台，不保存、不上传。</span>
+          <span className="text-base font-semibold break-words">{logLevelLabel(settings?.logLevel)}</span>
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">只输出浏览器控制台，不保存、不上传。</span>
         </Card>
 
         <Card
@@ -284,23 +284,23 @@ export default function Overview() {
             </button>
           }
         >
-          <span className="op-card-value">
+          <span className="text-base font-semibold break-words">
             {instances.length} 个实例
             {unsupported > 0 ? <StatusBadge tone="warn">含不支持</StatusBadge> : null}
           </span>
-          <span className="op-card-meta">
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">
             已启用 {enabledCount} · 未配置密钥 {missingKey} · 未授权 {unauthorized}
             {unsupported > 0 ? ` · 不支持 ${unsupported}` : ''}
           </span>
         </Card>
       </section>
 
-      <section className="op-section">
-        <h2 className="op-h2">
+      <section className="flex flex-col gap-3">
+        <h2 className="flex items-center gap-2 text-base font-bold">
           <Plus size={15} aria-hidden="true" />
           快捷操作
         </h2>
-        <div className="op-inline">
+        <div className="flex flex-wrap items-center gap-2">
           <button type="button" className="btn btn-sm btn-primary" onClick={() => app.openCreate(null)}>
             <Plus size={14} aria-hidden="true" />
             新增翻译实例
@@ -335,9 +335,9 @@ export default function Overview() {
         </div>
       </section>
 
-      <section className="op-section">
-        <h2 className="op-h2">最近操作</h2>
-        <p className="op-sub">
+      <section className="flex flex-col gap-3">
+        <h2 className="flex items-center gap-2 text-base font-bold">最近操作</h2>
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
           {lastAction
             ? `${lastAction.text} · ${new Date(lastAction.at).toLocaleTimeString('zh-CN')}`
             : '本次打开设置页后还没有保存或测试操作。'}

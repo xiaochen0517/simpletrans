@@ -1,113 +1,68 @@
 # SimpleTrans
 
-基于 React + Vite 的 Chrome 扩展（Manifest V3），把网页内容翻译成目标语言，并以双语对照方式显示。目标支持传统 MT 与 AI LLM 多引擎。
+English | [简体中文](README.zh.md)
 
-> **当前状态：P0–P5 已完成，P6 进行中**（P6.1–P6.4 已完成，验收 20261116；P6.5 待整体复验）。后台已统一翻译出口；页面注入的 Ctrl 单段与整页翻译统一走 `ST_PAGE_SUBMIT`，提交后按页面内唯一段落 id 逐段回显「已提交 → 翻译中 → 流式 → 译文」，失败显示错误；译文来自后台缓存命中或 A3 翻译队列（单段批流式、多段批一次 JSONL 请求按段返回），缓存命中几乎立即回显。整页首次提交当前视口附近段落，滚动后自动增量提交新段落。设置页可配置翻译实例的模型、思考强度、单批段数、批次最大字符数、最大并发数与 system 提示词，测试翻译使用已保存参数（经后台执行），并可调整日志级别；弹窗可打开扩展内的英文翻译测试页。P0–P10 版本号固定为 `0.1.0`，全部需求完成后正式发布。结构设计见 [`docs/项目架构.md`](docs/项目架构.md)。
+SimpleTrans is a Chrome extension (Manifest V3) that translates web pages in place and keeps the page bilingual: every translation is inserted right after the original paragraph instead of replacing it. Translate the whole page — the first batch covers the paragraphs around the current viewport and new paragraphs are submitted as you scroll — or translate a single paragraph by hovering over it and pressing `Ctrl`. Translations come from engine instances you configure yourself: OpenAI-compatible chat APIs (DeepSeek preset or any compatible endpoint) or Baidu Translate, each with its own credentials, batching, streaming and QPS settings, and results are cached locally so repeated paragraphs render instantly.
 
-## 目录结构
+## Installation (build from source)
 
-```
-public/
-  manifest.json        扩展清单（入口、注入、权限、commands）
-  icons/               扩展图标（可运行 npm run icons 重新生成占位图标）
-src/
-  background/          后台服务（A）
-    index.js           入口：监听器注册（P2）
-    router.js          A1 控制面：引擎列表、测试翻译与页面提交转交（P2/P6.3）
-    commands.js        A1 快捷键入口（P4/P7）
-    context-menu.js    A1 右键菜单入口（P7）
-    gateway.js         A2 请求网关：校验、缓存、切批、队列接线、取消、断线（P2/P6.3/P6.4）
-  popup/               工具栏弹窗（B）
-    index.html
-    main.jsx
-    Popup.jsx
-    popup.css
-    open-test-page.js  B2 打开测试页（P6.5）
-  options/             设置页（C，P2 最小测试表单经后台；P6.2 增加翻译实例参数）
-    index.html
-    main.jsx
-    Options.jsx
-  testpage/            翻译测试页（C，P6.5）
-    index.html         固定英文内容与页内操作条
-    main.js            加载 D 运行时、绑定页内操作条
-    testpage.css       测试页独立样式
-  content/             页面注入（D）
-    index.js           入口：建立桥单例、处理日志级别、命令与结果帧（P2/P4/P6.1/P6.3）
-    bridge.js          D4 与后台通信：连接、心跳、重连（P2）
-    hover.js           D2 悬停检测（P4）
-    task.js            D5 统一提交、页面会话与结果回显（P6.1/P6.3）
-    dom/scanner.js     D1 视口附近段落提取与段落 id（P6.1）
-    dom/renderer.js    D3 提交与译文状态渲染（P6.1）
-    content.css        译文样式（P4）
-  shared/              公共模块（E）与引擎/缓存目录
-    protocol.js        E1 消息协议：错误码、消息名、失败原因
-    constants.js       超时、心跳、载荷上限等数值
-    storage.js         E2 存储读写
-    settings.js        E2 设置与密钥
-    config/            E3 引擎类型目录与实例（registry / instances）
-    translate/         A3 适配器、提示词模板、批量编码与翻译队列（adapter / prompt / batch / queue）
-    cache/             A4 缓存 key 与存取（key / store）
-    log/               E4 日志（levels / record / logger，P3 创建）
-    global.css         弹窗与设置页的全局样式
-scripts/
-  build.mjs            三模式构建编排（web / background / content）
-  smoke.mjs            无浏览器冒烟门禁（基于 dist 产物）
-  gen-icons.js         生成占位图标
-tests/
-  unit/structure.test.js        结构、依赖边界与空壳约定
-  unit/architecture.test.js     架构 3.1 目录树与仓库一致性
-  unit/*.test.js                P1–P6.4 行为测试（协议、存储、设置、实例、适配器、批量编码、队列、网关、路由、桥、入口、日志、悬停、渲染）
-  helpers/chrome.js             chrome API stub（storage / storage.onChanged / runtime / Port / commands / tabs / scripting）
-  helpers/load.js               安装 stub 与动态导入
-vitest.config.js       单元测试配置
-vite.config.js         构建配置（按模式切换产物格式）
-dist/                  构建产物（加载到 Chrome 的目录，已在 .gitignore 中忽略）
-```
+SimpleTrans is distributed as source and loaded as an unpacked extension.
 
-新增或删除 `src/` 文件前先改架构 3.1 目录树；`tests/unit/architecture.test.js` 会强制两者一致。
-
-## 构建为什么分三次
-
-Content Script **不是 ES Module**，产物必须是自包含单文件（IIFE）；而 Popup / Options / Testpage
-是 HTML 页面、Background 可以是 ESM。Vite 无法在一次构建里按入口指定 `format`，因此
-`scripts/build.mjs` 分别以 `web` / `background` / `content` 三种模式调用 Vite：
-
-| 产物 | 格式 | 说明 |
-| --- | --- | --- |
-| `content.js` + `content.css` | IIFE | 内联全部依赖，CSS 固定文件名 |
-| `background.js` | ESM | `type: module` |
-| `popup/` `options/` `testpage/` | ESM + HTML | React + Tailwind（弹窗/设置页）；静态 HTML + 独立 CSS（测试页） |
-
-因此 content 可以放心 `import` `shared/protocol.js` 等纯模块，构建时会内联。
-
-## 开发
+Requirements: Node.js 20.19+ or 22.12+ (Vite 8), Chrome 116+.
 
 ```bash
 npm install
-npm test        # 单元测试（结构 + 架构一致性 + 行为）
-npm run dev     # 并行监听构建三个产物到 dist/
-npm run build   # 生产构建（先清空 dist）
-npm run smoke   # 无浏览器冒烟检查（先 build）
-npm run gate    # 单元测试 → 构建 → 冒烟，一条命令跑完
+npm run build
 ```
 
-## 日志
+`npm run build` writes the loadable extension to `dist/`.
 
-日志只输出到浏览器控制台，不落盘、不收集、不上传。设置页可调整级别：详细（Verbose）/ 信息（Info）/ 警告（Warning）/ 错误（Error）/ 关闭（Off），默认信息。日志记录不保存，刷新或关闭页面即丢失；问题反馈直接复制对应控制台。
+1. Open `chrome://extensions`.
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** and select the `dist/` folder.
+4. Open the options page from the popup and add an instance under 翻译实例 (instances): choose OpenAI 兼容 (OpenAI-compatible) or 百度翻译 (Baidu Translate), fill in its credentials and endpoint, grant the host permission, and set it as the current instance. The options page interface is currently in Chinese.
 
-| 上下文 | 控制台入口 |
-| ---- | ---- |
-| 页面注入 | 网页 DevTools → Console |
-| 工具栏弹窗 | 右键弹窗 → 检查 |
-| 设置页 | 右键设置页 → 检查 |
-| 后台服务 | `chrome://extensions` → Service Worker → 检查 |
+After changing the code, run `npm run dev` to rebuild, then reload the extension from `chrome://extensions`.
 
-级别调整后，后台、弹窗、设置页按各自打开/更新时机生效；已打开的网页需刷新或重连后生效。日志不含密钥、请求头/体与完整 URL；后台逐段 `page.item` 只输出段落序号、`hostId` 与长度，不输出原文。需要跨刷新查看时，可在 DevTools Console 设置中勾选 Preserve log；扩展本身不保存日志。
+## Development
 
-## 在 Chrome 中加载
+```bash
+npm run dev     # watch-build the web, background and content bundles into dist/
+npm test        # Vitest unit and component tests
+npm run build   # production build (clears dist/)
+npm run smoke   # artifact contract checks against dist/
+npm run gate    # test -> build -> smoke
+```
 
-1. 打开 `chrome://extensions`
-2. 打开右上角「开发者模式」
-3. 点击「加载已解压的扩展程序」，选择项目下的 `dist` 目录
-4. 修改代码后（`npm run dev` 会自动重新构建），在扩展页点击刷新按钮即可
-5. 翻译测试页：打开扩展弹窗，点击「打开测试页」，在新标签页中使用页内操作条或 Ctrl 进行人工验收；滚动长文区域可观察增量提交与逐段回显，译文来自后台缓存或真实翻译
+- `src/` and the directory tree in [`docs/项目架构.md`](docs/项目架构.md) section 3.1 must stay in sync; `tests/unit/architecture.test.js` enforces it.
+- Add or change behavior together with tests under `tests/`; `npm run gate` must pass before review.
+- UI changes need a human review in Chrome; automated checks are only a quality gate.
+
+## Project structure
+
+```text
+public/            manifest and extension icons
+src/
+  background/      service worker: message routing, request gateway, translation queue, cache
+  popup/           toolbar popup: active instance, page commands
+  options/         options page: overview, instances, general settings, test translation, data, about
+  testpage/        built-in English page for manual translation testing
+  content/         page injection: paragraph scanning, hover tracking, translation rendering, task scheduling
+  shared/          protocol, storage and settings, engine configs, adapters, cache, logging, UI components
+scripts/           build orchestration, smoke checks, icon generation
+tests/             unit and component tests
+docs/              architecture, module details, requirement and bug records
+```
+
+Main features:
+
+- **Two modes** — whole-page translation (viewport-first, with incremental submission on scroll) and single-paragraph translation (`Ctrl` while hovering).
+- **Multiple engine instances** — OpenAI-compatible chat APIs (DeepSeek preset or a custom endpoint) and Baidu Translate; each instance keeps its own credentials, parameters and prompt.
+- **Batching and streaming** — one request translates several paragraphs; OpenAI-compatible instances stream results while generating.
+- **Resilience** — retry on network and rate-limit errors, per-instance Baidu QPS limiting, batch-alignment split, per-paragraph retry.
+- **Local cache** — paragraph-level results in IndexedDB with size and count limits, plus a clear action in the options page.
+- **Diagnostics** — one logging module shared by all contexts, console-only, with a configurable level.
+
+## License
+
+SimpleTrans is released under the [MIT License](LICENSE). The extension icon is Lucide `languages` (ISC); third-party components and licenses are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

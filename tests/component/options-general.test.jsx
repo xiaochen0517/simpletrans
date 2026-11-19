@@ -8,12 +8,13 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  chooseOption,
   click,
   createHarness,
   findButton,
+  findSelect,
   mountOptions,
   readSettings,
-  setValue,
   unmountOptions,
 } from '../helpers/options.jsx';
 import { createInstance, writeCredentials } from '../../src/shared/config/instances.js';
@@ -46,8 +47,7 @@ describe('即时保存', () => {
     const container = await mountOptions(harness, '#/general');
     expect(container.textContent).toContain('当前：自动检测 → 中文');
 
-    const selects = block(container, '语言').querySelectorAll('select');
-    await setValue(selects[1], 'ja');
+    await chooseOption('目标语言', '日语', container);
 
     const settings = await readSettings(harness);
     expect(settings.targetLang).toBe('ja');
@@ -56,7 +56,7 @@ describe('即时保存', () => {
 
   it('日志级别即时保存', async () => {
     const container = await mountOptions(harness, '#/general');
-    await setValue(block(container, '日志').querySelector('select'), 'debug');
+    await chooseOption('日志级别', '详细', container);
 
     const settings = await readSettings(harness);
     expect(settings.logLevel).toBe('debug');
@@ -81,16 +81,15 @@ describe('即时保存', () => {
 
   it('保存失败时回滚到原值并显示行内错误', async () => {
     const container = await mountOptions(harness, '#/general');
-    const targetSelect = block(container, '语言').querySelectorAll('select')[1];
 
     const originalSet = harness.chrome.storage.sync.set;
     harness.chrome.storage.sync.set = async () => {
       throw new Error('storage unavailable');
     };
-    await setValue(targetSelect, 'ko');
+    await chooseOption('目标语言', '韩语', container);
     harness.chrome.storage.sync.set = originalSet;
 
-    expect(targetSelect.value).toBe('zh');
+    expect(findSelect('目标语言', container)?.querySelector('summary').textContent).toContain('中文');
     expect(container.textContent).toContain('保存失败，已恢复原值；请重试。');
     expect((await readSettings(harness)).targetLang).toBe('zh');
   });
@@ -99,7 +98,7 @@ describe('即时保存', () => {
 describe('密钥存放位置', () => {
   it('切换前确认，确认后迁移凭据并更新设置', async () => {
     const container = await mountOptions(harness, '#/general');
-    const syncOption = [...block(container, '密钥存放位置').querySelectorAll('.op-option-card')].find(
+    const syncOption = [...block(container, '密钥存放位置').querySelectorAll('button[aria-pressed]')].find(
       (card) => card.textContent.includes('跟随账号同步')
     );
     await click(syncOption);
@@ -120,7 +119,7 @@ describe('密钥存放位置', () => {
 
   it('迁移失败时保留原数据与设置', async () => {
     const container = await mountOptions(harness, '#/general');
-    const syncOption = [...block(container, '密钥存放位置').querySelectorAll('.op-option-card')].find(
+    const syncOption = [...block(container, '密钥存放位置').querySelectorAll('button[aria-pressed]')].find(
       (card) => card.textContent.includes('跟随账号同步')
     );
     await click(syncOption);

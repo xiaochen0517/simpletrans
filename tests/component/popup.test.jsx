@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 /**
- * 弹窗组件测试（P7）
+ * 弹窗组件测试
  *
  * 覆盖：基础信息展示与降级、翻译方式下拉（只列已配置实例、切换写入 activeInstanceId）、
- *      图标导航（设置页 / 测试页）、失败提示、尺寸与主题契约。
+ *      图标导航、失败提示与 daisyUI 默认主题契约。
  * 用 jsdom + react-dom/client + React 的 act 渲染，不引入 Testing Library；
  * chrome API 由 tests/helpers/chrome.js 的 stub 提供。
  */
@@ -70,25 +70,44 @@ function findButton(text) {
   );
 }
 
-/** 取翻译方式下拉。 */
+/** 取下拉容器、触发器与面板。 */
 function findSelect() {
   return container.querySelector('#engine-select');
 }
 
-/** 模拟一次点击。 */
-async function click(button) {
+function findSummary() {
+  return findSelect()?.querySelector('summary');
+}
+
+function findOptions() {
+  return [...(findSelect()?.querySelectorAll('button[role="radio"]') ?? [])];
+}
+
+/** 展开下拉；jsdom 不保证 summary 的默认 toggle 行为，直接设置 open 并派发 toggle。 */
+async function openSelect() {
+  const details = findSelect();
   await act(async () => {
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
   });
   await flush();
 }
 
 /** 模拟一次下拉选择。 */
 async function selectEngine(value) {
-  const select = findSelect();
+  await openSelect();
+  const option = findOptions().find((button) => button.dataset.value === value);
+  if (!option) throw new Error(`找不到选项 ${value}`);
   await act(async () => {
-    select.value = value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await flush();
+}
+
+/** 模拟一次点击。 */
+async function click(button) {
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
   await flush();
 }
@@ -124,11 +143,14 @@ describe('弹窗基础信息', () => {
   it('下拉显示当前翻译方式，并显示目标语言与密钥状态', async () => {
     await renderPopup();
 
-    const select = findSelect();
-    expect(select).toBeTruthy();
-    expect(select.value).toBe('default');
-    expect(select.options[0].textContent).toContain('DeepSeek');
-    expect(select.options[0].textContent).toContain('deepseek-chat');
+    const summary = findSummary();
+    expect(summary).toBeTruthy();
+    expect(summary.textContent).toContain('DeepSeek');
+
+    await openSelect();
+    const labels = findOptions().map((button) => button.textContent);
+    expect(labels[0]).toContain('DeepSeek');
+    expect(labels[0]).toContain('deepseek-chat');
 
     const text = container.textContent;
     expect(text).toContain('翻译方式');
@@ -151,7 +173,7 @@ describe('弹窗基础信息', () => {
 
     expect(container.textContent).toContain('密钥未配置');
     expect(container.textContent).not.toContain('密钥已配置');
-    expect(findSelect().disabled).toBe(true);
+    expect(findSummary().getAttribute('aria-disabled')).toBe('true');
     expect(container.textContent).toContain('未配置翻译方式');
     expect(container.textContent).toContain('没有可用的翻译实例');
   });
@@ -173,7 +195,7 @@ describe('弹窗基础信息', () => {
     };
     await renderPopup();
 
-    expect(findSelect().disabled).toBe(false);
+    expect(findSummary().getAttribute('aria-disabled')).toBeNull();
     expect(container.textContent).toContain('无需密钥');
   });
 
@@ -206,12 +228,14 @@ describe('翻译方式切换', () => {
       { id: 'third', name: 'Third', model: 'm3', hasKey: true },
     ];
     await renderPopup();
+    await openSelect();
 
-    const labels = [...findSelect().options].map((option) => option.textContent);
-    expect(labels).toEqual([
-      'DeepSeek · OpenAI 兼容/deepseek · deepseek-chat',
-      'Third · m3',
-    ]);
+    const labels = findOptions().map((button) => button.textContent.trim().replace(/\s+/g, ' '));
+    expect(labels[0]).toContain('DeepSeek');
+    expect(labels[0]).toContain('OpenAI 兼容/deepseek');
+    expect(labels[0]).toContain('deepseek-chat');
+    expect(labels[1]).toContain('Third');
+    expect(labels.some((label) => label.includes('Backup'))).toBe(false);
   });
 
   it('停用实例不出现在下拉中', async () => {
@@ -220,9 +244,11 @@ describe('翻译方式切换', () => {
       { id: 'off', name: 'Off', model: 'm-off', hasKey: true, enabled: false },
     ];
     await renderPopup();
+    await openSelect();
 
-    const labels = [...findSelect().options].map((option) => option.textContent);
-    expect(labels).toEqual(['DeepSeek · OpenAI 兼容/deepseek · deepseek-chat']);
+    const labels = findOptions().map((button) => button.textContent);
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toContain('DeepSeek');
   });
 
   it('按 activeInstanceId 选中当前翻译方式', async () => {
@@ -235,7 +261,10 @@ describe('翻译方式切换', () => {
     });
 
     await renderPopup();
-    expect(findSelect().value).toBe('third');
+    expect(findSummary().textContent).toContain('Third');
+    await openSelect();
+    const current = findOptions().find((button) => button.dataset.value === 'third');
+    expect(current.getAttribute('aria-checked')).toBe('true');
   });
 
   it('切换后把选择写入 settings.activeInstanceId', async () => {
@@ -249,7 +278,7 @@ describe('翻译方式切换', () => {
 
     const stored = await chromeStub.storage.sync.get(STORAGE_KEYS.settings);
     expect(stored[STORAGE_KEYS.settings].activeInstanceId).toBe('third');
-    expect(findSelect().value).toBe('third');
+    expect(findSummary().textContent).toContain('Third');
   });
 
   it('写入失败时回退到上一个选择并提示', async () => {
@@ -264,7 +293,7 @@ describe('翻译方式切换', () => {
     };
     await selectEngine('third');
 
-    expect(findSelect().value).toBe('default');
+    expect(findSummary().textContent).toContain('DeepSeek');
     expect(container.textContent).toContain('切换翻译方式失败，请重试');
   });
 });
@@ -312,24 +341,24 @@ describe('图标导航入口', () => {
 describe('尺寸与样式契约', () => {
   it('弹窗宽度写在视口根节点上，内容区可纵向滚动', async () => {
     const css = await readFile(join(process.cwd(), 'src/popup/popup.css'), 'utf8');
+    const source = await readFile(join(process.cwd(), 'src/popup/Popup.jsx'), 'utf8');
 
     expect(css, '缺少 html/body 固定宽度').toMatch(/html,\s*body\s*\{[^}]*width:\s*360px/s);
-    expect(css, '缺少内容区高度上限').toMatch(/\.popup\s*\{[^}]*max-height:\s*600px/s);
-    expect(css, '内容区未开启纵向滚动').toMatch(/\.popup\s*\{[^}]*overflow-y:\s*auto/s);
+    expect(css, '弹窗 CSS 不应再包含自定义皮肤').not.toContain('.st-');
+    expect(source).toContain('max-h-[600px]');
+    expect(source).toContain('overflow-y-auto');
   });
 
   it('两个命令按钮并排展示', async () => {
-    const css = await readFile(join(process.cwd(), 'src/popup/popup.css'), 'utf8');
-    expect(css).toMatch(/\.st-actions\s*\{[^}]*grid-template-columns:\s*1fr\s+1fr/s);
+    const source = await readFile(join(process.cwd(), 'src/popup/Popup.jsx'), 'utf8');
+    expect(source).toContain('grid grid-cols-2 gap-2');
   });
 
-  it('共享样式提供随系统切换的两套绿色主题', async () => {
+  it('共享样式使用 daisyUI 默认 light/dark 主题', async () => {
     const css = await readFile(join(process.cwd(), 'src/shared/global.css'), 'utf8');
 
-    expect(css).toContain('name: "simpletrans-light"');
-    expect(css).toContain('prefersdark: true');
-    expect(css, '深色主题不是绿色主色').toMatch(
-      /name: "simpletrans-dark"[\s\S]*?--color-primary:\s*#34d399/
-    );
+    expect(css).toContain('themes: light --default, dark --prefersdark');
+    expect(css).not.toContain('simpletrans-light');
+    expect(css).not.toContain('@plugin "daisyui/theme"');
   });
 });

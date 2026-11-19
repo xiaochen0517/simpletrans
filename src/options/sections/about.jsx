@@ -108,85 +108,85 @@ export default function About() {
   }
 
   return (
-    <div className="op-stack">
-      <div className="op-section-head">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="op-h2">
+          <h2 className="flex items-center gap-2 text-base font-bold">
             <Info size={15} aria-hidden="true" />
             关于
           </h2>
-          <p className="op-sub">版本、权限与数据处理说明；反馈问题时请附上诊断信息。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">版本、权限与数据处理说明；反馈问题时请附上诊断信息。</p>
         </div>
       </div>
 
-      <section className="op-card" aria-label="基本信息">
-        <span className="op-card-title">基本信息</span>
-        <dl className="op-kv">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="基本信息">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">基本信息</span>
+        <dl className="flex flex-wrap gap-2 text-sm">
           <dt>名称</dt>
           <dd>{manifest.name ?? 'SimpleTrans'}</dd>
         </dl>
-        <dl className="op-kv">
+        <dl className="flex flex-wrap gap-2 text-sm">
           <dt>版本</dt>
           <dd>{manifest.version ?? '未知'}</dd>
         </dl>
-        <dl className="op-kv">
+        <dl className="flex flex-wrap gap-2 text-sm">
           <dt>配置版本</dt>
           <dd>{app.settings?.configVersion ?? '未知'}</dd>
         </dl>
-        <dl className="op-kv">
+        <dl className="flex flex-wrap gap-2 text-sm">
           <dt>缓存数据库版本</dt>
           <dd>{CACHE_DB_VERSION}</dd>
         </dl>
       </section>
 
-      <section className="op-card" aria-label="权限">
-        <span className="op-card-title">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="权限">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
           <ShieldCheck size={13} aria-hidden="true" />
           权限
         </span>
         {permissions.length > 0 ? (
-          <ul className="op-list">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
             {permissions.map((permission) => (
               <li key={permission}>
-                <span className="op-mono">{permission}</span>：
+                <span className="font-mono text-xs">{permission}</span>：
                 {PERMISSION_INFO[permission] ?? '其它扩展能力。'}
               </li>
             ))}
           </ul>
         ) : (
-          <p className="op-sub">没有读取到清单权限信息。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">没有读取到清单权限信息。</p>
         )}
 
-        <span className="op-label">静态主机权限</span>
+        <span className="text-xs font-semibold">静态主机权限</span>
         {hostPermissions.length > 0 ? (
-          <ul className="op-list">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
             {hostPermissions.map((pattern) => (
               <li key={pattern}>
-                <span className="op-mono">{pattern}</span>：{hostPurpose(pattern, false)}
+                <span className="font-mono text-xs">{pattern}</span>：{hostPurpose(pattern, false)}
               </li>
             ))}
           </ul>
         ) : (
-          <p className="op-sub">没有静态主机权限。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">没有静态主机权限。</p>
         )}
 
-        <span className="op-label">可选主机权限</span>
+        <span className="text-xs font-semibold">可选主机权限</span>
         {optionalHosts.length > 0 ? (
-          <ul className="op-list">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
             {optionalHosts.map((pattern) => (
               <li key={pattern}>
-                <span className="op-mono">{pattern}</span>：{hostPurpose(pattern, true)}
+                <span className="font-mono text-xs">{pattern}</span>：{hostPurpose(pattern, true)}
               </li>
             ))}
           </ul>
         ) : (
-          <p className="op-sub">没有可选主机权限。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">没有可选主机权限。</p>
         )}
       </section>
 
-      <section className="op-card" aria-label="隐私说明">
-        <span className="op-card-title">隐私与数据</span>
-        <ul className="op-list">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="隐私说明">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">隐私与数据</span>
+        <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
           <li>每个实例的密钥独立保存，只有后台读取；设置页只显示是否已配置。</li>
           <li>自定义 endpoint 会收到该实例的密钥；只在你信任并授权的域名上使用。</li>
           <li>译文缓存只在本机，不上传。</li>
@@ -196,24 +196,24 @@ export default function About() {
         </ul>
       </section>
 
-      <section className="op-card" aria-label="诊断信息">
-        <span className="op-card-title">诊断信息</span>
-        <p className="op-sub">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="诊断信息">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">诊断信息</span>
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
           复制的内容只含版本、实例数、缓存占用、日志级别与当前实例类型/启用状态；不含密钥、APPID、提示词与原文/译文。
         </p>
-        <div className="op-inline">
+        <div className="flex flex-wrap items-center gap-2">
           <button type="button" className="btn btn-sm" onClick={copyDiagnostics}>
             <ClipboardCopy size={13} aria-hidden="true" />
             复制诊断信息
           </button>
-          {copied === 'ok' ? <span className="op-help">已复制</span> : null}
+          {copied === 'ok' ? <span className="text-xs leading-relaxed text-base-content/60 break-words">已复制</span> : null}
           {copied === 'error' ? (
-            <span className="op-error" role="alert">
+            <span className="text-xs leading-relaxed text-error" role="alert">
               复制失败，请手动选择文本
             </span>
           ) : null}
         </div>
-        <pre className="op-result-text op-mono" style={{ margin: 0 }}>
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed font-mono">
           {diagnosticsText()}
         </pre>
       </section>

@@ -7,10 +7,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { act } from 'react';
 import {
+  chooseOption,
   click,
   createHarness,
   findButton,
+  findSelect,
+  flush,
   mountOptions,
   setValue,
   unmountOptions,
@@ -56,9 +60,16 @@ async function runTest(container) {
 describe('测试翻译', () => {
   it('默认选中当前实例并列出全部已保存实例（含未配置密钥原因）', async () => {
     const container = await mountOptions(harness, '#/test');
-    const select = container.querySelector('select');
-    expect(select.value).toBe(fixtures.deepseek.id);
-    const labels = [...select.options].map((option) => option.textContent);
+    const select = findSelect('翻译实例', container);
+    expect(select.querySelector('summary').textContent).toContain('DeepSeek');
+    await act(async () => {
+      select.open = true;
+      select.dispatchEvent(new Event('toggle'));
+    });
+    await flush(1);
+    const labels = [...select.querySelectorAll('button[role="radio"]')].map((button) =>
+      button.textContent
+    );
     expect(labels[0]).toContain('DeepSeek');
     expect(labels[0]).toContain('OpenAI 兼容 · DeepSeek');
     expect(labels[1]).toContain('百度翻译');
@@ -155,7 +166,7 @@ describe('测试翻译', () => {
       model: 'qwen',
     });
     const container = await mountOptions(harness, '#/test');
-    await setValue(container.querySelector('select'), custom.id);
+    await chooseOption('翻译实例', 'Local', container);
 
     expect(container.textContent).toContain('该实例尚未配置密钥');
     expect(findButton('去授权', container)).toBeTruthy();

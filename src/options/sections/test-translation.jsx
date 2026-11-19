@@ -13,7 +13,8 @@
 
 import { useMemo, useState } from 'react';
 import { ClipboardCopy, FlaskConical, RotateCcw, ShieldAlert } from 'lucide-react';
-import StatusBadge from '../components/status-badge.jsx';
+import StatusBadge from '../../shared/ui/status-badge.jsx';
+import Select from '../../shared/ui/select.jsx';
 import {
   credentialState,
   formatCount,
@@ -180,11 +181,11 @@ export default function TestTranslation() {
 
   if (instances.length === 0) {
     return (
-      <div className="op-stack">
-        <div className="op-warning is-warn">
+      <div className="flex flex-col gap-4">
+        <div className="alert alert-warning">
           <FlaskConical size={16} aria-hidden="true" />
-          <span className="op-warning-text">还没有翻译实例，先到「翻译实例」新增一个再测试。</span>
-          <span className="op-warning-action">
+          <span className="min-w-0 break-words">还没有翻译实例，先到「翻译实例」新增一个再测试。</span>
+          <span className="ml-auto shrink-0">
             <button type="button" className="btn btn-xs btn-primary" onClick={() => app.openCreate(null)}>
               新增翻译实例
             </button>
@@ -198,46 +199,42 @@ export default function TestTranslation() {
   const eligibility = testInstanceEligibility(selected);
 
   return (
-    <div className="op-stack">
-      <div className="op-section-head">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="op-h2">
+          <h2 className="flex items-center gap-2 text-base font-bold">
             <FlaskConical size={15} aria-hidden="true" />
             测试翻译
           </h2>
-          <p className="op-sub">使用已保存的实例参数与密钥；修改配置后请先保存再测试。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">使用已保存的实例参数与密钥；修改配置后请先保存再测试。</p>
         </div>
       </div>
 
-      <section className="op-card" aria-label="测试输入">
-        <label className="op-field">
-          <span className="op-label">翻译实例</span>
-          <select
-            className="select select-bordered select-sm w-full"
+      <section className="card gap-2 bg-base-100 p-4" aria-label="测试输入">
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-semibold">翻译实例</span>
+          <Select
             value={selectedId}
-            onChange={(event) => app.setTestInstanceId(event.target.value)}
-            disabled={busy}
-          >
-            {instances.map((instance) => {
+            options={instances.map((instance) => {
               const state = credentialState(instance);
               const permissionText =
                 instance.type === 'openai' && instance.permission !== 'granted' ? ' · 未授权' : '';
               const unsupportedText = instance.kind === 'unsupported' ? ' · 类型不支持' : '';
-              return (
-                <option
-                  key={instance.id}
-                  value={instance.id}
-                  disabled={instance.kind === 'unsupported'}
-                >
-                  {`${instance.name} · ${typeBadgeLabel(instance)} · ${instance.type === 'baidu' ? '通用文本翻译' : instance.model ?? '模型'} · ${state.label}${permissionText}${unsupportedText}`}
-                </option>
-              );
+              return {
+                value: instance.id,
+                label: instance.name,
+                detail: `${typeBadgeLabel(instance)} · ${instance.type === 'baidu' ? '通用文本翻译' : instance.model ?? '模型'} · ${state.label}${permissionText}${unsupportedText}`,
+                disabled: instance.kind === 'unsupported',
+              };
             })}
-          </select>
-        </label>
+            onChange={(next) => app.setTestInstanceId(next)}
+            ariaLabel="翻译实例"
+            disabled={busy}
+          />
+        </div>
 
-        <div className="op-inline">
-          <span className="op-help">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">
             语言：{languageLabel(settings?.sourceLang) || '未知'} → {languageLabel(settings?.targetLang) || '未知'}
           </span>
           <button type="button" className="btn btn-xs" onClick={() => app.navigate('#/general')}>
@@ -254,11 +251,11 @@ export default function TestTranslation() {
         </div>
 
         {!eligibility.ok && selected?.kind !== 'unsupported' ? (
-          <div className="op-warning is-warn">
+          <div className="alert alert-warning">
             <ShieldAlert size={15} aria-hidden="true" />
-            <span className="op-warning-text">{eligibility.reason}</span>
+            <span className="min-w-0 break-words">{eligibility.reason}</span>
             {selected?.type === 'openai' && selected.permission !== 'granted' ? (
-              <span className="op-warning-action">
+              <span className="ml-auto shrink-0">
                 <button
                   type="button"
                   className="btn btn-xs btn-warning"
@@ -272,10 +269,10 @@ export default function TestTranslation() {
           </div>
         ) : null}
 
-        <label className="op-field">
-          <span className="op-label">待翻译文本</span>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold">待翻译文本</span>
           <textarea
-            className="textarea textarea-bordered w-full"
+            className="textarea w-full"
             rows={4}
             value={text}
             onChange={(event) => setText(event.target.value)}
@@ -283,15 +280,15 @@ export default function TestTranslation() {
             aria-describedby="test-text-count"
           />
         </label>
-        <div className="op-inline" style={{ justifyContent: 'space-between' }}>
-          <span className="op-help" id="test-text-count">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs leading-relaxed text-base-content/60 break-words" id="test-text-count">
             {text.length} / {TEST_TEXT_MAX_CHARS} 字符
           </span>
-          <span className="op-help">测试只使用已保存的实例；未保存的草稿不参与。</span>
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">测试只使用已保存的实例；未保存的草稿不参与。</span>
         </div>
-        {tooLong ? <span className="op-error" role="alert">文本超过 {TEST_TEXT_MAX_CHARS} 字符上限，请缩短后重试。</span> : null}
+        {tooLong ? <span className="text-xs leading-relaxed text-error" role="alert">文本超过 {TEST_TEXT_MAX_CHARS} 字符上限，请缩短后重试。</span> : null}
 
-        <div className="op-inline">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             className="btn btn-sm btn-primary"
@@ -316,29 +313,29 @@ export default function TestTranslation() {
         </div>
       </section>
 
-      <section className="op-section" aria-live="polite" aria-label="测试结果">
-        <h2 className="op-h2">结果</h2>
+      <section className="flex flex-col gap-3" aria-live="polite" aria-label="测试结果">
+        <h2 className="flex items-center gap-2 text-base font-bold">结果</h2>
         {busy ? (
-          <div className="op-result" aria-busy="true">
-            <div className="op-skeleton" aria-label="正在测试翻译">
-              <span className="op-skeleton-line" style={{ width: '35%' }} />
-              <span className="op-skeleton-line" style={{ width: '85%' }} />
-              <span className="op-skeleton-line" style={{ width: '60%' }} />
+          <div className="card gap-2 bg-base-100 p-4" aria-busy="true">
+            <div className="grid gap-2.5" aria-label="正在测试翻译">
+              <span className="skeleton block h-3 w-[35%]" />
+              <span className="skeleton block h-3 w-[85%]" />
+              <span className="skeleton block h-3 w-[60%]" />
             </div>
           </div>
         ) : !result ? (
-          <p className="op-sub">选择实例并输入文本后测试。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">选择实例并输入文本后测试。</p>
         ) : result.status === 'success' ? (
-          <div className="op-result is-ok">
-            <div className="op-inline" style={{ justifyContent: 'space-between' }}>
+          <div className="card gap-2 bg-base-100 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <StatusBadge tone="ok">测试成功</StatusBadge>
               <button type="button" className="btn btn-xs" onClick={copyResult}>
                 <ClipboardCopy size={12} aria-hidden="true" />
                 复制译文
               </button>
             </div>
-            <p className="op-result-text">{result.text}</p>
-            <p className="op-result-meta">
+            <p className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm leading-relaxed">{result.text}</p>
+            <p className="text-xs leading-relaxed text-base-content/60 break-words">
               {result.engine?.name ?? selected?.name ?? '实例'} ·{' '}
               {result.engine?.type === 'openai'
                 ? `${result.engine?.preset === 'deepseek' ? 'OpenAI 兼容 · DeepSeek' : 'OpenAI 兼容 · 自定义'}`
@@ -351,13 +348,13 @@ export default function TestTranslation() {
             </p>
           </div>
         ) : (
-          <div className="op-result is-error" role="alert">
-            <div className="op-inline">
+          <div className="card gap-2 bg-base-100 p-4" role="alert">
+            <div className="flex flex-wrap items-center gap-2">
               <StatusBadge tone="error">测试失败</StatusBadge>
-              {result.code ? <span className="op-help">错误码 {result.code}</span> : null}
+              {result.code ? <span className="text-xs leading-relaxed text-base-content/60 break-words">错误码 {result.code}</span> : null}
             </div>
-            <p className="op-result-text">{result.message}</p>
-            <p className="op-result-meta">{nextStep(result.code, String(result.message))}</p>
+            <p className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm leading-relaxed">{result.message}</p>
+            <p className="text-xs leading-relaxed text-base-content/60 break-words">{nextStep(result.code, String(result.message))}</p>
           </div>
         )}
       </section>

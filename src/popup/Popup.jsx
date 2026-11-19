@@ -4,25 +4,21 @@
  * 模块：工具栏弹窗（B）
  * 职责：显示当前翻译方式与基础信息，并把用户操作转成命令；
  *       提供「翻译方式」下拉快捷切换、设置页与测试页两个图标导航入口。
- * 依赖：E1 消息协议、E2 公开设置（读设置、写 activeInstanceId）、E4 日志、B2 测试页打开助手。
+ * 依赖：E1 消息协议、E2 公开设置（读设置、写 activeInstanceId）、E4 日志、E5 共享展示组件、B2 测试页打开助手。
  * 实现阶段：P3（日志初始化）；P6.1（最小整页入口）；P6.5（测试页入口）；
- *           P7（固定宽度、基础信息、绿色主题、图标与动效、翻译方式切换、设置页入口）。
+ *           P7（固定宽度、基础信息、翻译方式切换、设置页入口）；UI 规范化（daisyUI 默认主题与共享组件）。
  *
- * P7 只做信息展示与导航：不读取任务状态镜像，不显示进度、成功/失败数，
+ * 只做信息展示与导航：不读取任务状态镜像，不显示进度、成功/失败数，
  * 不做按钮状态切换（归后续需求）。
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ChevronDown,
-  CircleCheck,
-  CircleX,
   Eraser,
   FlaskConical,
   Globe,
   Keyboard,
   KeyRound,
   Languages,
-  LoaderCircle,
   Play,
   Settings as SettingsIcon,
   Sparkles,
@@ -32,6 +28,8 @@ import { MESSAGE_TYPES } from '../shared/protocol.js';
 import { getSettings, saveSettings } from '../shared/settings.js';
 import { languageLabel } from '../shared/languages.js';
 import { createLogger, getLogMeta, newTraceId, setLogLevel } from '../shared/log/logger.js';
+import Select from '../shared/ui/select.jsx';
+import Notice from '../shared/ui/notice.jsx';
 import { openTestPage } from './open-test-page.js';
 
 const log = createLogger('B2');
@@ -123,17 +121,16 @@ function clearMessage(data = {}) {
 }
 
 /**
- * 引擎下拉的显示名：`名称 · 类型/预设 · 模型`；缺字段时退化。
+ * 引擎下拉的次要信息：`类型/预设 · 模型`；缺字段时退化。
  * @param {Record<string, unknown>} instance
  * @returns {string}
  */
-function engineOptionLabel(instance) {
-  const name = String(instance.name ?? '').trim() || '未命名实例';
+function engineOptionDetail(instance) {
   const typeLabel = String(instance.typeLabel ?? '').trim();
   const preset = String(instance.preset ?? '').trim();
   const model = String(instance.model ?? '').trim();
   const kind = typeLabel && preset ? `${typeLabel}/${preset}` : typeLabel;
-  return [name, kind, model].filter(Boolean).join(' · ');
+  return [kind, model].filter(Boolean).join(' · ');
 }
 
 /**
@@ -257,8 +254,7 @@ export default function Popup() {
    * 写入失败时回退到上一个选择并提示。
    */
   const handleSelectEngine = useCallback(
-    async (event) => {
-      const nextId = event.target.value;
+    async (nextId) => {
       const previousId = selectedId;
       if (!nextId || nextId === previousId) return;
 
@@ -289,20 +285,31 @@ export default function Popup() {
   const selectedHasKey = Boolean(selected?.hasKey);
   const selectedRequiresKey = selected?.requiresKey !== false;
   const noUsableInstance = !configFailed && usableInstances.length === 0;
+  const keyTone = selectedRequiresKey ? (selectedHasKey ? 'badge-success' : 'badge-warning') : 'badge-ghost';
+  const keyLabel = selectedRequiresKey
+    ? selectedHasKey
+      ? '密钥已配置'
+      : '密钥未配置'
+    : '无需密钥';
+  const engineOptions = usableInstances.map((instance) => ({
+    value: String(instance.id),
+    label: String(instance.name ?? '').trim() || '未命名实例',
+    detail: engineOptionDetail(instance),
+  }));
 
   return (
-    <main className="popup bg-base-100 text-base-content p-4 space-y-3">
-      <header className="st-header">
-        <div className="st-brand">
-          <span className="st-brand-mark" aria-hidden="true">
+    <main className="max-h-[600px] w-full overflow-y-auto bg-base-100 p-4 text-base-content">
+      <header className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid size-7 shrink-0 place-items-center rounded-box bg-primary text-primary-content" aria-hidden="true">
             <Languages size={15} />
           </span>
-          <h1 className="st-title">SimpleTrans</h1>
+          <h1 className="whitespace-nowrap text-base font-bold">SimpleTrans</h1>
         </div>
-        <nav className="st-nav" aria-label="扩展导航">
+        <nav className="flex items-center gap-1" aria-label="扩展导航">
           <button
             type="button"
-            className="st-link"
+            className="btn btn-ghost btn-xs gap-1"
             onClick={handleOpenTestPage}
             disabled={openingTestPage || busy !== null}
             title="打开翻译测试页"
@@ -312,7 +319,7 @@ export default function Popup() {
           </button>
           <button
             type="button"
-            className="st-link"
+            className="btn btn-ghost btn-xs gap-1"
             onClick={handleOpenSettings}
             disabled={openingSettings}
             title="打开设置页"
@@ -323,87 +330,67 @@ export default function Popup() {
         </nav>
       </header>
 
-      <section className="st-card" aria-label="当前翻译配置">
+      <section className="card mt-3 bg-base-200 p-3" aria-label="当前翻译配置">
         {info.loading ? (
-          <div className="st-skeleton" aria-label="正在读取配置">
-            <span className="st-skeleton-line w-1/3" />
-            <span className="st-skeleton-line w-full" />
-            <span className="st-skeleton-line w-2/3" />
+          <div className="flex flex-col gap-2" aria-label="正在读取配置">
+            <span className="skeleton h-3 w-1/3" />
+            <span className="skeleton h-8 w-full" />
+            <span className="skeleton h-3 w-2/3" />
           </div>
         ) : (
           <>
-            <label className="st-label" htmlFor="engine-select">
-              <Sparkles size={14} aria-hidden="true" />
+            <span className="flex items-center gap-1 text-xs font-semibold">
+              <Sparkles size={14} className="text-primary" aria-hidden="true" />
               <span>翻译方式</span>
-            </label>
-            <div className="st-select-wrap">
-              <select
+            </span>
+            <div className="mt-1.5">
+              <Select
                 id="engine-select"
-                className="st-select"
                 value={selectedId}
+                options={engineOptions}
                 onChange={handleSelectEngine}
-                disabled={switching || usableInstances.length === 0}
-                title={selected ? engineOptionLabel(selected) : '未配置翻译方式'}
-              >
-                {usableInstances.length === 0 ? (
-                  <option value="">未配置翻译方式</option>
-                ) : (
-                  usableInstances.map((instance) => (
-                    <option key={String(instance.id)} value={String(instance.id)}>
-                      {engineOptionLabel(instance)}
-                    </option>
-                  ))
-                )}
-              </select>
-              {switching ? (
-                <LoaderCircle className="st-spin" size={14} aria-hidden="true" />
-              ) : (
-                <ChevronDown className="st-select-icon" size={14} aria-hidden="true" />
-              )}
+                placeholder="未配置翻译方式"
+                ariaLabel="翻译方式"
+                disabled={usableInstances.length === 0}
+                loading={switching}
+              />
             </div>
 
-            <div className="st-chips">
-              <span className="st-chip">
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              <span className="badge badge-sm gap-1">
                 <Globe size={12} aria-hidden="true" />
                 {langLabel}
               </span>
-              <span className={`st-chip ${selectedHasKey ? 'is-ok' : 'is-idle'}`}>
-                <span className="st-dot" aria-hidden="true" />
+              <span className={`badge badge-sm gap-1 ${keyTone}`}>
                 <KeyRound size={12} aria-hidden="true" />
-                {selectedRequiresKey
-                  ? selectedHasKey
-                    ? '密钥已配置'
-                    : '密钥未配置'
-                  : '无需密钥'}
+                {keyLabel}
               </span>
             </div>
 
-            {noUsableInstance && (
-              <p className="st-hint">
-                <CircleX size={13} aria-hidden="true" />
-                <span>没有可用的翻译实例，请到设置页新增或启用</span>
-              </p>
-            )}
+            {noUsableInstance ? (
+              <Notice tone="warning" className="mt-2">
+                没有可用的翻译实例，请到设置页新增或启用
+              </Notice>
+            ) : null}
 
-            {configFailed && (
-              <p className="st-hint">
-                <CircleX size={13} aria-hidden="true" />
-                <span>读取配置失败，请到设置页检查</span>
-              </p>
-            )}
+            {configFailed ? (
+              <Notice tone="error" className="mt-2">
+                读取配置失败，请到设置页检查
+              </Notice>
+            ) : null}
           </>
         )}
       </section>
 
-      <div className="st-actions">
+      <div className="mt-3 grid grid-cols-2 gap-2">
         <button
           type="button"
-          className="btn btn-primary st-btn st-btn-primary"
+          className="btn btn-primary w-full"
           onClick={() => run(COMMAND.start)}
           disabled={disabled}
         >
           {busy === COMMAND.start ? (
-            <LoaderCircle className="st-spin-inline" size={15} aria-hidden="true" />
+            <span className="loading loading-spinner loading-xs" aria-hidden="true" />
           ) : (
             <Play size={15} aria-hidden="true" />
           )}
@@ -411,12 +398,12 @@ export default function Popup() {
         </button>
         <button
           type="button"
-          className="btn btn-outline st-btn"
+          className="btn btn-outline w-full"
           onClick={() => run(COMMAND.clear)}
           disabled={disabled}
         >
           {busy === COMMAND.clear ? (
-            <LoaderCircle className="st-spin-inline" size={15} aria-hidden="true" />
+            <span className="loading loading-spinner loading-xs" aria-hidden="true" />
           ) : (
             <Eraser size={15} aria-hidden="true" />
           )}
@@ -424,23 +411,21 @@ export default function Popup() {
         </button>
       </div>
 
-      {notice && (
-        <p className="st-notice is-ok">
-          <CircleCheck size={14} aria-hidden="true" />
-          <span>{notice}</span>
-        </p>
-      )}
-      {error && (
-        <p className="st-notice is-error">
-          <CircleX size={14} aria-hidden="true" />
-          <span>{error}</span>
-        </p>
-      )}
+      {notice ? (
+        <Notice tone="success" className="mt-3">
+          {notice}
+        </Notice>
+      ) : null}
+      {error ? (
+        <Notice tone="error" className="mt-3">
+          {error}
+        </Notice>
+      ) : null}
 
-      <p className="st-footer">
+      <p className="mt-3 flex items-center gap-1 text-xs text-base-content/60">
         <Keyboard size={13} aria-hidden="true" />
         <span>快捷键提交当前段落：</span>
-        <kbd className="st-kbd">Ctrl</kbd>
+        <kbd className="kbd kbd-sm">Ctrl</kbd>
       </p>
     </main>
   );

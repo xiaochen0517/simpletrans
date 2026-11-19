@@ -1,10 +1,10 @@
 /**
- * C 表单字段
+ * E5 表单字段
  *
- * 模块：插件独立页面（C）/ 设置页组件
+ * 模块：公共模块（E）/ 共享展示组件
  * 职责：统一「标签 + 控件 + 错误 + 帮助文字」的排版，并生成 `aria-describedby` 关联串。
- * 依赖：无（纯展示）。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
+ * 依赖：无（纯展示）；只输出 daisyUI / Tailwind 布局类。
+ * 实现阶段：P8-3（设置页）；UI 规范化（迁入共享层）
  */
 
 /**
@@ -34,9 +34,9 @@ export function describedBy(id, { help, error } = {}) {
  */
 export default function Field({ id, label, help, error, required = false, badge = null, children }) {
   return (
-    <div className="op-field">
-      <span className="op-inline" style={{ gap: 6 }}>
-        <label className="op-label" htmlFor={id}>
+    <div className="flex min-w-0 flex-col gap-1" data-field={id}>
+      <span className="flex flex-wrap items-center gap-1.5">
+        <label className="text-xs font-semibold" htmlFor={id}>
           {label}
           {required ? <span aria-hidden="true"> *</span> : null}
         </label>
@@ -44,12 +44,12 @@ export default function Field({ id, label, help, error, required = false, badge 
       </span>
       {children}
       {error ? (
-        <span className="op-error" id={`${id}-error`} role="alert">
+        <span className="text-xs leading-relaxed text-error" id={`${id}-error`} role="alert">
           {error}
         </span>
       ) : null}
       {help ? (
-        <span className="op-help" id={`${id}-help`}>
+        <span className="text-xs leading-relaxed text-base-content/60 break-words" id={`${id}-help`}>
           {help}
         </span>
       ) : null}

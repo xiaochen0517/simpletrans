@@ -9,18 +9,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>SimpleTrans Translation Test Page</title>
-    <link rel="stylesheet" href="./testpage.css" />
   </head>
-  <body>
-    <header class="test-toolbar" lang="zh-CN" data-simpletrans-ignore translate="no">
-      <strong class="test-toolbar-title">翻译测试页</strong>
-      <button id="test-start" type="button" class="test-button test-button-primary">
+  <body class="bg-base-200 text-base-content">
+    <header class="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-base-300 bg-base-100 px-4 py-2.5" lang="zh-CN" data-simpletrans-ignore translate="no">
+      <strong class="mr-1 text-sm font-semibold">翻译测试页</strong>
+      <button id="test-start" type="button" class="btn btn-sm btn-primary">
         翻译整页
       </button>
-      <button id="test-clear" type="button" class="test-button">显示原文</button>
-      <span id="test-status" class="test-status" role="status">就绪</span>
-      <span class="test-hint">悬停英文段落按 Ctrl 提交/隐藏；滚动后自动提交新段落；译文来自后台缓存或真实翻译。</span>
+      <button id="test-clear" type="button" class="btn btn-sm">显示原文</button>
+      <span id="test-status" class="badge badge-sm" role="status">就绪</span>
+      <span class="basis-full text-sm text-base-content/60">悬停英文段落按 Ctrl 提交/隐藏；滚动后自动提交新段落；译文来自后台缓存或真实翻译。</span>
     </header>
 
     <main id="test-page">
@@ -188,68 +188,68 @@
           placeholders, and option text.
         </p>
 
-        <div class="cards">
-          <article class="card">
+        <div class="mb-5 grid gap-3 sm:grid-cols-3">
+          <article class="card gap-2 bg-base-200 p-3.5">
             <h3>Review queue</h3>
             <p>Three paragraphs are waiting for a second pass.</p>
-            <span class="badge">Ready</span>
+            <span class="badge badge-sm">Ready</span>
           </article>
-          <article class="card">
+          <article class="card gap-2 bg-base-200 p-3.5">
             <h3>Style guide</h3>
             <p>Keep terminology consistent across the page.</p>
-            <span class="badge badge-muted">Draft</span>
+            <span class="badge badge-sm badge-ghost">Draft</span>
           </article>
-          <article class="card">
+          <article class="card gap-2 bg-base-200 p-3.5">
             <h3>Release notes</h3>
             <p>Summarize the visible changes for the next check.</p>
-            <span class="badge">Planned</span>
+            <span class="badge badge-sm">Planned</span>
           </article>
         </div>
 
-        <div class="actions">
-          <button type="button" class="test-button test-button-primary">Save draft</button>
-          <button type="button" class="test-button">Preview changes</button>
-          <button type="button" class="test-button" disabled>Publish</button>
+        <div class="mb-5 flex flex-wrap gap-2">
+          <button type="button" class="btn btn-sm btn-primary">Save draft</button>
+          <button type="button" class="btn btn-sm">Preview changes</button>
+          <button type="button" class="btn btn-sm" disabled>Publish</button>
         </div>
 
-        <form class="demo-form" action="#" method="get">
-          <div class="field">
+        <form class="mb-2 grid gap-3.5 sm:grid-cols-2" action="#" method="get">
+          <div class="flex flex-col gap-1.5">
             <label for="name">Full name</label>
-            <input id="name" name="name" type="text" value="Ada Lovelace" autocomplete="off" />
+            <input id="name" name="name" type="text" class="input input-sm w-full" value="Ada Lovelace" autocomplete="off" />
           </div>
-          <div class="field">
+          <div class="flex flex-col gap-1.5">
             <label for="search">Search the glossary</label>
-            <input id="search" name="search" type="search" placeholder="Search terms" />
+            <input id="search" name="search" type="search" class="input input-sm w-full" placeholder="Search terms" />
           </div>
-          <div class="field">
+          <div class="flex flex-col gap-1.5">
             <label for="email">Contact email</label>
-            <input id="email" name="email" type="email" value="editor@example.com" autocomplete="off" />
+            <input id="email" name="email" type="email" class="input input-sm w-full" value="editor@example.com" autocomplete="off" />
           </div>
-          <div class="field">
+          <div class="flex flex-col gap-1.5">
             <label for="notes">Review notes</label>
-            <textarea id="notes" name="notes" rows="3">Check the final paragraph for tone.</textarea>
+            <textarea id="notes" name="notes" rows="3" class="textarea textarea-sm w-full">Check the final paragraph for tone.</textarea>
           </div>
-          <div class="field">
+          <div class="flex flex-col gap-1.5">
             <label for="lang">Display language</label>
-            <select id="lang" name="lang">
+            <select id="lang" name="lang" class="select select-sm w-full">
               <option>English</option>
               <option>French</option>
               <option>Japanese</option>
             </select>
           </div>
-          <div class="field">
+          <div class="flex flex-col gap-1.5">
             <label for="volume">Preview volume</label>
-            <input id="volume" name="volume" type="range" min="0" max="10" value="6" />
+            <input id="volume" name="volume" type="range" class="range range-sm" min="0" max="10" value="6" />
           </div>
-          <fieldset class="checks">
-            <legend>Notify me about</legend>
-            <label><input type="checkbox" checked /> New comments</label>
-            <label><input type="radio" name="digest" checked /> Daily digest</label>
-            <label><input type="radio" name="digest" /> Weekly digest</label>
+          <fieldset class="flex flex-wrap gap-x-4 gap-y-2.5 rounded-box border border-base-300 p-3.5 sm:col-span-2">
+            <legend class="px-1">Notify me about</legend>
+            <label class="inline-flex items-center gap-1.5 font-normal"><input type="checkbox" class="checkbox checkbox-sm" checked /> New comments</label>
+            <label class="inline-flex items-center gap-1.5 font-normal"><input type="radio" name="digest" class="radio radio-sm" checked /> Daily digest</label>
+            <label class="inline-flex items-center gap-1.5 font-normal"><input type="radio" name="digest" class="radio radio-sm" /> Weekly digest</label>
           </fieldset>
-          <div class="field">
+          <div class="flex flex-col gap-1.5">
             <label for="locked">Locked field</label>
-            <input id="locked" type="text" value="Read-only value" disabled />
+            <input id="locked" type="text" class="input input-sm w-full" value="Read-only value" disabled />
           </div>
         </form>
       </section>

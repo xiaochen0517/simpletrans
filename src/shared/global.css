@@ -1,96 +1,10 @@
 /*
- * 全局样式（弹窗与设置页共用）
- * 职责：引入 Tailwind 与 daisyUI，声明 simpletrans-light / simpletrans-dark 两套绿色主题，
- *       并提供页面级基础样式；明暗由 prefers-color-scheme 自动切换，无需脚本。
- * 实现阶段：P7（绿色高亮与亮暗主题）
+ * 全局样式（弹窗、设置页与测试页共用）
+ * 职责：只引入 Tailwind 与 daisyUI 默认 light/dark 主题；不覆盖主题变量，不新增自定义视觉规则。
+ * 实现阶段：P7（主题入口）；UI 规范化（改为 daisyUI 默认主题）
  */
 @import "tailwindcss";
 
-/* 只使用下面自定义的两套主题，不产出 daisyUI 内置主题。 */
 @plugin "daisyui" {
-  themes: false;
-}
-
-@plugin "daisyui/theme" {
-  name: "simpletrans-light";
-  default: true;
-  prefersdark: false;
-  color-scheme: light;
-
-  --color-base-100: #ffffff;
-  --color-base-200: #f4f7f4;
-  --color-base-300: #e3eae4;
-  --color-base-content: #17201a;
-  --color-primary: #178a4c;
-  --color-primary-content: #ffffff;
-  --color-secondary: #4f7a63;
-  --color-secondary-content: #ffffff;
-  --color-accent: #0f9d6b;
-  --color-accent-content: #ffffff;
-  --color-neutral: #24312a;
-  --color-neutral-content: #f5f8f6;
-  --color-info: #2563eb;
-  --color-info-content: #ffffff;
-  --color-success: #15803d;
-  --color-success-content: #ffffff;
-  --color-warning: #b45309;
-  --color-warning-content: #ffffff;
-  --color-error: #b91c1c;
-  --color-error-content: #ffffff;
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 0.75rem;
-  --size-selector: 0.25rem;
-  --size-field: 0.25rem;
-  --border: 1px;
-  --depth: 0;
-  --noise: 0;
-}
-
-@plugin "daisyui/theme" {
-  name: "simpletrans-dark";
-  default: false;
-  prefersdark: true;
-  color-scheme: dark;
-
-  --color-base-100: #101614;
-  --color-base-200: #161e1a;
-  --color-base-300: #22302a;
-  --color-base-content: #e6efe9;
-  --color-primary: #34d399;
-  --color-primary-content: #06120c;
-  --color-secondary: #7fa894;
-  --color-secondary-content: #0b1511;
-  --color-accent: #2dd4bf;
-  --color-accent-content: #06120e;
-  --color-neutral: #1d2a24;
-  --color-neutral-content: #dfeae4;
-  --color-info: #60a5fa;
-  --color-info-content: #0b1220;
-  --color-success: #4ade80;
-  --color-success-content: #07120c;
-  --color-warning: #fbbf24;
-  --color-warning-content: #1a1200;
-  --color-error: #f87171;
-  --color-error-content: #1a0808;
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 0.75rem;
-  --size-selector: 0.25rem;
-  --size-field: 0.25rem;
-  --border: 1px;
-  --depth: 0;
-  --noise: 0;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  background-color: var(--color-base-100);
-  color: var(--color-base-content);
-  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-  font-size: 14px;
+  themes: light --default, dark --prefersdark;
 }

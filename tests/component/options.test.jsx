@@ -104,8 +104,11 @@ describe('设置页壳层与概览', () => {
 
   it('窄屏导航同时提供完整与短标签', async () => {
     const container = await mountOptions(harness);
-    expect(container.querySelectorAll('.op-nav-full').length).toBe(6);
-    expect(container.querySelectorAll('.op-nav-short').length).toBe(6);
+    const nav = container.querySelector('nav[aria-label="设置分类"]');
+    expect(nav.querySelectorAll('li')).toHaveLength(6);
+    expect(nav.textContent).toContain('翻译实例');
+    expect(nav.textContent).toContain('通用设置');
+    expect(nav.textContent).toContain('数据管理');
   });
 });
 
@@ -129,7 +132,7 @@ describe('数据管理', () => {
     expect(container.textContent).toContain('将删除全部译文缓存，不影响密钥、设置与实例配置');
     expect(container.textContent).toContain('此操作不可撤销');
 
-    const confirm = [...container.querySelectorAll('.op-dialog button')].find(
+    const confirm = [...container.querySelectorAll('.modal-box button')].find(
       (button) => button.textContent.trim() === '清空缓存'
     );
     await click(confirm);
@@ -208,29 +211,34 @@ describe('关于', () => {
 });
 
 describe('设置页样式契约', () => {
-  it('窄屏断点、无固定宽度、允许长文本换行', async () => {
-    const css = await readFile(join(process.cwd(), 'src/options/options.css'), 'utf8');
+  it('居中最大宽度、窄屏断点与长文本换行', async () => {
+    const source = await readFile(join(process.cwd(), 'src/options/Options.jsx'), 'utf8');
 
-    expect(css).toMatch(/@media \(max-width: 899px\)/);
-    expect(css).toMatch(/@media \(max-width: 599px\)/);
-    expect(css).toMatch(/grid-template-columns: 220px minmax\(0, 1fr\)/);
-    expect(css).toContain('overflow-wrap: anywhere');
-    expect(css).toContain('min-width: 0');
-    expect(css).not.toMatch(/width:\s*\d{3,}px;\s*\n\s*min-width:\s*\d{3,}px/);
+    expect(source).toContain('max-w-[1440px]');
+    expect(source).toContain('lg:grid-cols-[14rem_minmax(0,1fr)]');
+    expect(source).toContain('break-words');
+    expect(source).toContain('min-w-0');
+    expect(source).not.toMatch(/\bop-[a-z]/);
   });
 
-  it('提供减少动态效果降级与主题语义色', async () => {
-    const css = await readFile(join(process.cwd(), 'src/options/options.css'), 'utf8');
-    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
-    expect(css).toContain('var(--color-primary)');
-    expect(css).not.toMatch(/color:\s*#(?:000|fff)\b/);
+  it('使用 daisyUI 默认主题，不新增自定义视觉 CSS', async () => {
+    const source = await readFile(join(process.cwd(), 'src/options/Options.jsx'), 'utf8');
+    const globalCss = await readFile(join(process.cwd(), 'src/shared/global.css'), 'utf8');
+
+    expect(source).toContain('bg-base-200');
+    expect(source).not.toContain('@keyframes');
+    expect(globalCss).toContain('themes: light --default, dark --prefersdark');
+    expect(globalCss).not.toContain('simpletrans-light');
   });
 
-  it('设置页挂载全局与页面样式', async () => {
+  it('设置页挂载全局样式且不再引用 options.css', async () => {
     const main = await readFile(join(process.cwd(), 'src/options/main.jsx'), 'utf8');
     const shell = await readFile(join(process.cwd(), 'src/options/Options.jsx'), 'utf8');
     expect(main).toContain("import '../shared/global.css'");
-    expect(shell).toContain("import './options.css'");
+    expect(shell).not.toContain("import './options.css'");
+    await expect(
+      readFile(join(process.cwd(), 'src/options/options.css'), 'utf8')
+    ).rejects.toThrow();
   });
 });
 

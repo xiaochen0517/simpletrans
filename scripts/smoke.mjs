@@ -330,6 +330,22 @@ await test('S13 清单主机权限完整，content 不含提示词/凭据键前�
   }
 });
 
+// ------------------------------------------------------ S14 图标与许可
+await test('S14 图标四档齐全（16/32/48/128）且为方形 PNG，许可随产物', async () => {
+  const icons = manifest.icons ?? {};
+  for (const size of [16, 32, 48, 128]) {
+    const path = icons[String(size)];
+    assert.ok(path, `manifest.icons 缺少 ${size}`);
+    const file = join(distDir, path);
+    const png = await readFile(file);
+    assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', `${path} 不是 PNG`);
+    assert.equal(png.readUInt32BE(16), size, `${path} 宽度不是 ${size}`);
+    assert.equal(png.readUInt32BE(20), size, `${path} 高度不是 ${size}`);
+  }
+  const notice = await readFile(join(distDir, 'icons', 'NOTICE.txt'), 'utf8');
+  assert.equal(notice.includes('ISC License'), true, 'dist/icons/NOTICE.txt 缺少 ISC 许可');
+});
+
 // ------------------------------------------------------------------------ 汇总
 console.info('');
 if (failures.length > 0) {

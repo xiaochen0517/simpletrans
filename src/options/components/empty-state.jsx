@@ -17,15 +17,15 @@
  */
 export default function EmptyState({ icon, title, description, children }) {
   return (
-    <div className="op-empty">
-      <span className="op-empty-icon" aria-hidden="true">
+    <div className="card items-center gap-2.5 bg-base-100 p-8 text-center">
+      <span className="grid size-11 place-items-center rounded-box bg-base-200 text-primary" aria-hidden="true">
         {icon}
       </span>
-      <p className="op-empty-title" style={{ margin: 0 }}>
+      <p className="m-0 text-sm font-semibold">
         {title}
       </p>
-      {description ? <p className="op-sub">{description}</p> : null}
-      {children ? <div className="op-inline" style={{ justifyContent: 'center' }}>{children}</div> : null}
+      {description ? <p className="m-0 text-sm leading-relaxed text-base-content/70 break-words">{description}</p> : null}
+      {children ? <div className="flex flex-wrap items-center justify-center gap-2">{children}</div> : null}
     </div>
   );
 }

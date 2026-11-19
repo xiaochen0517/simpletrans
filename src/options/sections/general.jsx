@@ -25,6 +25,7 @@ import {
 } from '../../shared/languages.js';
 import { LOG_LEVEL_OPTIONS, normalizeLevel } from '../../shared/log/levels.js';
 import { setLogLevel as setLoggerLevel } from '../../shared/log/logger.js';
+import Select from '../../shared/ui/select.jsx';
 
 /** 密钥存放位置选项。 */
 const KEY_STORAGE_OPTIONS = Object.freeze([
@@ -116,24 +117,24 @@ export default function General() {
   const logLevel = normalizeLevel(settings?.logLevel);
 
   return (
-    <div className="op-stack">
-      <div className="op-section-head">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="op-h2">
+          <h2 className="flex items-center gap-2 text-base font-bold">
             <Globe2 size={15} aria-hidden="true" />
             通用设置
           </h2>
-          <p className="op-sub">开关与下拉改动会立即保存；实例配置在「翻译实例」里单独保存。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">开关与下拉改动会立即保存；实例配置在「翻译实例」里单独保存。</p>
         </div>
       </div>
 
-      <section className="op-card" aria-label="扩展">
-        <div className="op-switch-row">
-          <span className="op-card-title">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="扩展">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
             <Power size={13} aria-hidden="true" />
             扩展启用
           </span>
-          <label className="op-check">
+          <label className="inline-flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               className="toggle toggle-sm"
@@ -145,76 +146,66 @@ export default function General() {
             <span>{settings?.enabled === false ? '已停用' : '已启用'}</span>
           </label>
         </div>
-        <p className="op-sub">
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
           关闭后页面翻译与测试返回「扩展已停用」，设置仍可修改。
         </p>
-        {savingField === 'enabled' ? <span className="op-help">保存中…</span> : null}
-        {notice?.field === 'enabled' ? <span className="op-help">{notice.text}</span> : null}
-        {error?.field === 'enabled' ? <span className="op-error" role="alert">{error.text}</span> : null}
+        {savingField === 'enabled' ? <span className="text-xs leading-relaxed text-base-content/60 break-words">保存中…</span> : null}
+        {notice?.field === 'enabled' ? <span className="text-xs leading-relaxed text-base-content/60 break-words">{notice.text}</span> : null}
+        {error?.field === 'enabled' ? <span className="text-xs leading-relaxed text-error" role="alert">{error.text}</span> : null}
       </section>
 
-      <section className="op-card" aria-label="语言">
-        <span className="op-card-title">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="语言">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
           <ArrowLeftRight size={13} aria-hidden="true" />
           语言
         </span>
-        <div className="op-row">
-          <label className="op-field">
-            <span className="op-label">源语言</span>
-            <select
-              className="select select-bordered select-sm w-full"
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold">源语言</span>
+            <Select
               value={sourceLang}
-              onChange={(event) => saveField('sourceLang', event.target.value, '已保存')}
+              options={SOURCE_LANGS.map((lang) => ({ value: lang, label: LANGUAGES[lang] ?? lang }))}
+              onChange={(next) => saveField('sourceLang', next, '已保存')}
+              ariaLabel="源语言"
               disabled={savingField === 'sourceLang'}
-            >
-              {SOURCE_LANGS.map((lang) => (
-                <option key={lang} value={lang}>
-                  {LANGUAGES[lang] ?? lang}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="op-field">
-            <span className="op-label">目标语言</span>
-            <select
-              className="select select-bordered select-sm w-full"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold">目标语言</span>
+            <Select
               value={targetLang}
-              onChange={(event) => saveField('targetLang', event.target.value, '已保存')}
+              options={TARGET_LANGS.map((lang) => ({ value: lang, label: LANGUAGES[lang] ?? lang }))}
+              onChange={(next) => saveField('targetLang', next, '已保存')}
+              ariaLabel="目标语言"
               disabled={savingField === 'targetLang'}
-            >
-              {TARGET_LANGS.map((lang) => (
-                <option key={lang} value={lang}>
-                  {LANGUAGES[lang] ?? lang}
-                </option>
-              ))}
-            </select>
-          </label>
+            />
+          </div>
         </div>
-        <p className="op-sub">
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
           当前：{languageLabel(sourceLang) || sourceLang} → {languageLabel(targetLang) || targetLang}。
           语言进入缓存 key，切换后不会串用旧译文。
         </p>
         {notice?.field === 'sourceLang' || notice?.field === 'targetLang' ? (
-          <span className="op-help">{notice.text}</span>
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">{notice.text}</span>
         ) : null}
         {error?.field === 'sourceLang' || error?.field === 'targetLang' ? (
-          <span className="op-error" role="alert">{error.text}</span>
+          <span className="text-xs leading-relaxed text-error" role="alert">{error.text}</span>
         ) : null}
       </section>
 
-      <section className="op-card" aria-label="密钥存放位置">
-        <span className="op-card-title">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="密钥存放位置">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
           <KeyRound size={13} aria-hidden="true" />
           密钥存放位置
         </span>
-        <div className="op-option-cards">
+        <div className="grid gap-2.5">
           {KEY_STORAGE_OPTIONS.map((option) => {
             const selected = (settings?.keyStorage ?? 'local') === option.value;
             return (
               <button
                 key={option.value}
                 type="button"
-                className="op-option-card"
+                className={`btn btn-outline h-auto justify-start${selected ? ' btn-active' : ''}`}
                 aria-pressed={selected}
                 onClick={() => {
                   if (selected || migrating) return;
@@ -224,31 +215,31 @@ export default function General() {
               >
                 <KeyRound size={15} aria-hidden="true" />
                 <span>
-                  <span className="op-option-title">
+                  <span className="flex items-center gap-1.5 text-sm font-semibold">
                     {option.label}
                     {selected ? '（当前）' : ''}
                   </span>
-                  <span className="op-help">{option.help}</span>
+                  <span className="text-xs leading-relaxed text-base-content/60 break-words">{option.help}</span>
                 </span>
               </button>
             );
           })}
         </div>
-        <p className="op-sub">
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
           切换会把全部实例的凭据迁移到目标位置；失败时保留原数据。只迁移密钥，不改设置与缓存。
         </p>
-        {migrating ? <span className="op-help">正在迁移密钥…</span> : null}
-        {notice?.field === 'keyStorage' ? <span className="op-help">{notice.text}</span> : null}
-        {error?.field === 'keyStorage' ? <span className="op-error" role="alert">{error.text}</span> : null}
+        {migrating ? <span className="text-xs leading-relaxed text-base-content/60 break-words">正在迁移密钥…</span> : null}
+        {notice?.field === 'keyStorage' ? <span className="text-xs leading-relaxed text-base-content/60 break-words">{notice.text}</span> : null}
+        {error?.field === 'keyStorage' ? <span className="text-xs leading-relaxed text-error" role="alert">{error.text}</span> : null}
       </section>
 
-      <section className="op-card" aria-label="译文缓存">
-        <div className="op-switch-row">
-          <span className="op-card-title">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="译文缓存">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
             <Database size={13} aria-hidden="true" />
             译文缓存
           </span>
-          <label className="op-check">
+          <label className="inline-flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               className="toggle toggle-sm"
@@ -260,41 +251,36 @@ export default function General() {
             <span>{settings?.cacheEnabled === false ? '已关闭' : '已开启'}</span>
           </label>
         </div>
-        <p className="op-sub">
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
           关闭后不再读写缓存，已有缓存不会自动删除；占用与清空在「数据管理」。
         </p>
-        {notice?.field === 'cacheEnabled' ? <span className="op-help">{notice.text}</span> : null}
-        {error?.field === 'cacheEnabled' ? <span className="op-error" role="alert">{error.text}</span> : null}
+        {notice?.field === 'cacheEnabled' ? <span className="text-xs leading-relaxed text-base-content/60 break-words">{notice.text}</span> : null}
+        {error?.field === 'cacheEnabled' ? <span className="text-xs leading-relaxed text-error" role="alert">{error.text}</span> : null}
       </section>
 
-      <section className="op-card" aria-label="日志">
-        <label className="op-field">
-          <span className="op-card-title">
+      <section className="card gap-2 bg-base-100 p-4" aria-label="日志">
+        <div className="flex flex-col gap-1">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
             <ScrollText size={13} aria-hidden="true" />
             日志级别
           </span>
-          <select
-            className="select select-bordered select-sm w-full"
+          <Select
             value={logLevel}
-            onChange={(event) => {
-              const next = normalizeLevel(event.target.value);
-              setLoggerLevel(next);
-              void saveField('logLevel', next, '已保存；已打开的网页刷新或重连后生效');
+            options={LOG_LEVEL_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+            onChange={(next) => {
+              const level = normalizeLevel(next);
+              setLoggerLevel(level);
+              void saveField('logLevel', level, '已保存；已打开的网页刷新或重连后生效');
             }}
+            ariaLabel="日志级别"
             disabled={savingField === 'logLevel'}
-          >
-            {LOG_LEVEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className="op-sub">
+          />
+        </div>
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
           日志只输出浏览器控制台，不上传、不保存；调整后已打开的网页需刷新或重连才生效。
         </p>
-        {notice?.field === 'logLevel' ? <span className="op-help">{notice.text}</span> : null}
-        {error?.field === 'logLevel' ? <span className="op-error" role="alert">{error.text}</span> : null}
+        {notice?.field === 'logLevel' ? <span className="text-xs leading-relaxed text-base-content/60 break-words">{notice.text}</span> : null}
+        {error?.field === 'logLevel' ? <span className="text-xs leading-relaxed text-error" role="alert">{error.text}</span> : null}
       </section>
 
       {confirmStorage ? (
@@ -309,9 +295,9 @@ export default function General() {
           onCancel={() => setConfirmStorage(null)}
         >
           {confirmStorage === 'sync' ? (
-            <p className="op-sub">密钥会随账号同步到其他设备，请只在信任的设备上使用。</p>
+            <p className="text-sm leading-relaxed text-base-content/70 break-words">密钥会随账号同步到其他设备，请只在信任的设备上使用。</p>
           ) : (
-            <p className="op-sub">迁移后密钥只保存在这台设备，不再随账号同步。</p>
+            <p className="text-sm leading-relaxed text-base-content/70 break-words">迁移后密钥只保存在这台设备，不再随账号同步。</p>
           )}
         </ConfirmDialog>
       ) : null}

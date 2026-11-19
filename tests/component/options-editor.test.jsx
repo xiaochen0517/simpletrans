@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  chooseOption,
   click,
   createHarness,
   findButton,
@@ -59,7 +60,7 @@ afterEach(async () => {
 
 /** 按实例名取卡片。 */
 function card(name) {
-  return [...document.querySelectorAll('.op-instance')].find((item) =>
+  return [...document.querySelectorAll('article[aria-label^="翻译实例 "]')].find((item) =>
     item.getAttribute('aria-label')?.includes(name)
   );
 }
@@ -72,12 +73,12 @@ async function openEditor(container, name) {
   );
   await click(edit);
   await flush();
-  return container.querySelector('.op-drawer');
+  return container.querySelector('[role="dialog"][aria-labelledby="editor-title"]');
 }
 
 /** 点击抽屉底部保存。 */
 async function save(container) {
-  const footer = container.querySelector('.op-drawer-footer');
+  const footer = container.querySelector('[role="dialog"][aria-labelledby="editor-title"] footer');
   const button = [...footer.querySelectorAll('button')].find((item) =>
     item.textContent.includes('保存')
   );
@@ -120,7 +121,7 @@ describe('编辑抽屉字段', () => {
     await setValue(drawer.querySelector('#ed-name'), '百度翻译');
     await save(container);
     expect(drawer.textContent).toContain('实例名称已存在');
-    expect(container.querySelector('.op-drawer')).toBeTruthy();
+    expect(container.querySelector('[role="dialog"][aria-labelledby="editor-title"]')).toBeTruthy();
   });
 
   it('保存成功后写入实例、关闭抽屉并提示', async () => {
@@ -135,7 +136,7 @@ describe('编辑抽屉字段', () => {
     const saved = stored.find((item) => item.id === fixtures.deepseek.id);
     expect(saved.model).toBe('deepseek-reasoner');
     expect(saved.name).toBe('DeepSeek V3');
-    expect(container.querySelector('.op-drawer')).toBeNull();
+    expect(container.querySelector('[role="dialog"][aria-labelledby="editor-title"]')).toBeNull();
     expect(container.textContent).toContain('已保存');
   });
 
@@ -159,7 +160,7 @@ describe('编辑抽屉字段', () => {
     const container = await mountOptions(harness, '#/instances');
     const drawer = await openEditor(container, 'DeepSeek');
 
-    await setValue(drawer.querySelector('#ed-reasoning-value'), 'high');
+    await chooseOption('强度取值', 'high', drawer);
     await save(container);
 
     const stored = await readInstances(harness);
@@ -202,7 +203,7 @@ describe('凭据与认证', () => {
     const container = await mountOptions(harness, '#/instances');
     const drawer = await openEditor(container, 'DeepSeek');
 
-    await setValue(drawer.querySelector('#ed-auth'), 'none');
+    await chooseOption('认证方式', '无认证', drawer);
     expect(drawer.textContent).toContain('该实例不使用认证');
     await save(container);
 
@@ -218,7 +219,7 @@ describe('凭据与认证', () => {
 
     await click(findButton('清除凭据', drawer));
     expect(container.textContent).toContain('清除该实例的凭据？');
-    const confirm = [...container.querySelectorAll('.op-dialog button')].find(
+    const confirm = [...container.querySelectorAll('.modal-box button')].find(
       (button) => button.textContent.trim() === '清除凭据'
     );
     await click(confirm);
@@ -235,8 +236,8 @@ describe('凭据与认证', () => {
 
     expect(drawer.textContent).toContain('部分配置');
     expect(drawer.querySelector('#ed-appid').placeholder).toContain('已配置');
-    const appIdField = drawer.querySelector('#ed-appid').closest('.op-field');
-    const secretField = drawer.querySelector('#ed-secret').closest('.op-field');
+    const appIdField = drawer.querySelector('#ed-appid').closest('[data-field]');
+    const secretField = drawer.querySelector('#ed-secret').closest('[data-field]');
     expect(appIdField.textContent).toContain('已配置');
     expect(secretField.textContent).toContain('未配置');
   });
@@ -253,7 +254,7 @@ describe('域名权限', () => {
     const request = harness.chrome.permissions.__calls.find((call) => call.api === 'request');
     expect(request.origins).toEqual(['https://example.com/*']);
     await flush();
-    expect(container.querySelector('.op-drawer').textContent).toContain('已授权');
+    expect(container.querySelector('[role="dialog"][aria-labelledby="editor-title"]').textContent).toContain('已授权');
   });
 
   it('拒绝授权时提示、实例保留且仍标记未授权', async () => {
@@ -292,9 +293,9 @@ describe('未保存离开', () => {
     await click(findButton('继续编辑', container));
     expect(container.querySelector('#ed-name').value).toBe('改名中');
 
-    await click(findButton('取消', container.querySelector('.op-drawer')));
+    await click(findButton('取消', container.querySelector('[role="dialog"][aria-labelledby="editor-title"]')));
     await click(findButton('放弃修改', container));
-    expect(container.querySelector('.op-drawer')).toBeNull();
+    expect(container.querySelector('[role="dialog"][aria-labelledby="editor-title"]')).toBeNull();
     const stored = await readInstances(harness);
     expect(stored.find((item) => item.id === fixtures.deepseek.id).name).toBe('DeepSeek');
   });

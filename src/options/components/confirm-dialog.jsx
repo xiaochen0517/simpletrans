@@ -97,24 +97,24 @@ export default function ConfirmDialog({
 
   return (
     <div
-      className="op-dialog-wrap"
+      className="modal modal-open"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) cancel();
       }}
     >
       <div
-        className="op-dialog"
+        className="modal-box flex max-h-[calc(100vh-2rem)] max-w-xl flex-col gap-3 overflow-auto"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         ref={dialogRef}
       >
-        <h2 className="op-dialog-title" id={titleId}>
+        <h2 className="m-0 text-base font-bold break-words" id={titleId}>
           {title}
         </h2>
-        {description ? <p className="op-sub">{description}</p> : null}
+        {description ? <p className="text-sm leading-relaxed text-base-content/70 break-words">{description}</p> : null}
         {children}
-        <div className="op-dialog-actions">
+        <div className="flex flex-wrap justify-end gap-2">
           <button type="button" className="btn btn-sm" onClick={cancel} ref={cancelRef} disabled={busy}>
             {cancelLabel}
           </button>

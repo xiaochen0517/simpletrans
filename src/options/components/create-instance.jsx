@@ -12,7 +12,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Languages, Sparkles } from 'lucide-react';
 import ConfirmDialog from './confirm-dialog.jsx';
-import Field from './field.jsx';
+import Field from '../../shared/ui/field.jsx';
 import { PRESET_LABELS, useApp } from '../lib.js';
 import { createInstance } from '../../shared/config/instances.js';
 import {
@@ -139,53 +139,53 @@ export default function CreateInstance({ hint, onClose }) {
       onCancel={onClose}
     >
       {atLimit ? (
-        <div className="op-warning is-warn">
+        <div className="alert alert-warning">
           <AlertTriangle size={15} aria-hidden="true" />
-          <span className="op-warning-text">
+          <span className="min-w-0 break-words">
             已达上限（{MAX_INSTANCES} 个）；删除不需要的实例后才能新增。
           </span>
         </div>
       ) : null}
-      <div className="op-option-cards" role="group" aria-label="实例类型">
+      <div className="grid gap-2.5" role="group" aria-label="实例类型">
         <button
           type="button"
-          className="op-option-card"
+          className={`btn btn-outline h-auto justify-start${type === 'openai' ? ' btn-active' : ''}`}
           aria-pressed={type === 'openai'}
           onClick={() => chooseType('openai', preset)}
           disabled={busy}
         >
           <Sparkles size={16} aria-hidden="true" />
           <span>
-            <span className="op-option-title">OpenAI 兼容</span>
-            <span className="op-help">
+            <span className="flex items-center gap-1.5 text-sm font-semibold">OpenAI 兼容</span>
+            <span className="text-xs leading-relaxed text-base-content/60 break-words">
               chat completions、流式、JSONL 批量、可编辑提示词；自定义可接本地模型。
             </span>
           </span>
         </button>
         <button
           type="button"
-          className="op-option-card"
+          className={`btn btn-outline h-auto justify-start${type === 'baidu' ? ' btn-active' : ''}`}
           aria-pressed={type === 'baidu'}
           onClick={() => chooseType('baidu')}
           disabled={busy}
         >
           <Languages size={16} aria-hidden="true" />
           <span>
-            <span className="op-option-title">百度翻译</span>
-            <span className="op-help">通用文本翻译、无流式、APPID + 密钥。</span>
+            <span className="flex items-center gap-1.5 text-sm font-semibold">百度翻译</span>
+            <span className="text-xs leading-relaxed text-base-content/60 break-words">通用文本翻译、无流式、APPID + 密钥。</span>
           </span>
         </button>
       </div>
 
       {type === 'openai' ? (
-        <div className="op-field">
-          <span className="op-label">预设</span>
-          <div className="op-inline">
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-semibold">预设</span>
+          <div className="flex flex-wrap items-center gap-2">
             {['deepseek', 'custom'].map((value) => (
               <button
                 key={value}
                 type="button"
-                className="op-chip"
+                className={`btn btn-sm${preset === value ? ' btn-active' : ''}`}
                 aria-pressed={preset === value}
                 onClick={() => chooseType('openai', value)}
                 disabled={busy}
@@ -194,7 +194,7 @@ export default function CreateInstance({ hint, onClose }) {
               </button>
             ))}
           </div>
-          <span className="op-help">
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">
             {preset === 'deepseek'
               ? '使用 DeepSeek 默认地址与模型，可再修改。'
               : '自定义 endpoint：需要填写 baseUrl 与模型，并授权接口域名。'}
@@ -213,7 +213,7 @@ export default function CreateInstance({ hint, onClose }) {
             <input
               id="new-baseurl"
               type="url"
-              className="input input-bordered input-sm w-full"
+              className="input input-sm w-full"
               value={customBaseUrl}
               onChange={(event) => {
                 setCustomBaseUrl(event.target.value);
@@ -229,7 +229,7 @@ export default function CreateInstance({ hint, onClose }) {
             <input
               id="new-model"
               type="text"
-              className="input input-bordered input-sm w-full"
+              className="input input-sm w-full"
               value={customModel}
               onChange={(event) => {
                 setCustomModel(event.target.value);
@@ -248,7 +248,7 @@ export default function CreateInstance({ hint, onClose }) {
         <input
           id="new-name"
           type="text"
-          className="input input-bordered input-sm w-full"
+          className="input input-sm w-full"
           value={name}
           onChange={(event) => {
             setName(event.target.value);

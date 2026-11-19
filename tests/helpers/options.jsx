@@ -196,6 +196,39 @@ export async function readSettings(harness) {
 }
 
 /**
+ * 按 aria-label 找共享下拉（E5 Select）。
+ * @param {string} label
+ * @param {ParentNode} [root]
+ * @returns {HTMLDetailsElement | undefined}
+ */
+export function findSelect(label, root = document) {
+  return [...root.querySelectorAll('details.dropdown')].find(
+    (details) => details.querySelector('summary')?.getAttribute('aria-label') === label
+  );
+}
+
+/**
+ * 打开共享下拉并选择一个选项。
+ * @param {string} label 下拉的 aria-label
+ * @param {string} optionText 选项可见文字（支持部分匹配）
+ * @param {ParentNode} [root]
+ */
+export async function chooseOption(label, optionText, root = document) {
+  const details = findSelect(label, root);
+  if (!details) throw new Error(`找不到下拉：${label}`);
+  await act(async () => {
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+  });
+  await flush(1);
+  const option = [...details.querySelectorAll('button[role="radio"]')].find((button) =>
+    button.textContent.includes(optionText)
+  );
+  if (!option) throw new Error(`下拉 ${label} 中找不到选项：${optionText}`);
+  await click(option);
+}
+
+/**
  * 读取存储里的原始实例列表。
  * @param {ReturnType<typeof createHarness>} harness
  * @returns {Promise<Array<Record<string, any>>>}

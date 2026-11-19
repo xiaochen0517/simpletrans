@@ -183,12 +183,12 @@ export default function Instances() {
 
   if (loading) {
     return (
-      <div className="op-stack" aria-busy="true">
-        <div className="op-card">
-          <div className="op-skeleton" aria-label="正在读取实例">
-            <span className="op-skeleton-line" style={{ width: '35%' }} />
-            <span className="op-skeleton-line" style={{ width: '65%' }} />
-            <span className="op-skeleton-line" style={{ width: '50%' }} />
+      <div className="flex flex-col gap-4" aria-busy="true">
+        <div className="card gap-2 bg-base-100 p-4">
+          <div className="grid gap-2.5" aria-label="正在读取实例">
+            <span className="skeleton block h-3 w-[35%]" />
+            <span className="skeleton block h-3 w-[65%]" />
+            <span className="skeleton block h-3 w-[50%]" />
           </div>
         </div>
       </div>
@@ -196,14 +196,14 @@ export default function Instances() {
   }
 
   return (
-    <div className="op-stack">
-      <div className="op-section-head">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="op-h2">
+          <h2 className="flex items-center gap-2 text-base font-bold">
             <Sparkles size={15} aria-hidden="true" />
             翻译实例
           </h2>
-          <p className="op-sub">管理大模型与传统翻译实例；当前实例用于所有页面翻译。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">管理大模型与传统翻译实例；当前实例用于所有页面翻译。</p>
         </div>
         <button
           type="button"
@@ -218,19 +218,19 @@ export default function Instances() {
       </div>
 
       {atLimit ? (
-        <div className="op-warning is-warn">
+        <div className="alert alert-warning">
           <AlertTriangle size={15} aria-hidden="true" />
-          <span className="op-warning-text">已达上限（{MAX_INSTANCES} 个），删除不需要的实例后才能新增。</span>
+          <span className="min-w-0 break-words">已达上限（{MAX_INSTANCES} 个），删除不需要的实例后才能新增。</span>
         </div>
       ) : null}
 
       {instances.length > 0 ? (
-        <div className="op-chips" role="group" aria-label="筛选实例">
+        <div className="tabs tabs-boxed w-fit" role="group" aria-label="筛选实例">
           {FILTERS.map((item) => (
             <button
               key={item.id}
               type="button"
-              className="op-chip"
+              className={`tab${filter === item.id ? ' tab-active' : ''}`}
               aria-pressed={filter === item.id}
               onClick={() => setFilter(item.id)}
               disabled={counts[item.id] === 0 && item.id !== 'all'}
@@ -271,11 +271,11 @@ export default function Instances() {
           </button>
         </EmptyState>
       ) : visible.length === 0 ? (
-        <div className="op-card">
-          <p className="op-sub">当前筛选下没有实例。</p>
+        <div className="card gap-2 bg-base-100 p-4">
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">当前筛选下没有实例。</p>
         </div>
       ) : (
-        <div className="op-grid op-grid-cards">
+        <div className="grid gap-3 sm:grid-cols-2">
           {visible.map((instance) => (
             <InstanceCard
               key={instance.id}
@@ -304,7 +304,7 @@ export default function Instances() {
           onConfirm={confirmAction}
           onCancel={() => setConfirm(null)}
         >
-          <p className="op-sub">已提交的段落不会重新翻译；新提交的段落会使用改选后的实例。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">已提交的段落不会重新翻译；新提交的段落会使用改选后的实例。</p>
         </ConfirmDialog>
       ) : null}
 
@@ -318,7 +318,7 @@ export default function Instances() {
           onConfirm={confirmAction}
           onCancel={() => setConfirm(null)}
         >
-          <ul className="op-list">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
             <li>删除该实例的配置、凭据与本地提示词。</li>
             <li>若为当前实例，会先改选为下一个可用实例。</li>
             <li>主机权限是扩展级授权，不随实例删除自动撤销。</li>

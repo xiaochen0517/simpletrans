@@ -62,7 +62,7 @@ afterEach(async () => {
 
 /** 卡片内按文字找按钮。 */
 function cardButton(name, text) {
-  const card = [...document.querySelectorAll('.op-instance')].find((item) =>
+  const card = [...document.querySelectorAll('article[aria-label^="翻译实例 "]')].find((item) =>
     item.getAttribute('aria-label')?.includes(name)
   );
   if (!card) return undefined;
@@ -71,7 +71,7 @@ function cardButton(name, text) {
 
 /** 卡片元素。 */
 function card(name) {
-  return [...document.querySelectorAll('.op-instance')].find((item) =>
+  return [...document.querySelectorAll('article[aria-label^="翻译实例 "]')].find((item) =>
     item.getAttribute('aria-label')?.includes(name)
   );
 }
@@ -89,7 +89,7 @@ describe('实例列表', () => {
     expect(text).toContain('当前');
     expect(text).toContain('未授权');
     expect(text).not.toContain('无需密钥');
-    expect(card('DeepSeek')?.className).toContain('is-current');
+    expect(card('DeepSeek')?.className).toContain('border-primary');
     expect(card('Local')?.textContent).toContain('未配置');
     expect(text).not.toContain('sk-deepseek');
     expect(text).not.toContain('secret-1');
@@ -97,7 +97,7 @@ describe('实例列表', () => {
 
   it('筛选「未配置密钥」只显示缺少凭据的实例', async () => {
     const container = await mountOptions(harness, '#/instances');
-    const chip = [...container.querySelectorAll('.op-chip')].find((item) =>
+    const chip = [...container.querySelectorAll('button.tab')].find((item) =>
       item.textContent.includes('未配置密钥')
     );
     await click(chip);
@@ -150,8 +150,8 @@ describe('实例操作', () => {
 
     const settings = await readSettings(harness);
     expect(settings.activeInstanceId).toBe(fixtures.baidu.id);
-    expect(card('百度翻译')?.className).toContain('is-current');
-    expect(card('DeepSeek')?.className).not.toContain('is-current');
+    expect(card('百度翻译')?.className).toContain('border-primary');
+    expect(card('DeepSeek')?.className).not.toContain('border-primary');
   });
 
   it('停用当前实例先确认，确认后改选下一个可用实例', async () => {
@@ -161,7 +161,7 @@ describe('实例操作', () => {
     expect(container.textContent).toContain('停用当前翻译实例？');
     expect(container.textContent).toContain('当前翻译方式会改选为下一个可用实例');
 
-    const confirm = [...container.querySelectorAll('.op-dialog button')].find(
+    const confirm = [...container.querySelectorAll('[role="dialog"] button')].find(
       (button) => button.textContent.trim() === '停用'
     );
     await click(confirm);
@@ -176,7 +176,7 @@ describe('实例操作', () => {
     const container = await mountOptions(harness, '#/instances');
     await click(cardButton('Local', '删除'));
 
-    const dialog = container.querySelector('.op-dialog');
+    const dialog = container.querySelector('[role="dialog"]');
     expect(dialog.textContent).toContain('删除「Local」？');
     expect(dialog.textContent).toContain('删除该实例的配置、凭据与本地提示词');
     expect(dialog.textContent).toContain('主机权限是扩展级授权，不随实例删除自动撤销');
@@ -219,7 +219,7 @@ describe('空状态与新增流程', () => {
     expect(container.textContent).toContain('新增翻译实例');
     const nameInput = container.querySelector('#new-name');
     expect(nameInput.value).toBe('自定义');
-    const customPreset = [...container.querySelectorAll('.op-chip')].find(
+    const customPreset = [...container.querySelectorAll('[role="dialog"] button[aria-pressed]')].find(
       (chip) => chip.textContent === '自定义'
     );
     expect(customPreset.getAttribute('aria-pressed')).toBe('true');
