@@ -152,7 +152,7 @@ describe('数据管理', () => {
     expect(container.textContent).toContain('将删除全部译文缓存，不影响密钥、设置与实例配置');
     expect(container.textContent).toContain('此操作不可撤销');
 
-    const confirm = [...container.querySelectorAll('.modal-box button')].find(
+    const confirm = [...container.querySelectorAll('[data-slot="dialog-panel"] button')].find(
       (button) => button.textContent.trim() === '清空缓存'
     );
     await click(confirm);
@@ -241,16 +241,17 @@ describe('设置页样式契约', () => {
     expect(source).not.toMatch(/\bop-[a-z]/);
   });
 
-  it('使用 daisyUI 主题，dark 仅覆盖 base 色阶', async () => {
+  it('使用 HyperUI 调色板与 data-theme dark 变体', async () => {
     const source = await readFile(join(process.cwd(), 'src/options/Options.jsx'), 'utf8');
     const globalCss = await readFile(join(process.cwd(), 'src/shared/global.css'), 'utf8');
 
-    expect(source).toContain('bg-base-200');
+    expect(source).toContain('bg-gray-50');
+    expect(source).toContain('dark:bg-gray-950');
     expect(source).not.toContain('@keyframes');
-    expect(globalCss).toContain('themes: light --default');
-    expect(globalCss).toContain('name: "dark"');
-    expect(globalCss).toContain('--color-base-100: oklch(22% 0.015 255)');
-    expect(globalCss).toContain('--color-base-200: oklch(34% 0.02 255)');
+    expect(globalCss).toContain('@custom-variant dark');
+    expect(globalCss).toContain('bg-gray-50');
+    expect(globalCss).not.toContain('daisyui');
+    expect(globalCss).not.toContain('--color-base-100');
     expect(globalCss).not.toContain('simpletrans-light');
   });
 

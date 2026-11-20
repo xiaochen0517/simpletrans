@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useId, useRef } from 'react';
+import { buttonClass } from '../../shared/ui/button.jsx';
 
 /** 可获得焦点的元素选择器。 */
 const FOCUSABLE = [
@@ -97,30 +98,36 @@ export default function ConfirmDialog({
 
   return (
     <div
-      className="modal modal-open"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 dark:bg-black/70"
+      data-slot="dialog-overlay"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) cancel();
       }}
     >
       <div
-        className="modal-box flex max-h-[calc(100vh-2rem)] max-w-xl flex-col gap-3 overflow-auto"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-xl flex-col gap-3 overflow-auto rounded-lg bg-white p-6 shadow-lg dark:bg-gray-900"
+        data-slot="dialog-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         ref={dialogRef}
       >
-        <h2 className="m-0 text-base font-bold break-words" id={titleId}>
+        <h2 className="m-0 text-base font-bold break-words text-gray-900 dark:text-white" id={titleId}>
           {title}
         </h2>
-        {description ? <p className="text-sm leading-relaxed text-base-content/70 break-words">{description}</p> : null}
+        {description ? (
+          <p className="text-sm leading-relaxed break-words text-gray-600 dark:text-gray-300">
+            {description}
+          </p>
+        ) : null}
         {children}
         <div className="flex flex-wrap justify-end gap-2">
-          <button type="button" className="btn btn-sm" onClick={cancel} ref={cancelRef} disabled={busy}>
+          <button type="button" className={buttonClass({ size: 'sm' })} onClick={cancel} ref={cancelRef} disabled={busy}>
             {cancelLabel}
           </button>
           <button
             type="button"
-            className={`btn btn-sm ${tone === 'error' ? 'btn-error' : 'btn-primary'}`}
+            className={buttonClass({ variant: tone === 'error' ? 'danger' : 'primary', size: 'sm' })}
             onClick={onConfirm}
             disabled={busy || confirmDisabled}
           >

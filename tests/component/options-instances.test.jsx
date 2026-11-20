@@ -89,7 +89,7 @@ describe('实例列表', () => {
     expect(text).toContain('当前');
     expect(text).toContain('未授权');
     expect(text).not.toContain('无需密钥');
-    expect(card('DeepSeek')?.className).toContain('border-primary');
+    expect(card('DeepSeek')?.getAttribute('data-current')).toBe('true');
     expect(card('Local')?.textContent).toContain('未配置');
     expect(text).not.toContain('sk-deepseek');
     expect(text).not.toContain('secret-1');
@@ -97,7 +97,7 @@ describe('实例列表', () => {
 
   it('筛选「未配置密钥」只显示缺少凭据的实例', async () => {
     const container = await mountOptions(harness, '#/instances');
-    const chip = [...container.querySelectorAll('button.tab')].find((item) =>
+    const chip = [...container.querySelectorAll('button[data-slot="filter-tab"]')].find((item) =>
       item.textContent.includes('未配置密钥')
     );
     await click(chip);
@@ -150,8 +150,8 @@ describe('实例操作', () => {
 
     const settings = await readSettings(harness);
     expect(settings.activeInstanceId).toBe(fixtures.baidu.id);
-    expect(card('百度翻译')?.className).toContain('border-primary');
-    expect(card('DeepSeek')?.className).not.toContain('border-primary');
+    expect(card('百度翻译')?.getAttribute('data-current')).toBe('true');
+    expect(card('DeepSeek')?.getAttribute('data-current')).not.toBe('true');
   });
 
   it('停用当前实例先确认，确认后改选下一个可用实例', async () => {

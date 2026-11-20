@@ -25,6 +25,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import StatusBadge from '../../shared/ui/status-badge.jsx';
+import Toggle from '../../shared/ui/toggle.jsx';
+import { buttonClass } from '../../shared/ui/button.jsx';
 import {
   credentialState,
   instanceDetail,
@@ -70,11 +72,16 @@ export default function InstanceCard({
 
   return (
     <article
-      className={`card gap-2 bg-base-100 p-3.5${active ? ' card-border border-primary' : ''}${unsupported ? ' opacity-70' : ''}`}
+      data-current={active ? 'true' : 'false'}
+      className={`flex flex-col gap-2 rounded-lg border bg-white p-3.5 shadow-sm dark:bg-gray-900 ${
+        active
+          ? 'border-indigo-600 dark:border-indigo-400'
+          : 'border-gray-200 dark:border-gray-700'
+      }${unsupported ? ' opacity-70' : ''}`}
       aria-label={`翻译实例 ${instance.name}`}
     >
       <div className="flex items-start gap-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-base-300 text-primary" aria-hidden="true">
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-gray-200 dark:bg-gray-700 text-indigo-600 dark:text-indigo-400" aria-hidden="true">
           <Icon size={15} />
         </span>
         <div className="min-w-0 flex-1">
@@ -91,8 +98,8 @@ export default function InstanceCard({
               </StatusBadge>
             ) : null}
           </div>
-          <div className="text-xs leading-relaxed text-base-content/60 break-words">{typeBadgeLabel(instance)}</div>
-          <div className="text-xs leading-relaxed text-base-content/60 break-words">{instanceDetail(instance)}</div>
+          <div className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">{typeBadgeLabel(instance)}</div>
+          <div className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">{instanceDetail(instance)}</div>
         </div>
       </div>
 
@@ -131,25 +138,23 @@ export default function InstanceCard({
       </div>
 
       {!unsupported ? (
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="toggle toggle-sm"
+        <div className="inline-flex items-center gap-2 text-sm">
+          <Toggle
             checked={instance.enabled !== false}
-            onChange={(event) => onToggle(event.target.checked)}
+            onChange={(value) => onToggle(value)}
             disabled={busy}
-            aria-label={`启用 ${instance.name}`}
+            ariaLabel={`启用 ${instance.name}`}
           />
           <span>{instance.enabled ? '已启用，可用于翻译' : '已停用，不参与翻译'}</span>
-        </label>
+        </div>
       ) : null}
 
       {permission && permission.key !== 'ok' ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs leading-relaxed text-base-content/60 break-words">接口域名未授权，测试与翻译会失败。</span>
+          <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">接口域名未授权，测试与翻译会失败。</span>
           <button
             type="button"
-            className="btn btn-xs btn-warning"
+            className={buttonClass({ variant: 'warning', size: 'xs' })}
             onClick={onAuthorize}
             disabled={busy || authorizing}
           >
@@ -161,15 +166,15 @@ export default function InstanceCard({
       <div className="flex flex-wrap gap-1.5 pt-0.5">
         {!unsupported ? (
           <>
-            <button type="button" className="btn btn-xs" onClick={onEdit} disabled={busy}>
+            <button type="button" className={buttonClass({ size: 'xs' })} onClick={onEdit} disabled={busy}>
               <Pencil size={12} aria-hidden="true" />
               编辑
             </button>
-            <button type="button" className="btn btn-xs" onClick={onDuplicate} disabled={busy}>
+            <button type="button" className={buttonClass({ size: 'xs' })} onClick={onDuplicate} disabled={busy}>
               <Copy size={12} aria-hidden="true" />
               复制
             </button>
-            <button type="button" className="btn btn-xs" onClick={onTest} disabled={busy}>
+            <button type="button" className={buttonClass({ size: 'xs' })} onClick={onTest} disabled={busy}>
               <FlaskConical size={12} aria-hidden="true" />
               测试
             </button>
@@ -178,7 +183,7 @@ export default function InstanceCard({
         {!active && !unsupported ? (
           <button
             type="button"
-            className="btn btn-xs btn-primary"
+            className={buttonClass({ variant: 'primary', size: 'xs' })}
             onClick={onSetActive}
             disabled={busy || !eligibility.ok}
             title={eligibility.ok ? '设为当前翻译方式' : eligibility.reason ?? undefined}
@@ -189,7 +194,7 @@ export default function InstanceCard({
         ) : null}
         <button
           type="button"
-          className="btn btn-xs btn-error btn-outline"
+          className={buttonClass({ variant: 'danger', size: 'xs' })}
           onClick={onDelete}
           disabled={busy}
         >

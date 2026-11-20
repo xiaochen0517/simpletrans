@@ -6,7 +6,8 @@
  * 依赖：E2 存储读写（storage.js）、语言目录（languages.js，P8-2 起）。
  * 实现阶段：P1（引擎层与密钥配置）；P8-2 升级 schema v2：增加 `configVersion`，
  *           移除默认 `concurrency`，语言改由共享目录校验，未知字段保留；
- *           P11 增加弹窗初始页 `popupDefaultTab`；P11 增加主题 `theme`。
+ *           P11 增加弹窗初始页 `popupDefaultTab`；P11 增加主题 `theme`；
+ *           P12 增加悬停翻译快捷键 `hoverShortcut`。
  *
  * 每实例凭据、提示词与当前实例改选由 E3（config/instances.js）承担，因为需要实例 id。
  */
@@ -18,6 +19,7 @@ import {
   isSupportedSourceLang,
   isSupportedTargetLang,
 } from './languages.js';
+import { DEFAULT_HOVER_SHORTCUT, normalizeHoverShortcut } from './shortcut.js';
 
 /** 当前设置 schema 版本；迁移完成后写入。 */
 export const CONFIG_VERSION = 2;
@@ -34,6 +36,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   activeInstanceId: null, // 当前生效实例 id
   popupDefaultTab: 'default', // 弹窗初始页：default / quick
   theme: 'system', // 界面主题：system / light / dark
+  hoverShortcut: DEFAULT_HOVER_SHORTCUT, // 悬停翻译修饰键：ctrl / alt / shift / command
 });
 
 /** 弹窗初始页取值。 */
@@ -127,6 +130,7 @@ export function normalizeSettings(raw) {
         : null,
     popupDefaultTab: normalizePopupDefaultTab(merged.popupDefaultTab),
     theme: normalizeTheme(merged.theme),
+    hoverShortcut: normalizeHoverShortcut(merged.hoverShortcut),
   };
 }
 

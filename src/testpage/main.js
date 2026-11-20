@@ -10,9 +10,20 @@
  * 约束：普通网页不受影响；本页只在扩展页面内使用，不经过清单注入。
  */
 
-import '../shared/global.css';
 import './testpage.css';
 import { getTask } from '../content/index.js';
+
+/** 测试页没有设置入口：按系统偏好写 data-theme，并跟随系统变化。 */
+const darkQuery = globalThis.matchMedia?.('(prefers-color-scheme: dark)');
+
+function applySystemTheme() {
+  const theme = darkQuery?.matches ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+}
+
+applySystemTheme();
+darkQuery?.addEventListener?.('change', applySystemTheme);
 
 const startButton = document.getElementById('test-start');
 const clearButton = document.getElementById('test-clear');
@@ -28,7 +39,10 @@ const task = getTask();
 function setStatus(message, tone = 'info') {
   if (!status) return;
   status.textContent = message;
-  status.className = tone === 'error' ? 'badge badge-sm badge-error' : 'badge badge-sm';
+  status.className =
+    tone === 'error'
+      ? 'inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/40 dark:text-red-200'
+      : 'inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300';
 }
 
 /**

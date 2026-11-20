@@ -13,7 +13,8 @@
  * P7 补 runtime.openOptionsPage（打开设置页，记录调用次数与可注入的失败）；
  * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`；
  * P8-2 补 permissions（contains / request / remove 与已授权集合）；P8-3 让 getManifest 返回
- * 与清单一致的名字、版本与权限，供设置页「关于」使用；P9 补 tabs.onRemoved（标签页关闭兜底清理）。
+ * 与清单一致的名字、版本与权限，供设置页「关于」使用；P9 补 tabs.onRemoved（标签页关闭兜底清理）；
+ * P12 补 commands.getAll（读取整页命令快捷键）。
  */
 
 let portSequence = 0;
@@ -310,6 +311,20 @@ export function createChrome() {
     },
   };
 
+  const commands = {
+    onCommand,
+    /** getAll 的返回值；测试可整体替换。 */
+    __shortcuts: [
+      { name: 'translate-page', shortcut: 'Ctrl+Shift+Y', description: '翻译整页' },
+    ],
+    /** 设置后 getAll 抛出该错误。 */
+    __error: null,
+    async getAll() {
+      if (commands.__error) throw commands.__error;
+      return commands.__shortcuts.map((command) => ({ ...command }));
+    },
+  };
+
   return {
     runtime,
     storage: {
@@ -318,9 +333,7 @@ export function createChrome() {
       sync: makeArea('sync', onStorageChanged),
       session: makeArea('session', onStorageChanged),
     },
-    commands: {
-      onCommand,
-    },
+    commands,
     tabs,
     scripting,
     permissions,

@@ -23,6 +23,12 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 /** @type {{ instances?: Array<object>, ok?: boolean }} */
 let engineResponse;
 
+/** @type {{ ok: boolean, data?: object, error?: object }} ROUTE status 的响应。 */
+let statusResponse;
+
+/** @type {Array<{ command?: string }>} 收到的 ST_ROUTE 命令。 */
+let routeCalls;
+
 /** @type {object} */
 let chromeStub;
 
@@ -115,10 +121,28 @@ async function click(button) {
 beforeEach(async () => {
   chromeStub = installChrome();
   engineResponse = { ok: true, data: { instances: [defaultInstance()] } };
+  statusResponse = { ok: true, data: { active: false } };
+  routeCalls = [];
 
   chromeStub.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== MESSAGE_TYPES.LIST_ENGINES) return false;
-    sendResponse(engineResponse);
+    if (message.type === MESSAGE_TYPES.LIST_ENGINES) {
+      sendResponse(engineResponse);
+      return false;
+    }
+    if (message.type === MESSAGE_TYPES.ROUTE) {
+      const command = message.payload?.command;
+      routeCalls.push({ command });
+      if (command === 'status') {
+        sendResponse(statusResponse);
+        return false;
+      }
+      if (command === 'start') {
+        sendResponse({ ok: true, data: { phase: 'submitted', total: 2 } });
+        return false;
+      }
+      sendResponse({ ok: true, data: { removed: 2 } });
+      return false;
+    }
     return false;
   });
 
@@ -219,6 +243,77 @@ describe('弹窗基础信息', () => {
     const startButton = findButton('翻译整页');
     expect(startButton).toBeTruthy();
     expect(startButton.disabled).toBe(false);
+  });
+});
+
+describe('整页单按钮与快捷键', () => {
+  it('未开启整页翻译时只显示一个按钮，一行展示快捷键', async () => {
+    await renderPopup();
+
+    const startButton = findButton('翻译整页');
+    expect(startButton).toBeTruthy();
+    expect(findButton('显示原文')).toBeUndefined();
+    expect(startButton.textContent).toContain('Ctrl+Shift+Y');
+    expect(startButton.textContent).not.toContain('显示原文');
+  });
+
+  it('页面整页会话开启时按钮显示「显示原文」，点击后清除并切回', async () => {
+    statusResponse = { ok: true, data: { active: true } };
+    await renderPopup();
+
+    const clearButton = findButton('显示原文');
+    expect(clearButton).toBeTruthy();
+    expect(findButton('翻译整页')).toBeUndefined();
+    expect(clearButton.textContent).not.toContain('Ctrl+Shift+Y');
+
+    await click(clearButton);
+
+    expect(routeCalls.map((call) => call.command)).toContain('clear');
+    expect(findButton('翻译整页')).toBeTruthy();
+    expect(findButton('显示原文')).toBeUndefined();
+  });
+
+  it('点击「翻译整页」成功后切换为「显示原文」', async () => {
+    await renderPopup();
+    await click(findButton('翻译整页'));
+
+    expect(routeCalls.map((call) => call.command)).toContain('start');
+    expect(findButton('显示原文')).toBeTruthy();
+    expect(container.textContent).toContain('已提交：2 段');
+  });
+
+  it('状态查询失败时回退「翻译整页」', async () => {
+    statusResponse = { ok: false, error: { code: 'OTHER', message: '页面不可用' } };
+    await renderPopup();
+
+    expect(findButton('翻译整页')).toBeTruthy();
+    expect(findButton('显示原文')).toBeUndefined();
+  });
+
+  it('未绑定浏览器快捷键时显示「未设置」', async () => {
+    chromeStub.commands.__shortcuts = [
+      { name: 'translate-page', shortcut: '', description: '翻译整页' },
+    ];
+    await renderPopup();
+
+    expect(findButton('翻译整页').textContent).toContain('未设置');
+  });
+
+  it('底部悬停提示读取设置中的快捷键', async () => {
+    await chromeStub.storage.sync.set({
+      [STORAGE_KEYS.settings]: {
+        logLevel: 'info',
+        targetLang: 'zh',
+        hoverShortcut: 'alt',
+      },
+    });
+    await renderPopup();
+
+    const hint = [...container.querySelectorAll('p')].find((node) =>
+      node.textContent.includes('悬停翻译快捷键')
+    );
+    expect(hint).toBeTruthy();
+    expect(hint.textContent).toContain('Alt');
   });
 });
 
@@ -411,17 +506,20 @@ describe('尺寸与样式契约', () => {
     expect(source).toContain('overflow-y-auto');
   });
 
-  it('两个命令按钮并排展示', async () => {
+  it('整页操作只有一个主按钮，不再并排两个命令按钮', async () => {
     const source = await readFile(join(process.cwd(), 'src/popup/Popup.jsx'), 'utf8');
-    expect(source).toContain('grid grid-cols-2 gap-2');
+    expect(source).not.toContain('grid grid-cols-2 gap-2');
+    expect(source).toContain('runPage');
+    expect(source).toContain('max-w-[9rem] truncate');
   });
 
-  it('共享样式使用 daisyUI 主题，dark 覆盖 base 色阶', async () => {
+  it('共享样式使用 HyperUI 调色板与 data-theme dark 变体', async () => {
     const css = await readFile(join(process.cwd(), 'src/shared/global.css'), 'utf8');
 
-    expect(css).toContain('themes: light --default');
-    expect(css).toContain('name: "dark"');
-    expect(css).toContain('--color-base-100: oklch(22% 0.015 255)');
+    expect(css).toContain('@custom-variant dark');
+    expect(css).toContain('bg-gray-50');
+    expect(css).toContain('dark:bg-gray-950');
+    expect(css).not.toContain('daisyui');
     expect(css).not.toContain('simpletrans-light');
   });
 });

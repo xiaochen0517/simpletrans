@@ -67,17 +67,35 @@ describe('页面注入入口', () => {
     mod.getBridge().close();
   });
 
-  it('Node 环境没有 DOM 时，ST_TOGGLE 返回明确失败而不抛错', async () => {
+  it('Node 环境没有 DOM 时，ST_GET_STATUS 返回未开启而不抛错', async () => {
     vi.resetModules();
     const mod = await import('../../src/content/index.js');
 
     const response = await sendToContent({
-      type: MESSAGE_TYPES.TOGGLE,
+      type: MESSAGE_TYPES.GET_STATUS,
       payload: { traceId: 't-1' },
     });
 
-    expect(response.ok).toBe(false);
-    expect(response.error.message).toContain('当前页面不可用');
+    expect(response).toEqual({ ok: true, data: { active: false } });
+    mod.getBridge().close();
+  });
+
+  it('Node 环境收到 ST_CONTENT_CONFIG 不抛错', async () => {
+    let serverPort = null;
+    chrome.runtime.onConnect.addListener((port) => {
+      if (port.name === PORT_NAME) serverPort = port;
+    });
+    vi.resetModules();
+
+    const mod = await import('../../src/content/index.js');
+    expect(serverPort).not.toBeNull();
+
+    expect(() => {
+      serverPort.postMessage({
+        type: MESSAGE_TYPES.CONTENT_CONFIG,
+        payload: { hoverShortcut: 'alt' },
+      });
+    }).not.toThrow();
     mod.getBridge().close();
   });
 

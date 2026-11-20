@@ -516,7 +516,7 @@ describe('A1 控制面：缓存消息（P5）', () => {
 });
 
 describe('A1 标签页转发与按需注入', () => {
-  const message = { type: MESSAGE_TYPES.TOGGLE, payload: { traceId: 't-1' } };
+  const message = { type: MESSAGE_TYPES.START, payload: { traceId: 't-1' } };
   const noReceiver = new Error(
     'Could not establish connection. Receiving end does not exist.'
   );
@@ -649,6 +649,31 @@ describe('A1 控制面：ST_ROUTE（P6.1）', () => {
       tabId: 1,
       message: { type: MESSAGE_TYPES.CLEAR, payload: { traceId: 't-route-clear' } },
     });
+  });
+
+  it('status 不读设置、不检查实例，转发 ST_GET_STATUS 并透传 active', async () => {
+    const pageResponse = { ok: true, data: { active: true } };
+    chrome.tabs.__response = pageResponse;
+    await saveSettings({ enabled: false });
+
+    const response = await route({ command: 'status', traceId: 't-route-status' });
+
+    expect(response).toEqual(pageResponse);
+    expect(chrome.tabs.__sent).toHaveLength(1);
+    expect(chrome.tabs.__sent[0]).toEqual({
+      tabId: 1,
+      message: { type: MESSAGE_TYPES.GET_STATUS, payload: { traceId: 't-route-status' } },
+    });
+  });
+
+  it('status 没有活动标签页时返回 NO_ACTIVE_TAB', async () => {
+    chrome.tabs.__queryResult = [];
+
+    const response = await route({ command: 'status' });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_ACTIVE_TAB);
+    expect(chrome.tabs.__sent).toEqual([]);
   });
 
   it('未知命令返回 OTHER / INVALID_MESSAGE，不查询标签页也不发送', async () => {

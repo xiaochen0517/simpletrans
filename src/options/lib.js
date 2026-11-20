@@ -3,9 +3,9 @@
  *
  * 模块：插件独立页面（C）/ 设置页
  * 职责：提供设置页分区共用的应用上下文、后台一次性消息、字节/条数格式化、实例类型与状态文案、
- *       域名权限申请与测试页打开；不含任何凭据读写。
+ *       域名权限申请、测试页打开与浏览器扩展快捷键设置页跳转；不含任何凭据读写。
  * 依赖：React（Context）、E1（protocol）、E3（host-permission 的 origin 匹配模式）、`constants.js` 公共数值。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
+ * 实现阶段：P8-3（设置页内容分类与 UI 规范化）；P12 增加浏览器快捷键设置页跳转。
  *
  * 约定：只读 `ST_LIST_ENGINES` 返回的公开字段，不接触凭据明文；实例写入一律经 E3 的 CRUD 函数，
  * 由壳层统一串行并在完成后重新拉取列表。
@@ -102,6 +102,26 @@ export async function openTestPage() {
     return { ok: true };
   } catch {
     return { ok: false, message: '无法打开翻译测试页，请重试' };
+  }
+}
+
+/**
+ * 打开 Chrome 的扩展快捷键设置页；失败返回可显示的原因。
+ * @returns {Promise<{ ok: boolean, message?: string }>}
+ */
+export async function openBrowserShortcutSettings() {
+  const tabs = globalThis.chrome?.tabs;
+  if (!tabs?.create) {
+    return { ok: false, message: '扩展未就绪，无法打开浏览器快捷键设置' };
+  }
+  try {
+    await tabs.create({ url: 'chrome://extensions/shortcuts' });
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      message: '无法打开浏览器快捷键设置，请手动打开 chrome://extensions/shortcuts',
+    };
   }
 }
 

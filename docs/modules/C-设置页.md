@@ -8,14 +8,16 @@
 | 20261119 | UI 统一规范化：删除 `options.css` 与全部自定义视觉样式；改用 daisyUI 默认 `light` / `dark` 主题、Tailwind 布局与 E5 共享 `Select` / `Field` / `StatusBadge` / `Notice`；页面壳层最大宽度 1440px 居中；编辑抽屉与确认对话框改用 daisyUI `modal`（编辑抽屉为右侧面板） |
 | 20261120 | 实例编辑由右侧抽屉改为居中弹窗（`max-w-4xl`，主体滚动、头尾固定）；「高级参数」增加快速翻译提示词；通用设置增加「弹窗」初始页 |
 | 20261120 | 验收反馈：顶栏增加 light/dark 主题切换（`settings.theme`）；dark 主题调整 base 色阶；可折叠区块补 `collapse-title` / `collapse-arrow` / `collapse-content` |
+| 20261120 | HyperUI 迁移：壳层、分区、对话框、折叠区与 toast 改用 HyperUI/Tailwind 类；关于分区使用 Neobrutalism；深色由 `data-theme` + `dark:` 变体控制 |
+| 20261120 | P12：通用设置增加「快捷键」区块：悬停翻译修饰键下拉、整页命令当前值与浏览器快捷键设置页跳转；整页快捷键只读显示，不在扩展内修改 |
 
-本文记录设置页（C1–C5）的实现细节：布局与断点、导航与路由、各分区的信息与操作、保存模型、状态文案、错误与提示、可访问性与降级。模块划分与依赖见 [项目架构](../项目架构.md) 4.4；布局与控件全部由 Tailwind 与 daisyUI 提供，不再维护页面级样式文件。共享下拉与字段见 [E5-共享展示组件](./E5-共享展示组件.md)。
+本文记录设置页（C1–C5）的实现细节：布局与断点、导航与路由、各分区的信息与操作、保存模型、状态文案、错误与提示、可访问性与降级。模块划分与依赖见 [项目架构](../项目架构.md) 4.4；布局与控件全部由 Tailwind 与 HyperUI 提供，不再维护页面级样式文件。共享下拉与字段见 [E5-共享展示组件](./E5-共享展示组件.md)。
 
 ## 1. 职责与边界
 
 - 设置页只负责「看状态」「改配置」「测试」「清数据」：不调用翻译引擎、不打开缓存数据库、不读凭据明文。
-- 读取：`getSettings()`（本页是设置写入方）、`ST_LIST_ENGINES` 的公开字段、`ST_CACHE_STATS`、`chrome.runtime.getManifest()`。
-- 写入：通用设置的开关/下拉经 `saveSettings`；实例经 E3 的 `createInstance` / `updateInstance` / `duplicateInstance` / `setInstanceEnabled` / `removeInstance` / `setActiveInstance` / `writeCredentials` / `removeCredentials`；密钥存储经 `setKeyStorage`；域名权限经 `chrome.permissions.request`。
+- 读取：`getSettings()`（本页是设置写入方）、`ST_LIST_ENGINES` 的公开字段、`ST_CACHE_STATS`、`chrome.runtime.getManifest()`、`chrome.commands.getAll()`（只读整页命令快捷键）。
+- 写入：通用设置的开关/下拉经 `saveSettings`；实例经 E3 的 `createInstance` / `updateInstance` / `duplicateInstance` / `setInstanceEnabled` / `removeInstance` / `setActiveInstance` / `writeCredentials` / `removeCredentials`；密钥存储经 `setKeyStorage`；域名权限经 `chrome.permissions.request`；整页快捷键只通过 `chrome.tabs.create` 跳转 `chrome://extensions/shortcuts`，不在本页写入。
 - 实例写入后重新拉取 `ST_LIST_ENGINES`，不在页面本地合并；同一时刻只允许一次写操作（壳层串行）。
 
 ## 2. 结构、布局与断点
@@ -41,7 +43,7 @@ Options.jsx（壳层：导航、哈希路由、全局数据、写串行、toast�
 - 页面壳层使用 `mx-auto w-full max-w-[1440px]`；大屏居中，笔记本与平板铺满。
 - 状态卡片网格：≥ 1024px 三列（实例卡片两列），600–1023px 两列，< 600px 一列。
 - 所有容器允许收缩（`min-w-0`），长文本与 endpoint 使用 `break-words`；360px 不得出现横向滚动。
-- 颜色只使用 daisyUI 主题语义色；dark 的 base 色阶由 `global.css` 统一覆盖，不新增其它自定义 CSS、阴影、渐变或关键帧。
+- 颜色只使用 HyperUI/Tailwind 调色板（`gray` / `white` / `indigo` + 语义色）；深色由 `data-theme="dark"` 与 `dark:` 变体统一控制，不新增其它自定义 CSS、渐变或关键帧。
 
 ## 3. 导航与路由
 
@@ -92,15 +94,15 @@ Options.jsx（壳层：导航、哈希路由、全局数据、写串行、toast�
 
 ### 5.3 编辑弹窗
 
-- 外壳：daisyUI `modal` 居中弹窗（`max-w-4xl`，宽度 `calc(100vw - 2rem)`，最大高度 `calc(100vh - 2rem)`）；`role="dialog"`、`aria-modal`、焦点陷阱与 Esc 关闭保留；窄屏接近全宽，不出现横向滚动。
+- 外壳：HyperUI 遮罩 + 居中面板（`max-w-4xl`，宽度 `calc(100vw - 2rem)`，最大高度 `calc(100vh - 2rem)`，`rounded-lg bg-white dark:bg-gray-900 shadow-lg`）；`role="dialog"`、`aria-modal`、焦点陷阱与 Esc 关闭保留；窄屏接近全宽，不出现横向滚动。
 - 结构：头部（类型/预设徽标、名称、当前与「有未保存更改」徽标、关闭按钮）、可滚动主体、底部「取消 / 保存」固定操作区；头部与底部不随主体滚动。
 - 基础信息：名称、启用、设为当前、预设切换（切到 DeepSeek 套用预设默认值，切到自定义保留当前配置）。
 - 连接（OpenAI）：baseUrl、path、stream、查询参数、静态请求头、域名权限状态与「授权访问」。
 - 认证：Bearer / 自定义 Header / Query / 无认证；Header 模式填名称与前缀，Query 模式填参数名。
 - 模型：自由输入，最大 100 字符。
 - 生成参数：temperature（0–2）、top_p（0–1）、max_tokens（字段名 + 正整数）、思考强度（关闭/强度/预算/开关）、额外参数（path/type/value/enabled）。关闭的参数灰显值并在请求中不发送。
-- 高级参数（折叠）：`details.collapse.collapse-arrow`，`summary.collapse-title text-sm font-semibold`，内容 `.collapse-content`；默认翻译提示词与快速翻译提示词两个文本域，各自提供占位符插入、恢复默认与 `n / 2000` 计数；快速提示词只对 OpenAI 兼容实例显示，默认模板区分单词（音标、词性、释义、两行例句）与句子（纯译文）。
-- 批次与并发（折叠）：`details.collapse.collapse-arrow` + `summary.collapse-title`；单批段数、批次最大字符数、最大并发数；百度限制 1–20 段、≤ 2000 字符、并发 1–10。展开/收起箭头由 daisyUI 提供，不自行绘制。
+- 高级参数（折叠）：`details[data-slot="accordion"]` + `summary[data-slot="accordion-trigger"]` + `[data-slot="accordion-content"]`，标题右侧 `ChevronDown` 随展开旋转；默认翻译提示词与快速翻译提示词两个文本域，各自提供占位符插入、恢复默认与 `n / 2000` 计数；快速提示词只对 OpenAI 兼容实例显示，默认模板区分单词（第一行音标、按词性分行释义且义项用分号、两条例句）与句子（纯译文）。
+- 批次与并发（折叠）：同一套 `details` + HyperUI 手风琴样式；单批段数、批次最大字符数、最大并发数；百度限制 1–20 段、≤ 2000 字符、并发 1–10。展开/收起箭头由 `ChevronDown` + `group-open:rotate-180` 提供。
 - 百度「接口 QPS」：number 输入，`min=1` / `max=100` / `step=1`，默认 1；帮助文字为「标准版 1、高级版 10、尊享版 100；每个上游请求计 1 次，批量请求按 1 次计算。」；表单校验 1–100 整数，保存写入 `qps`；OpenAI 实例不显示该字段。
 - 凭据：只显示字段级「已配置 / 未配置 / 无需密钥」；输入框始终为空，占位「已配置，留空表示不修改」；显示/隐藏切换；清除凭据需二次确认。
 - 底部固定栏：取消、保存；保存中禁用并显示「保存中…」。
@@ -131,6 +133,7 @@ Options.jsx（壳层：导航、哈希路由、全局数据、写串行、toast�
 | ---- | ---- | ---- |
 | 扩展 | 启用开关 | 即时保存；失败回滚 |
 | 语言 | 源语言、目标语言下拉（共享 `Select`） | 即时保存；显示「当前：源 → 目标」 |
+| 快捷键 | 悬停翻译下拉（Ctrl / Alt / Shift / Command，macOS 才显示 Command）；整页翻译当前快捷键与「打开浏览器快捷键设置」按钮 | 悬停即时保存到 `settings.hoverShortcut`，提示「已保存；刷新网页后生效」；整页只读 `chrome.commands.getAll()`，按钮通过 `chrome.tabs.create` 打开 `chrome://extensions/shortcuts`；读取/打开失败行内提示 |
 | 弹窗 | 「打开时显示」下拉：默认页面 / 快速翻译页面（共享 `Select`） | 即时保存到 `settings.popupDefaultTab`；只影响之后打开的弹窗 |
 | 密钥存放位置 | 本机 / 跟随账号同步选项按钮 | 确认弹窗 → 迁移（显示「正在迁移密钥…」）→ 成功提示；失败保留原数据 |
 | 译文缓存 | 缓存开关 | 即时保存；说明关闭后不读不写、已有缓存不删除 |
@@ -149,7 +152,7 @@ Options.jsx（壳层：导航、哈希路由、全局数据、写串行、toast�
 ## 8. 数据管理与关于
 
 - 数据管理：缓存开关状态、已用/上限/条数、刷新、清空（二次确认，说明只清译文缓存、不可撤销）；缓存不可用时显示「缓存占用暂不可用，请重试」并提供重试；存储位置说明列出缓存、密钥、提示词与日志。
-- 关于：名称、版本、配置版本、缓存数据库版本（`shared/constants.js` 的 `CACHE_DB_VERSION`）、声明权限与静态/可选主机权限用途、隐私说明、诊断信息。
+- 关于：名称、版本、配置版本、缓存数据库版本（`shared/constants.js` 的 `CACHE_DB_VERSION`）、声明权限与静态/可选主机权限用途、隐私说明、诊断信息；该分区内部使用 HyperUI Neobrutalism：黑边卡片、`shadow-[4px_4px_0_0]` 硬阴影、黄色强调标题与按钮，直角；深色模式边框/阴影转白。
 - 诊断信息只含版本、实例数、缓存占用、日志级别与当前实例类型/启用状态；不含密钥、APPID、提示词、原文/译文、完整 URL 或请求头/体。
 
 ## 9. 可访问性与主题
@@ -157,9 +160,9 @@ Options.jsx（壳层：导航、哈希路由、全局数据、写串行、toast�
 - 每个输入有可见 `<label>`；帮助与错误通过 `aria-describedby` 关联；字段错误 `role="alert"`。
 - 保存/测试/全局状态用 `aria-live="polite"`；全局失败 toast 用 `role="alert"` 且不自动消失（可关闭）。
 - 弹窗与对话框：`role="dialog"`、`aria-modal="true"`、焦点进入、Tab 循环、Esc 关闭、关闭后焦点回到触发元素；危险操作默认焦点在「取消」；编辑弹窗主体滚动、头部与底部固定。
-- 主题按钮有 `aria-label` 与 `title`（「切换为深色主题」/「切换为浅色主题」），图标随当前主题变化；可折叠标题 `summary` 可用 Enter/Space 操作，焦点环由 daisyUI 提供。
-- 状态一律「图标 + 文字」，不只靠颜色；按钮使用 daisyUI 尺寸类（`btn-sm` 默认、`btn-xs` 密集操作、主操作 `btn`）。
-- 主题使用 daisyUI `light` / `dark`（dark 只覆盖 base 色阶）；实际主题由 `settings.theme` 与系统偏好决定，顶栏按钮可切换；不新增其它自定义动画。
+- 主题按钮有 `aria-label` 与 `title`（「切换为深色主题」/「切换为浅色主题」），图标随当前主题变化；可折叠标题 `summary` 可用 Enter/Space 操作，焦点环使用 `focus-visible:ring-2 ring-indigo-500`。
+- 状态一律「图标 + 文字」，不只靠颜色；按钮使用 E5 `Button` 尺寸（`sm` 默认、`xs` 密集操作、主操作 `primary`）。
+- 主题使用 `settings.theme`（`system` / `light` / `dark`）+ 根节点 `data-theme` + Tailwind `dark:` 变体；顶栏按钮可切换；不新增其它自定义动画。
 
 ## 10. 边界情况
 
@@ -169,6 +172,10 @@ Options.jsx（壳层：导航、哈希路由、全局数据、写串行、toast�
 | 实例列表读取失败 | 顶部警示条 + 重试；其它分区仍可操作 |
 | 实例被外部删除 | 弹窗自动关闭，列表与概览刷新 |
 | 弹窗初始页保存失败 | 回滚原值并显示「保存失败，已恢复原值；请重试。」 |
+| 悬停快捷键保存失败 | 回滚原值并显示「保存失败，已恢复原值；请重试。」 |
+| 整页快捷键未绑定 | 显示「未设置」，保留跳转按钮 |
+| `chrome.commands.getAll()` 失败 | 显示「读取失败」，保留跳转按钮 |
+| 打开 `chrome://extensions/shortcuts` 失败 | 行内提示手动打开该地址 |
 | 主题保存失败 | 保留原主题并提示「切换主题失败，请重试」；不改变 `data-theme` |
 | 提示词缺失占位符 | 保存被阻止，错误显示在对应提示词字段下方 |
 | 达到 20 个实例 | 新增按钮禁用并提示删除后才能新增 |
@@ -184,3 +191,5 @@ Options.jsx（壳层：导航、哈希路由、全局数据、写串行、toast�
 - 20261119：UI 统一规范化：删除 `options.css`；页面壳层最大宽度 1440px 居中；全部产品下拉改用 E5 `Select`；字段、徽标、提示来自 E5；编辑抽屉与确认对话框改用 daisyUI `modal`（编辑抽屉为右侧面板）；主题改为 daisyUI 默认 `light` / `dark`。
 - 20261120：实例编辑改为居中弹窗（`max-w-4xl`，主体滚动、头尾固定）；高级参数同时提供默认翻译提示词与快速翻译提示词（各自校验、恢复默认与计数）；通用设置新增「弹窗」初始页 `popupDefaultTab`。
 - 20261120：验收反馈：顶栏新增 light/dark 主题切换并持久化到 `settings.theme`；可折叠区块补标题、展开箭头与内容内边距；dark 主题使用调整后的 base 色阶。
+- 20261120：HyperUI 迁移：壳层、分区、实例卡片、对话框、折叠区与 toast 改用 HyperUI/Tailwind 类；关于分区改用 Neobrutalism；深色由 `data-theme` + `dark:` 变体控制。
+- 20261120：快速提示词默认模板与帮助文案改为词典式单词排版（音标行、按词性分行释义且义项用分号、两条例句）。

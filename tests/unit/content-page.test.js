@@ -105,7 +105,7 @@ function hover(element) {
 
 /**
  * 模拟按下并松开一个修饰键。
- * @param {'Control'|'Meta'} key
+ * @param {string} key
  */
 function tapModifier(key = 'Control') {
   window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
@@ -250,22 +250,18 @@ async function loadContent() {
 // Ctrl 单段：统一提交
 // ---------------------------------------------------------------------------
 
-describe('页面注入接线（P6.1）：Ctrl 单段统一提交', () => {
-  it('ST_TOGGLE 从当前段落发 scope=single 的 ST_PAGE_SUBMIT 并标记已提交', async () => {
+describe('页面注入接线（P6.1）：悬停单段统一提交', () => {
+  it('悬停快捷键从当前段落发 scope=single 的 ST_PAGE_SUBMIT 并标记已提交', async () => {
     await loadContent();
     const p = mount('<p id="p">Hello world</p>');
     hover(p);
+    tapModifier('Control');
+    await flush();
 
-    const response = await sendToContent({
-      type: MESSAGE_TYPES.TOGGLE,
-      payload: { traceId: 't-page-1' },
-    });
-
-    expect(response).toEqual({ ok: true, data: { action: 'submitted' } });
     expect(submissions).toHaveLength(1);
     expect(submissions[0]).toMatchObject({
       scope: 'single',
-      traceId: 't-page-1',
+      traceId: expect.any(String),
       domain: location.hostname,
       paragraphs: [
         {
@@ -286,8 +282,8 @@ describe('页面注入接线（P6.1）：Ctrl 单段统一提交', () => {
     await loadContent();
     const p = mount('<p id="p">Hello domain</p>');
     hover(p);
-
-    await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    tapModifier('Control');
+    await flush();
 
     expect(submissions).toHaveLength(1);
     expect(submissions[0].domain).toBe(location.hostname);
@@ -301,14 +297,16 @@ describe('页面注入接线（P6.1）：Ctrl 单段统一提交', () => {
     mount('<p id="p"><span id="s">Hello</span></p>');
     const span = document.getElementById('s');
     hover(span);
-    await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    tapModifier('Control');
+    await flush();
     expect(submissions[0].paragraphs[0].text).toBe('Hello');
     expect(translationOf(span)?.parentElement).toBe(span);
 
     mount('<p id="p"><button id="b">Submit</button></p>');
     const button = document.getElementById('b');
     hover(button);
-    await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    tapModifier('Control');
+    await flush();
     expect(submissions[1].paragraphs[0].text).toBe('Submit');
     expect(translationOf(button)?.parentElement).toBe(button);
   });
@@ -317,26 +315,26 @@ describe('页面注入接线（P6.1）：Ctrl 单段统一提交', () => {
     await loadContent();
     const p = mount('<p id="p">Hello</p>');
     hover(p);
-    await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    tapModifier('Control');
+    await flush();
     expect(translationOf(p)).not.toBe(null);
     expect(submissions).toHaveLength(1);
 
-    hover(p);
-    const response = await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    tapModifier('Control');
+    await flush();
 
-    expect(response).toEqual({ ok: true, data: { action: 'hidden' } });
     expect(translationOf(p)).toBe(null);
     expect(submissions).toHaveLength(1);
   });
 
-  it('指针不在可译段落上时返回 no-target，不提交', async () => {
+  it('指针不在可译段落上时不提交', async () => {
     await loadContent();
     mount('<p id="p">12345</p>');
     hover(document.getElementById('p'));
 
-    const response = await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    tapModifier('Control');
+    await flush();
 
-    expect(response).toEqual({ ok: true, data: { action: 'no-target' } });
     expect(submissions).toHaveLength(0);
   });
 
@@ -667,6 +665,90 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// 悬停快捷键配置与整页会话状态
+// ---------------------------------------------------------------------------
+
+describe('页面注入接线（P12）：悬停快捷键配置与整页状态', () => {
+  /**
+   * @param {string} value
+   */
+  function applyConfig(value) {
+    serverPort.postMessage({
+      type: MESSAGE_TYPES.CONTENT_CONFIG,
+      payload: { hoverShortcut: value },
+    });
+  }
+
+  it('ST_CONTENT_CONFIG 切换后旧键失效、新键生效', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello</p>');
+    hover(p);
+
+    applyConfig('alt');
+
+    tapModifier('Control');
+    await flush();
+    expect(submissions).toHaveLength(0);
+
+    tapModifier('Alt');
+    await flush();
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].scope).toBe('single');
+  });
+
+  it('只应用页面第一帧配置，重连帧被忽略', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello</p>');
+    hover(p);
+
+    applyConfig('alt');
+    applyConfig('shift');
+
+    tapModifier('Shift');
+    await flush();
+    expect(submissions).toHaveLength(0);
+
+    tapModifier('Alt');
+    await flush();
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('配置值非法时回退默认 Ctrl', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello</p>');
+    hover(p);
+
+    applyConfig('Command');
+
+    tapModifier('Control');
+    await flush();
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('ST_GET_STATUS 反映整页会话状态', async () => {
+    await loadContent();
+    mount('<p id="p">Hello</p>');
+
+    expect(await sendToContent({ type: MESSAGE_TYPES.GET_STATUS, payload: {} })).toEqual({
+      ok: true,
+      data: { active: false },
+    });
+
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+    expect(await sendToContent({ type: MESSAGE_TYPES.GET_STATUS, payload: {} })).toEqual({
+      ok: true,
+      data: { active: true },
+    });
+
+    await sendToContent({ type: MESSAGE_TYPES.CLEAR, payload: {} });
+    expect(await sendToContent({ type: MESSAGE_TYPES.GET_STATUS, payload: {} })).toEqual({
+      ok: true,
+      data: { active: false },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 结果回显（后台帧）
 // ---------------------------------------------------------------------------
 
@@ -757,12 +839,12 @@ describe('页面注入结果回显（P6.3）', () => {
     expect(task.getStatus().phase).toBe('submitted');
   });
 
-  it('Ctrl 单段提交后同样收到后台帧', async () => {
+  it('悬停单段提交后同样收到后台帧', async () => {
     const mod = await loadContent();
     const p = mount('<p id="p">Hello</p>');
     hover(p);
-
-    await sendToContent({ type: MESSAGE_TYPES.TOGGLE, payload: {} });
+    tapModifier('Control');
+    await flush();
     expect(rendererTextOf(p)).toBe('已提交，等待翻译');
 
     const requestId = submissions[0].requestId;

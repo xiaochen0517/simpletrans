@@ -52,7 +52,7 @@ describe('后台入口', () => {
     expect(response.data.instances).toHaveLength(1);
   });
 
-  it('st-gateway 端口上的 ST_PING 立即回 ST_PONG，并异步下发 ST_LOG_CONFIG', async () => {
+  it('st-gateway 端口上的 ST_PING 立即回 ST_PONG，并异步下发日志与内容配置', async () => {
     await importFresh('../../src/background/index.js');
     const frames = [];
     const client = chrome.runtime.connect({ name: PORT_NAME });
@@ -66,9 +66,12 @@ describe('后台入口', () => {
     });
     await vi.waitFor(() => {
       expect(frames.some((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toBe(true);
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG)).toBe(true);
     });
     const config = frames.find((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG);
     expect(config.payload.level).toBe('info');
+    const contentConfig = frames.find((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG);
+    expect(contentConfig.payload.hoverShortcut).toBe('ctrl');
     client.disconnect();
   });
 
@@ -88,17 +91,18 @@ describe('后台入口', () => {
     expect(response.error.message).toContain('无法识别');
   });
 
-  it('顶层注册快捷键监听，触发命令后向活动标签页发 ST_TOGGLE', async () => {
+  it('顶层注册快捷键监听，触发命令后向活动标签页发 ST_START', async () => {
     await importFresh('../../src/background/index.js');
     expect(chrome.commands.onCommand.listeners).toHaveLength(1);
 
-    chrome.tabs.__response = { ok: true, data: { action: 'submitted' } };
-    chrome.commands.onCommand.emit('translate-paragraph');
+    chrome.tabs.__response = { ok: true, data: { phase: 'submitted', total: 1 } };
+    chrome.commands.onCommand.emit('translate-page');
 
     await vi.waitFor(() => expect(chrome.tabs.__sent).toHaveLength(1));
     const [sent] = chrome.tabs.__sent;
     expect(sent.tabId).toBe(1);
-    expect(sent.message.type).toBe(MESSAGE_TYPES.TOGGLE);
+    expect(sent.message.type).toBe(MESSAGE_TYPES.START);
     expect(sent.message.payload.traceId).toEqual(expect.any(String));
+    expect(sent.message.payload.targetLang).toBe('zh');
   });
 });

@@ -5,11 +5,12 @@
  * 职责：定义扩展内部的统一错误码、错误分类标志、消息名、端口名与载荷校验辅助，作为后台、弹窗、设置页与页面注入的协议来源。
  * 依赖：无（P1 起）。
  * 实现阶段：P1–P5（错误码在 P1 落地；消息名、端口名与报文在 P2 落地；`traceId` 在 P3；
- *           `normalizeDomain` 与两条缓存消息在 P5 落地；`ST_ROUTE` / `ST_START` / `ST_TOGGLE` /
+ *           `normalizeDomain` 与两条缓存消息在 P5 落地；`ST_ROUTE` / `ST_START` /
  *           `ST_PAGE_SUBMIT` 在 P6.1 落地，见 docs/modules/E1-消息协议.md；本轮段落去掉上下文，
  *           `hostId` 兼作结果帧 `itemId`）；P9 删除 `ST_ENGINE_CHANGED` 与 `fallbackable`，
  *           失败段「刷新」复用 `ST_PAGE_SUBMIT(scope='single')`；
- *           P11 增加 `ST_QUICK_TRANSLATE` 与 `ST_GET_SELECTION`（弹窗快速翻译）
+ *           P11 增加 `ST_QUICK_TRANSLATE` 与 `ST_GET_SELECTION`（弹窗快速翻译）；
+ *           P12 增加 `ST_CONTENT_CONFIG` 与 `ST_GET_STATUS`，删除 `ST_TOGGLE`。
  */
 
 /** 统一错误码。分类依据见项目架构 6.8。 */
@@ -67,11 +68,11 @@ export const PORT_NAME = 'st-gateway';
  */
 export const MESSAGE_TYPES = Object.freeze({
   // 控制面：一次性消息
-  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发（P6.1 start / clear）
+  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发（P6.1 start / clear；P12 status）
   START: 'ST_START', // 后台 → 页面注入：开始整页取段并提交（P6.1）
   PAGE_SUBMIT: 'ST_PAGE_SUBMIT', // 页面注入 → 后台：统一提交段落（P6.1，scope=page/single；每段 index/hostId/text，hostId 即结果帧 itemId；后台校验、计数、逐段日志并回执）
-  TOGGLE: 'ST_TOGGLE', // 后台 → 页面注入：提交/隐藏当前段（P6.1）；动作值 submitted / hidden / submitting / no-target / failed
   CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部标记与译文（P4）；响应 removed（P6.1）
+  GET_STATUS: 'ST_GET_STATUS', // 后台 → 页面注入：读取整页会话状态（P12），响应 { active }
   LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表（P2）
   TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译（P2）
   QUICK_TRANSLATE: 'ST_QUICK_TRANSLATE', // 弹窗 → 后台：快速翻译（P11），返回纯文本译文
@@ -92,6 +93,7 @@ export const MESSAGE_TYPES = Object.freeze({
   CANCEL_ITEM: 'ST_CANCEL_ITEM',
   CLOSE: 'ST_CLOSE',
   LOG_CONFIG: 'ST_LOG_CONFIG', // 后台 → 页面注入：连接建立后下发日志级别（P3）
+  CONTENT_CONFIG: 'ST_CONTENT_CONFIG', // 后台 → 页面注入：连接建立后下发内容配置（P12，目前为悬停快捷键）
 });
 
 const KNOWN_MESSAGE_TYPES = new Set(Object.values(MESSAGE_TYPES));

@@ -72,8 +72,12 @@ describe('E1 消息名与载荷校验', () => {
     expect(MESSAGE_TYPES.PONG).toBe('ST_PONG');
     expect(MESSAGE_TYPES.CLOSE).toBe('ST_CLOSE');
     expect(MESSAGE_TYPES.LOG_CONFIG).toBe('ST_LOG_CONFIG');
+    expect(MESSAGE_TYPES.CONTENT_CONFIG).toBe('ST_CONTENT_CONFIG');
+    expect(MESSAGE_TYPES.GET_STATUS).toBe('ST_GET_STATUS');
     expect(MESSAGE_TYPES.QUICK_TRANSLATE).toBe('ST_QUICK_TRANSLATE');
     expect(MESSAGE_TYPES.GET_SELECTION).toBe('ST_GET_SELECTION');
+    // P12：移除悬停备用命令后没有 ST_TOGGLE。
+    expect(MESSAGE_TYPES).not.toHaveProperty('TOGGLE');
     // P9：失败段刷新复用 ST_PAGE_SUBMIT，没有独立的刷新消息，也没有实例切换消息。
     expect(MESSAGE_TYPES).not.toHaveProperty('ENGINE_CHANGED');
     expect(MESSAGE_TYPES).not.toHaveProperty('RETRY');
@@ -82,12 +86,14 @@ describe('E1 消息名与载荷校验', () => {
   it('isKnownMessageType 只认架构 4.6 的名字', () => {
     expect(isKnownMessageType('ST_TRANSLATE_BATCH')).toBe(true);
     expect(isKnownMessageType('ST_LOG_CONFIG')).toBe(true);
+    expect(isKnownMessageType('ST_CONTENT_CONFIG')).toBe(true);
+    expect(isKnownMessageType('ST_GET_STATUS')).toBe(true);
     expect(isKnownMessageType('ST_QUICK_TRANSLATE')).toBe(true);
     expect(isKnownMessageType('ST_GET_SELECTION')).toBe(true);
     expect(isKnownMessageType('ST_STOP')).toBe(false);
     expect(isKnownMessageType('ST_RETRY')).toBe(false);
     expect(isKnownMessageType('ST_ENGINE_CHANGED')).toBe(false);
-    expect(isKnownMessageType('ST_GET_STATUS')).toBe(false);
+    expect(isKnownMessageType('ST_TOGGLE')).toBe(false);
     expect(isKnownMessageType(42)).toBe(false);
   });
 

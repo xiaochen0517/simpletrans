@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ChevronDown,
   Eye,
   EyeOff,
   KeyRound,
@@ -28,6 +29,8 @@ import Field, { describedBy } from '../../shared/ui/field.jsx';
 import StatusBadge from '../../shared/ui/status-badge.jsx';
 import Select from '../../shared/ui/select.jsx';
 import ConfirmDialog from './confirm-dialog.jsx';
+import Toggle from '../../shared/ui/toggle.jsx';
+import { buttonClass } from '../../shared/ui/button.jsx';
 import {
   AUTH_LABELS,
   PRESET_LABELS,
@@ -721,15 +724,16 @@ export default function InstanceEditor({
   const quickPromptCount = draft.quickPrompt.length;
 
   return (
-    <div className="modal modal-open p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 dark:bg-black/70" data-slot="dialog-overlay">
       <div
-        className="modal-box flex max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-4xl flex-col overflow-hidden p-0"
+        className="flex max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-4xl flex-col overflow-hidden rounded-lg bg-white p-0 shadow-lg dark:bg-gray-900"
+        data-slot="dialog-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="editor-title"
         ref={modalRef}
       >
-        <header className="flex items-start gap-2.5 border-b border-base-300 p-4">
+        <header className="flex items-start gap-2.5 border-b border-gray-200 dark:border-gray-700 p-4">
           <div className="min-w-0 flex-1">
             <h2 className="m-0 text-base font-bold break-words" id="editor-title">
               {draft.name.trim() || instance.name}
@@ -742,7 +746,7 @@ export default function InstanceEditor({
           </div>
           <button
             type="button"
-            className="btn btn-sm btn-circle btn-ghost"
+            className={buttonClass({ variant: 'ghost', iconOnly: true })}
             onClick={requestClose}
             aria-label="关闭编辑弹窗"
           >
@@ -752,13 +756,13 @@ export default function InstanceEditor({
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
           {conflictOpen && !dirty ? (
-            <div className="alert alert-warning" role="status">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" role="status">
               <AlertTriangle size={15} aria-hidden="true" />
               <span className="min-w-0 break-words">该实例已在别处更新。</span>
               <span className="ml-auto shrink-0">
                 <button
                   type="button"
-                  className="btn btn-xs"
+                  className={buttonClass({ size: 'xs' })}
                   onClick={() => {
                     setDraft(toDraft(instance));
                     setPermission(instance.permission ?? 'missing');
@@ -772,7 +776,7 @@ export default function InstanceEditor({
           ) : null}
 
           {conflictOpen && dirty ? (
-            <div className="alert alert-warning" role="status">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" role="status">
               <AlertTriangle size={15} aria-hidden="true" />
               <span className="min-w-0 break-words">
                 该实例已在别处更新。当前草稿不会被覆盖；重新加载会丢弃草稿。
@@ -780,7 +784,7 @@ export default function InstanceEditor({
               <span className="ml-auto shrink-0">
                 <button
                   type="button"
-                  className="btn btn-xs"
+                  className={buttonClass({ size: 'xs' })}
                   onClick={() => {
                     setDraft(toDraft(instance));
                     setPermission(instance.permission ?? 'missing');
@@ -805,7 +809,7 @@ export default function InstanceEditor({
               <input
                 id="ed-name"
                 type="text"
-                className="input input-sm w-full"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                 value={draft.name}
                 onChange={(event) => update('name', event.target.value)}
                 aria-invalid={Boolean(errors.name)}
@@ -818,26 +822,24 @@ export default function InstanceEditor({
               />
             </Field>
 
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="toggle toggle-sm"
-                  checked={draft.enabled}
-                  onChange={(event) => update('enabled', event.target.checked)}
-                  aria-label="启用该实例"
-                  disabled={saving}
-                />
-                <span>启用该实例</span>
-              </label>
-              <span className="text-xs leading-relaxed text-base-content/60 break-words">停用后不会用于翻译，已打开页面需重新提交。</span>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="inline-flex items-center gap-2 text-sm">
+                  <Toggle
+                    checked={draft.enabled}
+                    onChange={(value) => update('enabled', value)}
+                    ariaLabel="启用该实例"
+                    disabled={saving}
+                  />
+                  <span>启用该实例</span>
+                </div>
+              <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">停用后不会用于翻译，已打开页面需重新提交。</span>
             </div>
 
             {!active ? (
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  className="btn btn-sm btn-primary"
+                  className={buttonClass({ variant: 'primary' })}
                   onClick={makeActive}
                   disabled={saving || !canSetActive}
                   title={canSetActive ? '设为当前翻译方式' : eligibility.reason ?? undefined}
@@ -845,13 +847,13 @@ export default function InstanceEditor({
                   设为当前翻译方式
                 </button>
                 {!canSetActive ? (
-                  <span className="text-xs leading-relaxed text-base-content/60 break-words">{eligibility.reason ?? '当前不可设为当前实例'}</span>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">{eligibility.reason ?? '当前不可设为当前实例'}</span>
                 ) : (
-                  <span className="text-xs leading-relaxed text-base-content/60 break-words">切换只影响之后提交的段落。</span>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">切换只影响之后提交的段落。</span>
                 )}
               </div>
             ) : (
-              <span className="text-xs leading-relaxed text-base-content/60 break-words">该实例已是当前翻译方式。</span>
+              <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">该实例已是当前翻译方式。</span>
             )}
 
             {isOpenAI ? (
@@ -864,7 +866,7 @@ export default function InstanceEditor({
                     <button
                       key={preset}
                       type="button"
-                      className={`btn btn-sm${draft.preset === preset ? ' btn-active' : ''}`}
+                      className={`${buttonClass({ size: 'sm' })} aria-pressed:border-indigo-600 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-700 aria-pressed:hover:bg-indigo-100 dark:aria-pressed:border-indigo-400 dark:aria-pressed:bg-indigo-950/40 dark:aria-pressed:text-indigo-200 dark:aria-pressed:hover:bg-indigo-900/60`}
                       aria-pressed={draft.preset === preset}
                       onClick={() => switchPreset(preset)}
                       disabled={saving}
@@ -873,7 +875,7 @@ export default function InstanceEditor({
                     </button>
                   ))}
                 </div>
-                <span className="text-xs leading-relaxed text-base-content/60 break-words">
+                <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
                   切到 DeepSeek 会套用预设默认地址、模型与参数（可再修改）；切到自定义会保留当前配置。
                 </span>
               </div>
@@ -894,7 +896,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-baseurl"
                     type="url"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={draft.baseUrl}
                     onChange={(event) => update('baseUrl', event.target.value)}
                     aria-invalid={Boolean(errors.baseUrl)}
@@ -912,7 +914,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-path"
                     type="text"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={draft.path}
                     onChange={(event) => update('path', event.target.value)}
                     disabled={saving}
@@ -922,18 +924,16 @@ export default function InstanceEditor({
                 </Field>
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm"
+                  <div className="inline-flex items-center gap-2 text-sm">
+                    <Toggle
                       checked={draft.stream}
-                      onChange={(event) => update('stream', event.target.checked)}
-                      aria-label="启用流式响应"
+                      onChange={(value) => update('stream', value)}
+                      ariaLabel="启用流式响应"
                       disabled={saving}
                     />
                     <span>使用流式响应（stream）</span>
-                  </label>
-                  <span className="text-xs leading-relaxed text-base-content/60 break-words">关闭后等待完整 JSON 响应，页面没有增量文本。</span>
+                  </div>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">关闭后等待完整 JSON 响应，页面没有增量文本。</span>
                 </div>
 
                 <div className="flex flex-col gap-1">
@@ -951,7 +951,7 @@ export default function InstanceEditor({
                     >
                       {permission === 'granted' ? '已授权' : '未授权'}
                     </StatusBadge>
-                    <span className="text-xs leading-relaxed text-base-content/60 break-words">
+                    <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
                       {hostedOnOrigin ? `授权后允许请求 ${hostedOnOrigin}` : '填写接口地址后可申请域名权限'}
                     </span>
                   </div>
@@ -959,26 +959,26 @@ export default function InstanceEditor({
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        className="btn btn-sm btn-warning"
+                        className={buttonClass({ variant: 'warning' })}
                         onClick={authorize}
                         disabled={saving || authorizing}
                       >
                         {authorizing ? '申请中…' : '授权访问'}
                       </button>
-                      <span className="text-xs leading-relaxed text-base-content/60 break-words">未授权时不能测试、设为当前与翻译。</span>
+                      <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">未授权时不能测试、设为当前与翻译。</span>
                     </div>
                   ) : null}
                 </div>
 
                 <div className="flex flex-col gap-1">
                   <span className="text-xs font-semibold">查询参数</span>
-                  <span className="text-xs leading-relaxed text-base-content/60 break-words">静态参数，例如 api-version；不要放密钥。</span>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">静态参数，例如 api-version；不要放密钥。</span>
                   <div className="flex flex-col gap-2">
                     {draft.query.map((row, index) => (
                       <div className="grid gap-2 sm:grid-cols-[1fr_1.2fr_auto]" key={`query-${index}`}>
                         <input
                           type="text"
-                          className="input input-sm w-full"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                           value={row.name}
                           onChange={(event) =>
                             update(
@@ -996,7 +996,7 @@ export default function InstanceEditor({
                         />
                         <input
                           type="text"
-                          className="input input-sm w-full"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                           value={row.value}
                           onChange={(event) =>
                             update(
@@ -1014,7 +1014,7 @@ export default function InstanceEditor({
                         />
                         <button
                           type="button"
-                          className="btn btn-sm btn-ghost"
+                          className={buttonClass({ variant: 'ghost' })}
                           onClick={() =>
                             update(
                               'query',
@@ -1032,25 +1032,25 @@ export default function InstanceEditor({
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      className="btn btn-xs"
+                      className={buttonClass({ size: 'xs' })}
                       onClick={() => update('query', [...draft.query, { name: '', value: '' }])}
                       disabled={saving}
                     >
                       添加查询参数
                     </button>
                   </div>
-                  {errors.query ? <span className="text-xs leading-relaxed text-error">{errors.query}</span> : null}
+                  {errors.query ? <span className="text-xs leading-relaxed text-red-600 dark:text-red-400">{errors.query}</span> : null}
                 </div>
 
                 <div className="flex flex-col gap-1">
                   <span className="text-xs font-semibold">静态请求头</span>
-                  <span className="text-xs leading-relaxed text-base-content/60 break-words">例如 X-Title；不要放密钥，禁止 Authorization / api-key / Cookie / Host。</span>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">例如 X-Title；不要放密钥，禁止 Authorization / api-key / Cookie / Host。</span>
                   <div className="flex flex-col gap-2">
                     {draft.headers.map((row, index) => (
                       <div className="grid gap-2 sm:grid-cols-[1fr_1.2fr_auto]" key={`header-${index}`}>
                         <input
                           type="text"
-                          className="input input-sm w-full"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                           value={row.name}
                           onChange={(event) =>
                             update(
@@ -1068,7 +1068,7 @@ export default function InstanceEditor({
                         />
                         <input
                           type="text"
-                          className="input input-sm w-full"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                           value={row.value}
                           onChange={(event) =>
                             update(
@@ -1086,7 +1086,7 @@ export default function InstanceEditor({
                         />
                         <button
                           type="button"
-                          className="btn btn-sm btn-ghost"
+                          className={buttonClass({ variant: 'ghost' })}
                           onClick={() =>
                             update(
                               'headers',
@@ -1104,14 +1104,14 @@ export default function InstanceEditor({
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      className="btn btn-xs"
+                      className={buttonClass({ size: 'xs' })}
                       onClick={() => update('headers', [...draft.headers, { name: '', value: '' }])}
                       disabled={saving}
                     >
                       添加请求头
                     </button>
                   </div>
-                  {errors.headers ? <span className="text-xs leading-relaxed text-error">{errors.headers}</span> : null}
+                  {errors.headers ? <span className="text-xs leading-relaxed text-red-600 dark:text-red-400">{errors.headers}</span> : null}
                 </div>
               </section>
 
@@ -1141,7 +1141,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-auth-header"
                         type="text"
-                        className="input input-sm w-full"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                         value={draft.authHeaderName}
                         onChange={(event) => update('authHeaderName', event.target.value)}
                         placeholder="api-key"
@@ -1154,7 +1154,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-auth-prefix"
                         type="text"
-                        className="input input-sm w-full"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                         value={draft.authPrefix}
                         onChange={(event) => update('authPrefix', event.target.value)}
                         placeholder="留空表示不加前缀"
@@ -1171,7 +1171,7 @@ export default function InstanceEditor({
                     <input
                       id="ed-auth-query"
                       type="text"
-                      className="input input-sm w-full"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                       value={draft.authQueryName}
                       onChange={(event) => update('authQueryName', event.target.value)}
                       placeholder="key"
@@ -1183,7 +1183,7 @@ export default function InstanceEditor({
                 ) : null}
 
                 {draft.authType === 'none' ? (
-                  <p className="text-sm leading-relaxed text-base-content/70 break-words">该实例不使用认证，无需填写密钥；请确认接口本身可匿名访问。</p>
+                  <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">该实例不使用认证，无需填写密钥；请确认接口本身可匿名访问。</p>
                 ) : null}
               </section>
 
@@ -1199,7 +1199,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-model"
                     type="text"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={draft.model}
                     onChange={(event) => update('model', event.target.value)}
                     disabled={saving}
@@ -1211,24 +1211,22 @@ export default function InstanceEditor({
 
               <section className="flex flex-col gap-3">
                 <h3 className="text-sm font-semibold">生成参数</h3>
-                <p className="text-sm leading-relaxed text-base-content/70 break-words">参数默认关闭；关闭后不发送该字段，模型不支持时保持关闭即可。</p>
+                <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">参数默认关闭；关闭后不发送该字段，模型不支持时保持关闭即可。</p>
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm"
+                  <div className="inline-flex items-center gap-2 text-sm">
+                    <Toggle
                       checked={draft.temperatureEnabled}
-                      onChange={(event) => update('temperatureEnabled', event.target.checked)}
-                      aria-label="启用 temperature"
+                      onChange={(value) => update('temperatureEnabled', value)}
+                      ariaLabel="启用 temperature"
                       disabled={saving}
                     />
                     <span>temperature</span>
-                  </label>
+                  </div>
                   <div className="w-40">
                     <input
                       type="number"
-                      className="input input-sm w-full"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                       value={draft.temperature}
                       onChange={(event) => update('temperature', event.target.value)}
                       min={0}
@@ -1239,24 +1237,22 @@ export default function InstanceEditor({
                     />
                   </div>
                 </div>
-                {errors.temperature ? <span className="text-xs leading-relaxed text-error">{errors.temperature}</span> : null}
+                {errors.temperature ? <span className="text-xs leading-relaxed text-red-600 dark:text-red-400">{errors.temperature}</span> : null}
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm"
+                  <div className="inline-flex items-center gap-2 text-sm">
+                    <Toggle
                       checked={draft.topPEnabled}
-                      onChange={(event) => update('topPEnabled', event.target.checked)}
-                      aria-label="启用 top_p"
+                      onChange={(value) => update('topPEnabled', value)}
+                      ariaLabel="启用 top_p"
                       disabled={saving}
                     />
                     <span>top_p</span>
-                  </label>
+                  </div>
                   <div className="w-40">
                     <input
                       type="number"
-                      className="input input-sm w-full"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                       value={draft.topP}
                       onChange={(event) => update('topP', event.target.value)}
                       min={0}
@@ -1267,20 +1263,18 @@ export default function InstanceEditor({
                     />
                   </div>
                 </div>
-                {errors.topP ? <span className="text-xs leading-relaxed text-error">{errors.topP}</span> : null}
+                {errors.topP ? <span className="text-xs leading-relaxed text-red-600 dark:text-red-400">{errors.topP}</span> : null}
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-sm"
+                  <div className="inline-flex items-center gap-2 text-sm">
+                    <Toggle
                       checked={draft.maxTokensEnabled}
-                      onChange={(event) => update('maxTokensEnabled', event.target.checked)}
-                      aria-label="启用 max_tokens"
+                      onChange={(value) => update('maxTokensEnabled', value)}
+                      ariaLabel="启用 max_tokens"
                       disabled={saving}
                     />
                     <span>max_tokens</span>
-                  </label>
+                  </div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <div className="w-40">
                       <Select
@@ -1293,7 +1287,7 @@ export default function InstanceEditor({
                     </div>
                     <input
                       type="number"
-                      className="input input-sm w-[120px]"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900 w-[120px]"
                       value={draft.maxTokens}
                       onChange={(event) => update('maxTokens', event.target.value)}
                       min={1}
@@ -1303,7 +1297,7 @@ export default function InstanceEditor({
                     />
                   </div>
                 </div>
-                {errors.maxTokens ? <span className="text-xs leading-relaxed text-error">{errors.maxTokens}</span> : null}
+                {errors.maxTokens ? <span className="text-xs leading-relaxed text-red-600 dark:text-red-400">{errors.maxTokens}</span> : null}
 
                 <Field id="ed-reasoning" label="思考强度模式">
                   <Select
@@ -1325,7 +1319,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-reasoning-field"
                         type="text"
-                        className="input input-sm w-full"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                         value={draft.reasoningField}
                         onChange={(event) => update('reasoningField', event.target.value)}
                         placeholder="reasoning_effort"
@@ -1347,7 +1341,7 @@ export default function InstanceEditor({
                         <input
                           id="ed-reasoning-value"
                           type="text"
-                          className="input input-sm w-full"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                           value={draft.reasoningValue}
                           onChange={(event) => update('reasoningValue', event.target.value)}
                           disabled={saving}
@@ -1364,7 +1358,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-budget-field"
                         type="text"
-                        className="input input-sm w-full"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                         value={draft.reasoningBudgetField}
                         onChange={(event) => update('reasoningBudgetField', event.target.value)}
                         placeholder="thinking.budget_tokens"
@@ -1376,7 +1370,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-budget"
                         type="number"
-                        className="input input-sm w-full"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                         value={draft.reasoningBudget}
                         onChange={(event) => update('reasoningBudget', event.target.value)}
                         min={1}
@@ -1393,7 +1387,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-toggle-field"
                         type="text"
-                        className="input input-sm w-full"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                         value={draft.reasoningToggleField}
                         onChange={(event) => update('reasoningToggleField', event.target.value)}
                         placeholder="thinking.type"
@@ -1405,7 +1399,7 @@ export default function InstanceEditor({
                       <input
                         id="ed-toggle-on"
                         type="text"
-                        className="input input-sm w-full"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                         value={draft.reasoningOn}
                         onChange={(event) => update('reasoningOn', event.target.value)}
                         disabled={saving}
@@ -1417,13 +1411,13 @@ export default function InstanceEditor({
 
                 <div className="flex flex-col gap-1">
                   <span className="text-xs font-semibold">额外参数</span>
-                  <span className="text-xs leading-relaxed text-base-content/60 break-words">点路径写入请求体，例如 top_k；不能覆盖 messages / model / stream。</span>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">点路径写入请求体，例如 top_k；不能覆盖 messages / model / stream。</span>
                   <div className="flex flex-col gap-2">
                     {draft.extra.map((row, index) => (
                       <div className="grid gap-2 sm:grid-cols-[1fr_1.2fr_auto] sm:grid-cols-[1fr_0.7fr_1.2fr_auto]" key={`extra-${index}`}>
                         <input
                           type="text"
-                          className="input input-sm w-full"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                           value={row.path}
                           onChange={(event) =>
                             update(
@@ -1452,7 +1446,7 @@ export default function InstanceEditor({
                         />
                         <input
                           type="text"
-                          className="input input-sm w-full"
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                           value={row.value}
                           onChange={(event) =>
                             update(
@@ -1470,7 +1464,7 @@ export default function InstanceEditor({
                         <div className="flex flex-wrap items-center gap-2">
                           <input
                             type="checkbox"
-                            className="checkbox checkbox-sm"
+                            className="size-4 accent-indigo-600"
                             checked={row.enabled}
                             onChange={(event) =>
                               update(
@@ -1485,7 +1479,7 @@ export default function InstanceEditor({
                           />
                           <button
                             type="button"
-                            className="btn btn-sm btn-ghost"
+                            className={buttonClass({ variant: 'ghost' })}
                             onClick={() =>
                               update(
                                 'extra',
@@ -1504,7 +1498,7 @@ export default function InstanceEditor({
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      className="btn btn-xs"
+                      className={buttonClass({ size: 'xs' })}
                       onClick={() =>
                         update('extra', [
                           ...draft.extra,
@@ -1516,13 +1510,28 @@ export default function InstanceEditor({
                       添加额外参数
                     </button>
                   </div>
-                  {errors.extra ? <span className="text-xs leading-relaxed text-error">{errors.extra}</span> : null}
+                  {errors.extra ? <span className="text-xs leading-relaxed text-red-600 dark:text-red-400">{errors.extra}</span> : null}
                 </div>
               </section>
 
-              <details className="collapse collapse-arrow bg-base-200">
-                <summary className="collapse-title text-sm font-semibold">高级参数（提示词）</summary>
-                <div className="collapse-content flex flex-col gap-4 pt-3">
+              <details
+                data-slot="accordion"
+                className="group rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
+              >
+                <summary
+                  data-slot="accordion-trigger"
+                  className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-gray-50 dark:text-white dark:hover:bg-gray-800 [&::-webkit-details-marker]:hidden"
+                >
+                  高级参数（提示词）
+                  <ChevronDown
+                    className="size-4 shrink-0 text-gray-500 transition-transform group-open:rotate-180 dark:text-gray-400"
+                    aria-hidden="true"
+                  />
+                </summary>
+                <div
+                  data-slot="accordion-content"
+                  className="flex flex-col gap-4 border-t border-gray-200 px-4 py-3 dark:border-gray-700"
+                >
                   <div className="flex flex-col gap-3">
                     <Field
                       id="ed-prompt"
@@ -1533,7 +1542,7 @@ export default function InstanceEditor({
                       <textarea
                         id="ed-prompt"
                         ref={promptRef}
-                        className="textarea w-full font-mono text-xs"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900 font-mono text-xs"
                         rows={10}
                         value={draft.systemPrompt}
                         onChange={(event) => update('systemPrompt', event.target.value)}
@@ -1544,7 +1553,7 @@ export default function InstanceEditor({
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        className="btn btn-xs btn-outline"
+                        className={buttonClass({ size: 'xs' })}
                         onClick={() => insertPromptToken('systemPrompt', promptRef, '{{targetLang}}')}
                         disabled={saving}
                       >
@@ -1552,7 +1561,7 @@ export default function InstanceEditor({
                       </button>
                       <button
                         type="button"
-                        className="btn btn-xs btn-outline"
+                        className={buttonClass({ size: 'xs' })}
                         onClick={() => insertPromptToken('systemPrompt', promptRef, '{{outputFormat}}')}
                         disabled={saving}
                       >
@@ -1560,29 +1569,29 @@ export default function InstanceEditor({
                       </button>
                       <button
                         type="button"
-                        className="btn btn-xs btn-outline"
+                        className={buttonClass({ size: 'xs' })}
                         onClick={() => update('systemPrompt', DEFAULT_SYSTEM_PROMPT)}
                         disabled={saving}
                       >
                         恢复默认提示词
                       </button>
-                      <span className="text-xs leading-relaxed text-base-content/60 break-words">
+                      <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
                         {promptCount} / {MAX_PROMPT_CHARS}
                       </span>
                     </div>
                   </div>
 
-                  <div className="flex flex-col gap-3 border-t border-base-300 pt-3">
+                  <div className="flex flex-col gap-3 border-t border-gray-200 dark:border-gray-700 pt-3">
                     <Field
                       id="ed-quick-prompt"
                       label="快速翻译提示词"
                       error={errors.quickPrompt}
-                      help="只用于弹窗快速翻译：单词返回音标、词性、释义与两行例句，句子只返回译文；必须保留 {{targetLang}} 与 {{outputFormat}}；只保存在本机。"
+                      help="只用于弹窗快速翻译：单词第一行音标，之后每个词性一行释义（多个义项用分号分隔），最后两条例句；句子只返回译文；必须保留 {{targetLang}} 与 {{outputFormat}}；只保存在本机。"
                     >
                       <textarea
                         id="ed-quick-prompt"
                         ref={quickPromptRef}
-                        className="textarea w-full font-mono text-xs"
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900 font-mono text-xs"
                         rows={10}
                         value={draft.quickPrompt}
                         onChange={(event) => update('quickPrompt', event.target.value)}
@@ -1593,7 +1602,7 @@ export default function InstanceEditor({
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        className="btn btn-xs btn-outline"
+                        className={buttonClass({ size: 'xs' })}
                         onClick={() => insertPromptToken('quickPrompt', quickPromptRef, '{{targetLang}}')}
                         disabled={saving}
                       >
@@ -1601,7 +1610,7 @@ export default function InstanceEditor({
                       </button>
                       <button
                         type="button"
-                        className="btn btn-xs btn-outline"
+                        className={buttonClass({ size: 'xs' })}
                         onClick={() => insertPromptToken('quickPrompt', quickPromptRef, '{{outputFormat}}')}
                         disabled={saving}
                       >
@@ -1609,13 +1618,13 @@ export default function InstanceEditor({
                       </button>
                       <button
                         type="button"
-                        className="btn btn-xs btn-outline"
+                        className={buttonClass({ size: 'xs' })}
                         onClick={() => update('quickPrompt', DEFAULT_QUICK_PROMPT)}
                         disabled={saving}
                       >
                         恢复默认提示词
                       </button>
-                      <span className="text-xs leading-relaxed text-base-content/60 break-words">
+                      <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
                         {quickPromptCount} / {MAX_PROMPT_CHARS}
                       </span>
                     </div>
@@ -1625,16 +1634,32 @@ export default function InstanceEditor({
             </>
           ) : null}
 
-          <details className="collapse collapse-arrow bg-base-200" open={!isOpenAI}>
-            <summary className="collapse-title text-sm font-semibold">批次与并发</summary>
-            <div className="collapse-content flex flex-col gap-3 pt-3">
-              <p className="text-sm leading-relaxed text-base-content/70 break-words">{batchLimitText}</p>
+          <details
+            data-slot="accordion"
+            className="group rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
+            open={!isOpenAI}
+          >
+            <summary
+              data-slot="accordion-trigger"
+              className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-gray-50 dark:text-white dark:hover:bg-gray-800 [&::-webkit-details-marker]:hidden"
+            >
+              批次与并发
+              <ChevronDown
+                className="size-4 shrink-0 text-gray-500 transition-transform group-open:rotate-180 dark:text-gray-400"
+                aria-hidden="true"
+              />
+            </summary>
+            <div
+              data-slot="accordion-content"
+              className="flex flex-col gap-3 border-t border-gray-200 px-4 py-3 dark:border-gray-700"
+            >
+              <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">{batchLimitText}</p>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 <Field id="ed-batch-size" label="单批段数" error={errors.batchSize}>
                   <input
                     id="ed-batch-size"
                     type="number"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={draft.batchSize}
                     onChange={(event) => update('batchSize', event.target.value)}
                     min={MIN_BATCH_SIZE}
@@ -1647,7 +1672,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-batch-chars"
                     type="number"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={draft.batchMaxChars}
                     onChange={(event) => update('batchMaxChars', event.target.value)}
                     min={1}
@@ -1660,7 +1685,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-concurrency"
                     type="number"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={draft.maxConcurrency}
                     onChange={(event) => update('maxConcurrency', event.target.value)}
                     min={1}
@@ -1680,7 +1705,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-qps"
                     type="number"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={draft.qps}
                     onChange={(event) => update('qps', event.target.value)}
                     min={BAIDU_QPS.min}
@@ -1708,8 +1733,8 @@ export default function InstanceEditor({
               >
                 {credentials.label}
               </StatusBadge>
-              {!requiresKey ? <span className="text-xs leading-relaxed text-base-content/60 break-words">该实例无需密钥。</span> : null}
-              <span className="text-xs leading-relaxed text-base-content/60 break-words">只显示是否已配置，不显示明文。</span>
+              {!requiresKey ? <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">该实例无需密钥。</span> : null}
+              <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">只显示是否已配置，不显示明文。</span>
             </div>
 
             {!requiresKey ? null : isOpenAI ? (
@@ -1727,7 +1752,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-apikey"
                     type={showSecret ? 'text' : 'password'}
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={apiKey}
                     onChange={(event) => setApiKey(event.target.value)}
                     placeholder={instance.hasKey ? '已配置，留空表示不修改' : '填写 API Key'}
@@ -1736,7 +1761,7 @@ export default function InstanceEditor({
                   />
                   <button
                     type="button"
-                    className="btn btn-sm btn-ghost"
+                    className={buttonClass({ variant: 'ghost' })}
                     onClick={() => setShowSecret((current) => !current)}
                     aria-label={showSecret ? '隐藏密钥' : '显示密钥'}
                   >
@@ -1759,7 +1784,7 @@ export default function InstanceEditor({
                   <input
                     id="ed-appid"
                     type="text"
-                    className="input input-sm w-full"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                     value={appId}
                     onChange={(event) => setAppId(event.target.value)}
                     placeholder={instance.credentialFields?.appId ? '已配置，留空表示不修改' : '百度 APPID'}
@@ -1781,7 +1806,7 @@ export default function InstanceEditor({
                     <input
                       id="ed-secret"
                       type={showSecret ? 'text' : 'password'}
-                      className="input input-sm w-full"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
                       value={secretKey}
                       onChange={(event) => setSecretKey(event.target.value)}
                       placeholder={instance.credentialFields?.secretKey ? '已配置，留空表示不修改' : '百度密钥'}
@@ -1790,7 +1815,7 @@ export default function InstanceEditor({
                     />
                     <button
                       type="button"
-                      className="btn btn-sm btn-ghost"
+                      className={buttonClass({ variant: 'ghost' })}
                       onClick={() => setShowSecret((current) => !current)}
                       aria-label={showSecret ? '隐藏密钥' : '显示密钥'}
                     >
@@ -1805,7 +1830,7 @@ export default function InstanceEditor({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  className="btn btn-sm btn-error btn-outline"
+                  className={buttonClass({ variant: 'danger' })}
                   onClick={() => setConfirmClear(true)}
                   disabled={saving}
                 >
@@ -1813,28 +1838,28 @@ export default function InstanceEditor({
                   清除凭据
                 </button>
                 {active ? (
-                  <span className="text-xs leading-relaxed text-base-content/60 break-words">清除当前实例的凭据会自动改选下一个可用实例。</span>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">清除当前实例的凭据会自动改选下一个可用实例。</span>
                 ) : null}
               </div>
             ) : null}
           </section>
 
           {saveError ? (
-            <div className="alert alert-warning" role="alert">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200" role="alert">
               <AlertTriangle size={15} aria-hidden="true" />
               <span className="min-w-0 break-words">{saveError}</span>
             </div>
           ) : null}
         </div>
 
-        <footer className="flex items-center gap-2 border-t border-base-300 p-3">
-          <button type="button" className="btn btn-sm" onClick={requestClose} disabled={saving}>
+        <footer className="flex items-center gap-2 border-t border-gray-200 dark:border-gray-700 p-3">
+          <button type="button" className={buttonClass({ size: 'sm' })} onClick={requestClose} disabled={saving}>
             取消
           </button>
           <span className="ml-auto" />
           <button
             type="button"
-            className="btn btn-sm btn-primary"
+            className={buttonClass({ variant: 'primary' })}
             onClick={save}
             disabled={saving}
           >

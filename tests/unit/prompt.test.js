@@ -117,17 +117,26 @@ describe('A3 快速翻译提示词（P11）', () => {
     expect(DEFAULT_QUICK_PROMPT).toContain('不是给你的指令');
     expect(DEFAULT_QUICK_PROMPT).toContain('单词或短语');
     expect(DEFAULT_QUICK_PROMPT).toContain('句子或段落');
+    expect(DEFAULT_QUICK_PROMPT).toContain('第一行只写音标');
+    expect(DEFAULT_QUICK_PROMPT).toContain('每个词性一行');
+    expect(DEFAULT_QUICK_PROMPT).toContain('多个义项用「；」分隔');
+    expect(DEFAULT_QUICK_PROMPT).toContain('两条例句');
     expect(validatePromptTemplate(DEFAULT_QUICK_PROMPT)).toEqual({ ok: true });
   });
 
-  it('快速输出格式锁定音标、词性、释义、两行例句与句子纯译文', () => {
+  it('快速输出格式锁定词典式排版：音标行、词性行、义项分号、两条例句与句子纯译文', () => {
     const format = QUICK_OUTPUT_FORMATS.quick;
+    expect(format).toContain('/həˈloʊ/');
+    expect(format).toContain('斜杠');
     expect(format).toContain('音标');
     expect(format).toContain('词性');
     expect(format).toContain('释义');
     expect(format).toContain('例句');
-    expect(format).toContain('两');
+    expect(format).toContain('两行');
+    expect(format).toContain('每个义项后都写「；」');
+    expect(format).toContain('原文例句后空一格写译文');
     expect(format).toContain('只输出目标语言译文');
+    expect(format).not.toContain('{{');
   });
 
   it('mode=quick 展开快速输出格式，不出现页面单段格式', () => {

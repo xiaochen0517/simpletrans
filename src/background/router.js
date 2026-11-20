@@ -13,8 +13,8 @@
  *           `ST_TEST_ENGINE` 支持 `instanceId` 与每实例凭据/权限校验；
  *           P11 增加 `ST_QUICK_TRANSLATE`（交给 A5）与 `ST_GET_SELECTION`（只读页面选区）。
  *
- * 标签页转发有两处入口：P4 的快捷键走 `ST_TOGGLE`（commands.js），P6.1 的弹窗走 `ST_ROUTE`
- * 的 `start` / `clear`（本文件），两者共用 `sendToTab` 的补注入与错误归一。
+ * 标签页转发有三处入口：P12 的整页快捷键走 `startPageTranslation`（commands.js），
+ * 弹窗走 `ST_ROUTE` 的 `start` / `clear` / `status`（本文件），三处共用 `sendToTab` 的补注入与错误归一。
  */
 
 import {
@@ -208,20 +208,12 @@ async function readSelection(payload, traceId) {
 }
 
 /**
- * 弹窗命令转发：`start` 读取设置与默认实例后发 `ST_START`，`clear` 发 `ST_CLEAR`。
- * @param {unknown} payload
+ * 整页翻译启动：读设置 → 校验启用 → 取活动标签页 → `ST_START`。
+ * 弹窗 `start` 与浏览器快捷键共用，保证两条入口行为一致。
  * @param {string} [traceId]
  * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
  */
-async function routeCommand(payload, traceId) {
-  const command = payload?.command;
-  if (command !== 'start' && command !== 'clear') {
-    log.warn('message.rejected', '未知的路由命令', {
-      command: typeof command === 'string' ? command : null,
-    });
-    return failure(ERROR_CODES.OTHER, '未知命令', FAILURE_REASONS.INVALID_MESSAGE);
-  }
-
+export async function startPageTranslation(traceId) {
   let settings;
   try {
     settings = await getSettings();
@@ -242,22 +234,66 @@ async function routeCommand(payload, traceId) {
     return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
   }
 
-  log.withTrace(traceId).info('route.command', '处理路由命令', { command, tabId: tab.id });
-
-  if (command === 'clear') {
-    return sendToTab(tab.id, {
-      type: MESSAGE_TYPES.CLEAR,
-      payload: { ...(traceId ? { traceId } : {}) },
-    });
-  }
-
-  // P6.1 页面侧不建批，只把目标语言与日志标识传给页面。
+  log.withTrace(traceId).info('route.command', '处理路由命令', { command: 'start', tabId: tab.id });
   return sendToTab(tab.id, {
     type: MESSAGE_TYPES.START,
     payload: {
       targetLang: settings.targetLang,
       ...(traceId ? { traceId } : {}),
     },
+  });
+}
+
+/**
+ * 弹窗命令转发：`start` 复用整页启动函数；`clear` 校验启用后发 `ST_CLEAR`；
+ * `status` 只读整页会话状态，不读设置、不检查实例。
+ * @param {unknown} payload
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
+ */
+async function routeCommand(payload, traceId) {
+  const command = payload?.command;
+  if (command !== 'start' && command !== 'clear' && command !== 'status') {
+    log.warn('message.rejected', '未知的路由命令', {
+      command: typeof command === 'string' ? command : null,
+    });
+    return failure(ERROR_CODES.OTHER, '未知命令', FAILURE_REASONS.INVALID_MESSAGE);
+  }
+
+  if (command === 'start') return startPageTranslation(traceId);
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  } catch {
+    tabs = [];
+  }
+  const tab = Array.isArray(tabs) ? tabs.find((entry) => entry?.active) ?? tabs[0] : null;
+  if (!tab?.id) {
+    log.warn('message.rejected', '没有活动标签页', { reason: FAILURE_REASONS.NO_ACTIVE_TAB });
+    return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
+  }
+
+  if (command === 'status') {
+    log.withTrace(traceId).debug('route.command', '查询页面状态', { tabId: tab.id });
+    return sendToTab(tab.id, {
+      type: MESSAGE_TYPES.GET_STATUS,
+      payload: { ...(traceId ? { traceId } : {}) },
+    });
+  }
+
+  let settings;
+  try {
+    settings = await getSettings();
+  } catch {
+    return failure(ERROR_CODES.CONFIG, '读取设置失败');
+  }
+  if (settings.enabled === false) return failure(ERROR_CODES.CONFIG, '扩展已停用');
+
+  log.withTrace(traceId).info('route.command', '处理路由命令', { command, tabId: tab.id });
+  return sendToTab(tab.id, {
+    type: MESSAGE_TYPES.CLEAR,
+    payload: { ...(traceId ? { traceId } : {}) },
   });
 }
 

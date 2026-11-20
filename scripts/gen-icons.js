@@ -1,8 +1,8 @@
 /**
  * 生成扩展图标
  *
- * 职责：读取 scripts/icon-source.svg（Lucide `languages`，ISC），合成 daisyUI 默认 light 主题
- *       `primary` 纯色圆角底与白色图形，输出 16/32/48/128 四档 PNG。
+ * 职责：读取 scripts/icon-source.svg（Lucide `languages`，ISC），合成 HyperUI 主色（indigo-600）
+ *       纯色圆角底与白色图形，输出 16/32/48/128 四档 PNG。
  * 依赖：@resvg/resvg-js（仅开发期）；不联网、不进入扩展产物。
  *
  * 运行：npm run icons
@@ -17,8 +17,8 @@ const projectRoot = dirname(scriptsDir);
 const outputDir = join(projectRoot, 'public', 'icons');
 const outputPath = (size) => join(outputDir, `icon${size}.png`);
 
-/** daisyUI 5.8.1 默认 light 主题的 primary（oklch(45% .24 277.023) 的 sRGB 近似值）。 */
-const BACKGROUND = '#422ad5';
+/** HyperUI 主色 indigo-600（Tailwind 默认调色板）。 */
+const BACKGROUND = '#4f46e5';
 /** 图形占画布的比例；小图标适当放大，128px 留更多安全边距。 */
 const GLYPH_SCALE = { 16: 0.74, 32: 0.7, 48: 0.67, 128: 0.64 };
 /** 逐尺寸描边：小图标适当加粗，避免 16px 下细线消失。 */

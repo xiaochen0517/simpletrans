@@ -36,6 +36,7 @@ describe('E2 设置 schema v2', () => {
     expect(DEFAULT_SETTINGS.activeInstanceId).toBeNull();
     expect(DEFAULT_SETTINGS.popupDefaultTab).toBe('default');
     expect(DEFAULT_SETTINGS.theme).toBe('system');
+    expect(DEFAULT_SETTINGS.hoverShortcut).toBe('ctrl');
     expect(POPUP_DEFAULT_TABS).toEqual(['default', 'quick']);
     expect(THEMES).toEqual(['system', 'light', 'dark']);
   });
@@ -60,6 +61,7 @@ describe('E2 设置 schema v2', () => {
       activeInstanceId: '  ',
       configVersion: 'x',
       logLevel: '',
+      hoverShortcut: 'meta',
     });
     expect(settings.sourceLang).toBe('auto');
     expect(settings.targetLang).toBe('zh');
@@ -69,6 +71,20 @@ describe('E2 设置 schema v2', () => {
     expect(settings.activeInstanceId).toBeNull();
     expect(settings.configVersion).toBe(CONFIG_VERSION);
     expect(settings.logLevel).toBe('info');
+    expect(settings.hoverShortcut).toBe('ctrl');
+  });
+
+  it('悬停快捷键：四个合法值保留，缺失与非法值回退 ctrl，并可保存读取', async () => {
+    for (const value of ['ctrl', 'alt', 'shift', 'command']) {
+      expect(normalizeSettings({ hoverShortcut: value }).hoverShortcut).toBe(value);
+    }
+    expect(normalizeSettings({}).hoverShortcut).toBe('ctrl');
+    expect(normalizeSettings({ hoverShortcut: 'Command' }).hoverShortcut).toBe('ctrl');
+
+    await saveSettings({ hoverShortcut: 'alt' });
+    expect((await getSettings()).hoverShortcut).toBe('alt');
+    await saveSettings({ hoverShortcut: 'nope' });
+    expect((await getSettings()).hoverShortcut).toBe('ctrl');
   });
 
   it('四目标语言与两源语言都保留', () => {

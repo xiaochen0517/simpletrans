@@ -2,14 +2,16 @@
  * 页面注入入口
  *
  * 模块：页面注入（D）
- * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5、处理后台命令与日志级别帧；
- *       提供 Ctrl 单键手势作为主快捷键（Chrome commands 不支持裸修饰键）；
- *       P9 起注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段。
- * 依赖：D1–D5、E1 消息协议、E4 日志、content.css（P2 起）。
+ * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5、处理后台命令与配置帧；
+ *       提供可配置的修饰键手势作为悬停翻译快捷键（Chrome commands 不支持裸修饰键）；
+ *       P9 起注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段；
+ *       P12 起从 `ST_CONTENT_CONFIG` 读取悬停快捷键并支持整页会话状态查询。
+ * 依赖：D1–D5、E1 消息协议、E4 日志、E6 快捷键、content.css（P2 起）。
  * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加 `ST_START` 整页任务入口与统一提交；
  *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务；
  *           P6.3 把后台 `ST_ITEM_*` 结果帧转发给 D5，页面不再生成假数据；
- *           P9 注入 `onRetry` / `cancelBatch`，转发 `ST_BATCH_DONE` 并在重连后触发续传。
+ *           P9 注入 `onRetry` / `cancelBatch`，转发 `ST_BATCH_DONE` 并在重连后触发续传；
+ *           P12 悬停手势改为按设置识别修饰键，新增 `ST_GET_STATUS` 查询与配置帧处理。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -34,12 +36,17 @@ import { createBridge } from './bridge.js';
 import { createRenderer } from './dom/renderer.js';
 import { createHoverTracker } from './hover.js';
 import { createTask } from './task.js';
+import {
+  DEFAULT_HOVER_SHORTCUT,
+  normalizeHoverShortcut,
+  resolveHoverShortcut,
+} from '../shared/shortcut.js';
 
 /** 重复注入保护：同一页面只初始化一次桥、监听与 DOM 层。 */
 const LOAD_FLAG = '__simpletransContentLoaded';
 
-/** 单键 Ctrl 触发的最长按住时间；超过视为普通按住，不触发。 */
-const CTRL_TAP_MAX_MS = 600;
+/** 单键手势的最长按住时间；超过视为普通按住，不触发。 */
+const TAP_MAX_MS = 600;
 
 /** 交给 D5 的逐段结果帧。 */
 const RESULT_FRAME_TYPES = new Set([
@@ -58,11 +65,17 @@ let hover = null;
 /** @type {ReturnType<typeof createLogger> | null} */
 let log = null;
 let readyLogged = false;
+/** 当前悬停手势的清理函数。 */
+let tapCleanup = null;
+/** 当前生效的悬停快捷键（归一后的存储值）。 */
+let activeHoverShortcut = null;
+/** 本页是否已经应用过第一帧内容配置；后续重连帧不再更新。 */
+let hoverConfigApplied = false;
 /** 桥断开过就置真；恢复连接后通知 D5 续传一次（首次连接不续传）。 */
 let bridgeDisconnected = false;
 
 /**
- * 焦点是否在可编辑控件内；在输入框里按 Ctrl 不应触发翻译。
+ * 焦点是否在可编辑控件内；在输入框里按悬停快捷键不应触发翻译。
  * @returns {boolean}
  */
 function isEditableFocus() {
@@ -78,66 +91,66 @@ function isEditableFocus() {
 }
 
 /**
- * 安装「单键 Ctrl」触发。
+ * 安装修饰键单键手势。
  *
- * Chrome 的 commands API 只支持「修饰键 + 普通键」，不支持裸 Ctrl；且 Ctrl+Shift+S
- * 是 Chrome 的「另存为」保留快捷键，扩展命令会被静默忽略。因此页面侧补一个 Ctrl
- * 单键手势：按下并松开 Ctrl（中间没有其它键、没有点击/滚轮、未超过 600ms）才触发。
- * 不调用 preventDefault，不影响页面与浏览器原有快捷键。
+ * Chrome 的 commands API 只支持「修饰键 + 普通键」，不支持裸修饰键，因此页面侧用
+ * keydown/keyup 识别：按下并松开所选修饰键（同一次手势只按一个可用键，中间没有其它键、
+ * 没有点击/滚轮、未超过 600ms）才触发。不调用 preventDefault，不影响页面与浏览器原有快捷键。
  *
+ * @param {string[]} keys 可接受的 `KeyboardEvent.key`，例如 `['Control']`
  * @param {() => void} onTrigger
  * @returns {() => void} 清理函数
  */
-function installCtrlTap(onTrigger) {
+function installModifierTap(keys, onTrigger) {
   if (typeof window === 'undefined') return () => {};
 
-  let down = false;
+  const accepted = new Set(Array.isArray(keys) ? keys : []);
+  const held = new Set();
   let otherKey = false;
   let pointerUsed = false;
-  let pressedKey = null;
   let startedAt = 0;
 
-  // 只在 macOS 额外接受 Command（Meta）；Windows 的 Win 键会被系统优先处理，不纳入判断。
-  const isMac = /Mac/i.test(
-    (typeof navigator !== 'undefined' && (navigator.platform || navigator.userAgent)) || ''
-  );
-  const isTriggerKey = (event) =>
-    event.key === 'Control' || (isMac && event.key === 'Meta');
-
   const reset = () => {
-    down = false;
+    held.clear();
     otherKey = false;
     pointerUsed = false;
-    pressedKey = null;
+    startedAt = 0;
   };
 
   const onKeyDown = (event) => {
-    if (isTriggerKey(event)) {
-      if (down || event.repeat) return;
-      down = true;
-      otherKey = false;
-      pointerUsed = false;
-      pressedKey = event.key;
-      startedAt = Date.now();
+    if (accepted.has(event.key)) {
+      if (event.repeat) return;
+      if (held.size === 0) {
+        startedAt = Date.now();
+        otherKey = false;
+        pointerUsed = false;
+      } else {
+        // 同一手势里按下第二个可接受键：不再算作单键手势。
+        otherKey = true;
+      }
+      held.add(event.key);
       return;
     }
-    if (down) otherKey = true;
+    if (held.size > 0) otherKey = true;
   };
 
   const onKeyUp = (event) => {
-    if (!down || event.key !== pressedKey) return;
+    if (!accepted.has(event.key) || held.size === 0) return;
+    held.delete(event.key);
+    if (held.size > 0) return;
+
     const elapsed = Date.now() - startedAt;
-    const shouldTrigger = !otherKey && !pointerUsed && elapsed <= CTRL_TAP_MAX_MS && !isEditableFocus();
+    const shouldTrigger = !otherKey && !pointerUsed && elapsed <= TAP_MAX_MS && !isEditableFocus();
     reset();
     if (shouldTrigger) onTrigger();
   };
 
   const onPointerDown = () => {
-    if (down) pointerUsed = true;
+    if (held.size > 0) pointerUsed = true;
   };
 
   const onWheel = () => {
-    if (down) pointerUsed = true;
+    if (held.size > 0) pointerUsed = true;
   };
 
   const onBlur = () => reset();
@@ -159,20 +172,35 @@ function installCtrlTap(onTrigger) {
 }
 
 /**
- * Ctrl 单键触发：提交/隐藏鼠标所在段落。
+ * 应用悬停快捷键：值未变化时不重装监听，变化时先清理旧手势。
+ * @param {unknown} value
  */
-function triggerCtrlTap() {
+function applyHoverShortcut(value) {
+  const normalized = normalizeHoverShortcut(value);
+  if (normalized === activeHoverShortcut) return;
+
+  tapCleanup?.();
+  activeHoverShortcut = normalized;
+  const resolved = resolveHoverShortcut(normalized);
+  tapCleanup = installModifierTap(resolved.keys, triggerHover);
+  log?.info('hotkey.config', '悬停快捷键已应用', { shortcut: resolved.shortcut });
+}
+
+/**
+ * 悬停快捷键触发：提交/隐藏鼠标所在段落。
+ */
+function triggerHover() {
   if (!task || !hover) return;
   const traceId = newTraceId();
   Promise.resolve(task.toggle(hover.getCurrentHost(), traceId))
     .then((result) => {
-      log?.debug('hotkey.trigger', 'Ctrl 单键触发提交', {
+      log?.debug('hotkey.trigger', '悬停快捷键触发提交', {
         action: result?.data?.action ?? null,
         traceId,
       });
     })
     .catch((error) => {
-      log?.warn('hotkey.trigger', 'Ctrl 单键处理失败', {
+      log?.warn('hotkey.trigger', '悬停快捷键处理失败', {
         reason: error?.message ?? null,
         traceId,
       });
@@ -229,8 +257,8 @@ async function submitPage(payload) {
 }
 
 /**
- * 处理后端帧：日志级别帧更新自身；逐段结果帧交给 D5 按 `requestId + itemId` 路由；
- * 批次结束只记日志，段落状态完全由 item 帧驱动。
+ * 处理后端帧：日志级别帧更新自身；内容配置帧只在页面第一帧应用悬停快捷键；
+ * 逐段结果帧交给 D5 按 `requestId + itemId` 路由；批次结束只记日志，段落状态完全由 item 帧驱动。
  * @param {object} frame
  */
 function handleFrame(frame) {
@@ -239,6 +267,17 @@ function handleFrame(frame) {
     setLogLevel(frame.payload?.level);
     log?.debug('log.config', '收到日志级别', { level: getLogLevel() });
     logReadyOnce();
+    return;
+  }
+
+  if (type === MESSAGE_TYPES.CONTENT_CONFIG) {
+    if (!hoverConfigApplied) {
+      hoverConfigApplied = true;
+      applyHoverShortcut(frame.payload?.hoverShortcut);
+    }
+    log?.debug('hotkey.config', '收到悬停快捷键配置', {
+      shortcut: normalizeHoverShortcut(frame.payload?.hoverShortcut),
+    });
     return;
   }
 
@@ -265,43 +304,11 @@ function handleMessage(message, sender, sendResponse) {
   if (!message || typeof message !== 'object') return false;
 
   try {
-    if (message.type === MESSAGE_TYPES.TOGGLE) {
-      if (!task || typeof document === 'undefined' || !hover) {
-        sendResponse?.(pageUnavailable());
-        return false;
-      }
-      const traceId = normalizeTraceId(message.payload?.traceId);
-      log?.debug('content.toggle', '收到提交当前段落命令', {
-        ...(traceId ? { traceId } : {}),
-      });
-
-      // 提交是异步的：先返回 true 保持消息通道，完成后回包。
-      Promise.resolve(task.toggle(hover.getCurrentHost(), traceId))
-        .then((result) => {
-          try {
-            sendResponse?.(result);
-          } catch (error) {
-            log?.debug('content.toggle', '当前段落响应失败', {
-              reason: error?.message ?? null,
-            });
-          }
-          log?.debug('content.toggle', '当前段落处理完成', {
-            action: result?.data?.action ?? null,
-            ...(traceId ? { traceId } : {}),
-          });
-        })
-        .catch((error) => {
-          log?.error('content.toggle', '当前段落处理异常', {}, error);
-          try {
-            sendResponse?.({
-              ok: false,
-              error: makeError(ERROR_CODES.OTHER, `处理命令失败：${error?.message ?? error}`),
-            });
-          } catch {
-            // 回包失败不影响页面。
-          }
-        });
-      return true;
+    if (message.type === MESSAGE_TYPES.GET_STATUS) {
+      const phase = task?.getStatus?.().phase ?? 'idle';
+      const active = phase === 'scanning' || phase === 'submitting' || phase === 'submitted';
+      sendResponse?.({ ok: true, data: { active } });
+      return false;
     }
 
     if (message.type === MESSAGE_TYPES.CLEAR) {
@@ -424,7 +431,7 @@ function main() {
     });
     hover = createHoverTracker();
     hover.start();
-    installCtrlTap(triggerCtrlTap);
+    applyHoverShortcut(DEFAULT_HOVER_SHORTCUT);
   }
 
   bridge.connect();

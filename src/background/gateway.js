@@ -13,7 +13,8 @@
  *           P6.4 把临时执行器替换为 A3 翻译队列；
  *           P8-2 改为多实例：按当前实例分发 OpenAI/百度、每实例凭据、endpoint 权限、
  *           缓存 key v3、百度字节切批与 30 秒超时；
- *           P9 增加百度实例 QPS 门控、批量对齐二分拆批、重试交接与标签页关闭兜底清理。
+ *           P9 增加百度实例 QPS 门控、批量对齐二分拆批、重试交接与标签页关闭兜底清理；
+ *           P12 连接建立后同时下发日志级别与悬停快捷键。
  */
 
 import {
@@ -43,6 +44,7 @@ import { getSettings } from '../shared/settings.js';
 import { isSupportedTargetLang } from '../shared/languages.js';
 import { createLogger, getLogLevel, setLogLevel } from '../shared/log/logger.js';
 import { normalizeLevel } from '../shared/log/levels.js';
+import { DEFAULT_HOVER_SHORTCUT, normalizeHoverShortcut } from '../shared/shortcut.js';
 import {
   getActiveInstance,
   getInstanceCredentials,
@@ -164,7 +166,7 @@ function utf8Bytes(text) {
   return new TextEncoder().encode(String(text ?? '')).length;
 }
 
-/** 已连接端口：Port → { port, tabId, batches, submissions, disconnected, logConfigSent }。只在内存中存在。 */
+/** 已连接端口：Port → { port, tabId, batches, submissions, disconnected, configSent }。只在内存中存在。 */
 const connections = new Map();
 
 /** 标签页 id → 最新的 st-gateway 连接；一次性提交按它路由结果帧。 */
@@ -365,7 +367,7 @@ export function handleConnect(port) {
     batches: new Map(),
     submissions: new Map(),
     disconnected: false,
-    logConfigSent: false,
+    configSent: false,
   };
   connections.set(port, conn);
   if (tabId != null) {
@@ -394,24 +396,28 @@ export function findConnectionByTab(tabId) {
 }
 
 /**
- * 每个连接只下发一次日志级别；读取设置失败时用当前缓存级别（默认 info）。
+ * 每个连接只下发一次连接配置：日志级别与悬停快捷键共用一次设置读取。
+ * 读取失败时日志级别用当前缓存值、悬停快捷键回退默认，不中断连接。
  * @param {object} conn
  */
-async function sendLogConfig(conn) {
-  if (!conn || conn.disconnected || conn.logConfigSent) return;
-  conn.logConfigSent = true;
+async function sendConnectionConfig(conn) {
+  if (!conn || conn.disconnected || conn.configSent) return;
+  conn.configSent = true;
 
   let level = getLogLevel();
+  let hoverShortcut = DEFAULT_HOVER_SHORTCUT;
   try {
     const settings = await getSettings();
     level = normalizeLevel(settings.logLevel);
+    hoverShortcut = normalizeHoverShortcut(settings.hoverShortcut);
     setLogLevel(level);
   } catch {
-    // 读取失败时保留当前级别，不中断连接。
+    // 读取失败时保留当前级别与默认快捷键，不中断连接。
   }
 
   if (conn.disconnected) return;
   send(conn, { type: MESSAGE_TYPES.LOG_CONFIG, payload: { level } });
+  send(conn, { type: MESSAGE_TYPES.CONTENT_CONFIG, payload: { hoverShortcut } });
 }
 
 /**
@@ -428,7 +434,7 @@ function onMessage(conn, message) {
       type: MESSAGE_TYPES.PONG,
       payload: { sentAt: payload?.sentAt ?? null, receivedAt: Date.now() },
     });
-    void sendLogConfig(conn);
+    void sendConnectionConfig(conn);
     return;
   }
 

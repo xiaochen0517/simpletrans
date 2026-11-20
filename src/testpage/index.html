@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
   C6 翻译测试页
-  职责：提供固定英文内容与页内操作条，供人工验证整页提交、滚动增量、Ctrl 单段提交与显示原文；
+  职责：提供固定英文内容与页内操作条，供人工验证整页提交、滚动增量、悬停单段提交与显示原文；
         页面静态导入 D 入口以加载页面注入运行时，不依赖清单注入。
   实现阶段：P6.5
 -->
@@ -12,15 +12,15 @@
     <meta name="color-scheme" content="light dark" />
     <title>SimpleTrans Translation Test Page</title>
   </head>
-  <body class="bg-base-200 text-base-content">
-    <header class="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-base-300 bg-base-100 px-4 py-2.5" lang="zh-CN" data-simpletrans-ignore translate="no">
+  <body class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+    <header class="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-gray-200 bg-white px-4 py-2.5 dark:border-gray-700 dark:bg-gray-900" lang="zh-CN" data-simpletrans-ignore translate="no">
       <strong class="mr-1 text-sm font-semibold">翻译测试页</strong>
-      <button id="test-start" type="button" class="btn btn-sm btn-primary">
+      <button id="test-start" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:ring-offset-gray-950">
         翻译整页
       </button>
-      <button id="test-clear" type="button" class="btn btn-sm">显示原文</button>
-      <span id="test-status" class="badge badge-sm" role="status">就绪</span>
-      <span class="basis-full text-sm text-base-content/60">悬停英文段落按 Ctrl 提交/隐藏；滚动后自动提交新段落；译文来自后台缓存或真实翻译。</span>
+      <button id="test-clear" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800 dark:focus-visible:ring-offset-gray-950">显示原文</button>
+      <span id="test-status" class="inline-flex w-fit items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300" role="status">就绪</span>
+      <span class="basis-full text-sm text-gray-500 dark:text-gray-400">悬停英文段落按设置中的悬停快捷键（默认 Ctrl）提交/隐藏；滚动后自动提交新段落；译文来自后台缓存或真实翻译。</span>
     </header>
 
     <main id="test-page">
@@ -189,49 +189,49 @@
         </p>
 
         <div class="mb-5 grid gap-3 sm:grid-cols-3">
-          <article class="card gap-2 bg-base-200 p-3.5">
+          <article class="flex flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3.5 dark:border-gray-700 dark:bg-gray-800">
             <h3>Review queue</h3>
             <p>Three paragraphs are waiting for a second pass.</p>
-            <span class="badge badge-sm">Ready</span>
+            <span class="inline-flex w-fit items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300">Ready</span>
           </article>
-          <article class="card gap-2 bg-base-200 p-3.5">
+          <article class="flex flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3.5 dark:border-gray-700 dark:bg-gray-800">
             <h3>Style guide</h3>
             <p>Keep terminology consistent across the page.</p>
-            <span class="badge badge-sm badge-ghost">Draft</span>
+            <span class="inline-flex w-fit items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300">Draft</span>
           </article>
-          <article class="card gap-2 bg-base-200 p-3.5">
+          <article class="flex flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3.5 dark:border-gray-700 dark:bg-gray-800">
             <h3>Release notes</h3>
             <p>Summarize the visible changes for the next check.</p>
-            <span class="badge badge-sm">Planned</span>
+            <span class="inline-flex w-fit items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300">Planned</span>
           </article>
         </div>
 
         <div class="mb-5 flex flex-wrap gap-2">
-          <button type="button" class="btn btn-sm btn-primary">Save draft</button>
-          <button type="button" class="btn btn-sm">Preview changes</button>
-          <button type="button" class="btn btn-sm" disabled>Publish</button>
+          <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:ring-offset-gray-950">Save draft</button>
+          <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800 dark:focus-visible:ring-offset-gray-950">Preview changes</button>
+          <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800 dark:focus-visible:ring-offset-gray-950" disabled>Publish</button>
         </div>
 
         <form class="mb-2 grid gap-3.5 sm:grid-cols-2" action="#" method="get">
           <div class="flex flex-col gap-1.5">
             <label for="name">Full name</label>
-            <input id="name" name="name" type="text" class="input input-sm w-full" value="Ada Lovelace" autocomplete="off" />
+            <input id="name" name="name" type="text" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900" value="Ada Lovelace" autocomplete="off" />
           </div>
           <div class="flex flex-col gap-1.5">
             <label for="search">Search the glossary</label>
-            <input id="search" name="search" type="search" class="input input-sm w-full" placeholder="Search terms" />
+            <input id="search" name="search" type="search" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900" placeholder="Search terms" />
           </div>
           <div class="flex flex-col gap-1.5">
             <label for="email">Contact email</label>
-            <input id="email" name="email" type="email" class="input input-sm w-full" value="editor@example.com" autocomplete="off" />
+            <input id="email" name="email" type="email" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900" value="editor@example.com" autocomplete="off" />
           </div>
           <div class="flex flex-col gap-1.5">
             <label for="notes">Review notes</label>
-            <textarea id="notes" name="notes" rows="3" class="textarea textarea-sm w-full">Check the final paragraph for tone.</textarea>
+            <textarea id="notes" name="notes" rows="3" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900">Check the final paragraph for tone.</textarea>
           </div>
           <div class="flex flex-col gap-1.5">
             <label for="lang">Display language</label>
-            <select id="lang" name="lang" class="select select-sm w-full">
+            <select id="lang" name="lang" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900">
               <option>English</option>
               <option>French</option>
               <option>Japanese</option>
@@ -239,17 +239,17 @@
           </div>
           <div class="flex flex-col gap-1.5">
             <label for="volume">Preview volume</label>
-            <input id="volume" name="volume" type="range" class="range range-sm" min="0" max="10" value="6" />
+            <input id="volume" name="volume" type="range" class="w-full accent-indigo-600 dark:accent-indigo-400" min="0" max="10" value="6" />
           </div>
-          <fieldset class="flex flex-wrap gap-x-4 gap-y-2.5 rounded-box border border-base-300 p-3.5 sm:col-span-2">
+          <fieldset class="flex flex-wrap gap-x-4 gap-y-2.5 rounded-lg border border-gray-200 dark:border-gray-700 p-3.5 sm:col-span-2">
             <legend class="px-1">Notify me about</legend>
-            <label class="inline-flex items-center gap-1.5 font-normal"><input type="checkbox" class="checkbox checkbox-sm" checked /> New comments</label>
-            <label class="inline-flex items-center gap-1.5 font-normal"><input type="radio" name="digest" class="radio radio-sm" checked /> Daily digest</label>
-            <label class="inline-flex items-center gap-1.5 font-normal"><input type="radio" name="digest" class="radio radio-sm" /> Weekly digest</label>
+            <label class="inline-flex items-center gap-1.5 font-normal"><input type="checkbox" class="size-4 accent-indigo-600 dark:accent-indigo-400" checked /> New comments</label>
+            <label class="inline-flex items-center gap-1.5 font-normal"><input type="radio" name="digest" class="size-4 accent-indigo-600 dark:accent-indigo-400" checked /> Daily digest</label>
+            <label class="inline-flex items-center gap-1.5 font-normal"><input type="radio" name="digest" class="size-4 accent-indigo-600 dark:accent-indigo-400" /> Weekly digest</label>
           </fieldset>
           <div class="flex flex-col gap-1.5">
             <label for="locked">Locked field</label>
-            <input id="locked" type="text" class="input input-sm w-full" value="Read-only value" disabled />
+            <input id="locked" type="text" class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900" value="Read-only value" disabled />
           </div>
         </form>
       </section>
@@ -407,8 +407,9 @@
     <footer id="footer" data-test-section>
       <h2>Footer</h2>
       <p>
-        Use this page with the SimpleTrans popup or the Ctrl hover gesture. The
-        fixture is part of the extension test tooling, not a product surface.
+        Use this page with the SimpleTrans popup or the configured hover shortcut
+        (Ctrl by default). The fixture is part of the extension test tooling, not a
+        product surface.
       </p>
       <p>
         <a href="#overview">Back to top</a> ·

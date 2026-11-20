@@ -14,6 +14,16 @@ import { formatBytes, formatCount, typeBadgeLabel, useApp } from '../lib.js';
 import { CACHE_DB_VERSION } from '../../shared/constants.js';
 import { normalizeLevel, LOG_LEVEL_OPTIONS } from '../../shared/log/levels.js';
 
+/** 关于页专用的 Neobrutalism 类；不导出、不复用到其它页面。 */
+const NEO = Object.freeze({
+  card: 'border-2 border-black bg-white p-4 text-black shadow-[4px_4px_0_0] shadow-black dark:border-white dark:bg-gray-900 dark:text-white dark:shadow-white',
+  title:
+    'inline-flex w-fit items-center gap-1.5 border-2 border-black bg-yellow-200 px-2 py-1 text-xs font-semibold text-black shadow-[2px_2px_0_0] shadow-black dark:border-white dark:bg-yellow-300 dark:text-black dark:shadow-white',
+  button:
+    'inline-flex items-center justify-center gap-1.5 border-2 border-black bg-white px-3 py-1.5 text-sm font-semibold text-black shadow-[4px_4px_0_0] shadow-black transition hover:bg-yellow-200 focus-visible:ring-2 focus-visible:ring-yellow-300 focus-visible:outline-none dark:border-white dark:bg-gray-900 dark:text-white dark:shadow-white dark:hover:bg-yellow-300 dark:hover:text-black',
+  code: 'max-h-80 overflow-auto border-2 border-black bg-gray-100 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-black dark:border-white dark:bg-gray-800 dark:text-white',
+});
+
 /** 权限用途说明。 */
 const PERMISSION_INFO = Object.freeze({
   storage: '保存设置、实例与凭据（凭据按设置存本机或同步）。',
@@ -115,12 +125,12 @@ export default function About() {
             <Info size={15} aria-hidden="true" />
             关于
           </h2>
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">版本、权限与数据处理说明；反馈问题时请附上诊断信息。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">版本、权限与数据处理说明；反馈问题时请附上诊断信息。</p>
         </div>
       </div>
 
-      <section className="card gap-2 bg-base-100 p-4" aria-label="基本信息">
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">基本信息</span>
+      <section className={NEO.card} aria-label="基本信息">
+        <span className={NEO.title}>基本信息</span>
         <dl className="flex flex-wrap gap-2 text-sm">
           <dt>名称</dt>
           <dd>{manifest.name ?? 'SimpleTrans'}</dd>
@@ -139,13 +149,13 @@ export default function About() {
         </dl>
       </section>
 
-      <section className="card gap-2 bg-base-100 p-4" aria-label="权限">
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
+      <section className={NEO.card} aria-label="权限">
+        <span className={NEO.title}>
           <ShieldCheck size={13} aria-hidden="true" />
           权限
         </span>
         {permissions.length > 0 ? (
-          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-gray-700 dark:text-gray-200">
             {permissions.map((permission) => (
               <li key={permission}>
                 <span className="font-mono text-xs">{permission}</span>：
@@ -154,12 +164,12 @@ export default function About() {
             ))}
           </ul>
         ) : (
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">没有读取到清单权限信息。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">没有读取到清单权限信息。</p>
         )}
 
         <span className="text-xs font-semibold">静态主机权限</span>
         {hostPermissions.length > 0 ? (
-          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-gray-700 dark:text-gray-200">
             {hostPermissions.map((pattern) => (
               <li key={pattern}>
                 <span className="font-mono text-xs">{pattern}</span>：{hostPurpose(pattern, false)}
@@ -167,12 +177,12 @@ export default function About() {
             ))}
           </ul>
         ) : (
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">没有静态主机权限。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">没有静态主机权限。</p>
         )}
 
         <span className="text-xs font-semibold">可选主机权限</span>
         {optionalHosts.length > 0 ? (
-          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-gray-700 dark:text-gray-200">
             {optionalHosts.map((pattern) => (
               <li key={pattern}>
                 <span className="font-mono text-xs">{pattern}</span>：{hostPurpose(pattern, true)}
@@ -180,13 +190,13 @@ export default function About() {
             ))}
           </ul>
         ) : (
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">没有可选主机权限。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">没有可选主机权限。</p>
         )}
       </section>
 
-      <section className="card gap-2 bg-base-100 p-4" aria-label="隐私说明">
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">隐私与数据</span>
-        <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
+      <section className={NEO.card} aria-label="隐私说明">
+        <span className={NEO.title}>隐私与数据</span>
+        <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-gray-700 dark:text-gray-200">
           <li>每个实例的密钥独立保存，只有后台读取；设置页只显示是否已配置。</li>
           <li>自定义 endpoint 会收到该实例的密钥；只在你信任并授权的域名上使用。</li>
           <li>译文缓存只在本机，不上传。</li>
@@ -196,24 +206,24 @@ export default function About() {
         </ul>
       </section>
 
-      <section className="card gap-2 bg-base-100 p-4" aria-label="诊断信息">
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">诊断信息</span>
-        <p className="text-sm leading-relaxed text-base-content/70 break-words">
+      <section className={NEO.card} aria-label="诊断信息">
+        <span className={NEO.title}>诊断信息</span>
+        <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">
           复制的内容只含版本、实例数、缓存占用、日志级别与当前实例类型/启用状态；不含密钥、APPID、提示词与原文/译文。
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" className="btn btn-sm" onClick={copyDiagnostics}>
+          <button type="button" className={NEO.button} onClick={copyDiagnostics}>
             <ClipboardCopy size={13} aria-hidden="true" />
             复制诊断信息
           </button>
-          {copied === 'ok' ? <span className="text-xs leading-relaxed text-base-content/60 break-words">已复制</span> : null}
+          {copied === 'ok' ? <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">已复制</span> : null}
           {copied === 'error' ? (
-            <span className="text-xs leading-relaxed text-error" role="alert">
+            <span className="text-xs leading-relaxed text-red-600 dark:text-red-400" role="alert">
               复制失败，请手动选择文本
             </span>
           ) : null}
         </div>
-        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed font-mono">
+        <pre className={NEO.code}>
           {diagnosticsText()}
         </pre>
       </section>

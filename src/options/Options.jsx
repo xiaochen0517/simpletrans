@@ -19,6 +19,7 @@ import {
   FlaskConical,
   Info,
   LayoutDashboard,
+  LoaderCircle,
   Moon,
   Settings2,
   Sparkles,
@@ -29,6 +30,7 @@ import { STORAGE_KEYS } from '../shared/storage.js';
 import { getSettings, resolveTheme, saveSettings } from '../shared/settings.js';
 import { AppContext, DEFAULT_ROUTE, ROUTES, openTestPage, sendToBackground } from './lib.js';
 import Toast from './components/toast.jsx';
+import Button from '../shared/ui/button.jsx';
 import CreateInstance from './components/create-instance.jsx';
 import InstanceEditor from './components/instance-editor.jsx';
 import Overview from './sections/overview.jsx';
@@ -212,7 +214,7 @@ export default function Options() {
     };
   }, []);
 
-  // 把实际主题写到根节点，daisyUI 与原生控件共用同一 color-scheme。
+  // 把实际主题写到根节点，Tailwind dark 变体与原生控件共用同一 color-scheme。
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = resolvedTheme;
@@ -494,21 +496,21 @@ export default function Options() {
 
   return (
     <AppContext.Provider value={appValue}>
-      <div className="min-h-screen bg-base-200 text-base-content">
-        <div className="mx-auto grid min-h-screen w-full max-w-[1440px] grid-cols-1 bg-base-200 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="sticky top-0 z-20 flex flex-col gap-2 border-b border-base-300 bg-base-100 p-3 lg:h-screen lg:border-b-0 lg:border-r lg:gap-3.5 lg:p-4">
+      <div className="min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+        <div className="mx-auto grid min-h-screen w-full max-w-[1440px] grid-cols-1 bg-gray-50 dark:bg-gray-950 lg:grid-cols-[14rem_minmax(0,1fr)]">
+          <aside className="sticky top-0 z-20 flex flex-col gap-2 border-b border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900 lg:h-screen lg:gap-3.5 lg:border-b-0 lg:border-r lg:p-4">
             <div className="flex items-center gap-2 px-1">
-              <span className="grid size-8 shrink-0 place-items-center rounded-box bg-primary text-primary-content" aria-hidden="true">
+              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-indigo-600 text-white" aria-hidden="true">
                 <Sparkles size={16} />
               </span>
               <div>
                 <h1 className="m-0 whitespace-nowrap text-base font-bold">SimpleTrans</h1>
-                <span className="block text-xs text-base-content/60">网页双语对照翻译</span>
+                <span className="block text-xs text-gray-500 dark:text-gray-400">网页双语对照翻译</span>
               </div>
             </div>
 
             <nav aria-label="设置分类">
-              <ul className="menu menu-sm flex flex-row gap-1 overflow-x-auto p-0 lg:flex-col">
+              <ul className="flex flex-row gap-1 overflow-x-auto p-0 lg:flex-col">
                 {ROUTES.map((item) => {
                   const Icon = ROUTE_ICONS[item.id] ?? Activity;
                   const active = route === item.id;
@@ -516,7 +518,11 @@ export default function Options() {
                     <li key={item.id}>
                       <button
                         type="button"
-                        className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm${active ? ' menu-active' : ''}`}
+                        className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors lg:w-full ${
+                          active
+                            ? 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-white'
+                            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white'
+                        }`}
                         aria-current={active ? 'page' : undefined}
                         onClick={() => navigate(item.path)}
                       >
@@ -527,9 +533,14 @@ export default function Options() {
                         </span>
                         {item.id === 'instances' && instances.length > 0 ? (
                           needsAttention ? (
-                            <span className="status status-warning ml-auto" aria-label="有实例需要处理" />
+                            <span
+                              className="ml-auto size-2 shrink-0 rounded-full bg-amber-500"
+                              aria-label="有实例需要处理"
+                            />
                           ) : (
-                            <span className="badge badge-xs ml-auto">{instances.length}</span>
+                            <span className="ml-auto rounded-full bg-gray-200 px-1.5 py-0.5 text-[10px] font-semibold text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                              {instances.length}
+                            </span>
                           )
                         ) : null}
                       </button>
@@ -539,29 +550,39 @@ export default function Options() {
               </ul>
             </nav>
 
-            {version ? <div className="mt-auto px-1.5 text-xs text-base-content/60">v{version}</div> : null}
+            {version ? (
+              <div className="mt-auto px-1.5 text-xs text-gray-500 dark:text-gray-400">v{version}</div>
+            ) : null}
           </aside>
 
           <div className="flex min-w-0 flex-col">
-            <header className="z-10 flex flex-wrap items-center gap-3 border-b border-base-300 bg-base-100 px-4 py-3 sm:px-6 lg:sticky lg:top-0">
+            <header className="z-10 flex flex-wrap items-center gap-3 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-900 sm:px-6 lg:sticky lg:top-0">
               <h2 className="m-0 text-xl font-bold">{currentRoute.label}</h2>
               <div className="ml-auto flex flex-wrap items-center gap-2">
                 <span
                   className={`inline-flex min-h-5 items-center gap-1 text-xs ${
-                    saveError ? 'text-error' : savingCount > 0 ? 'text-base-content/70' : 'text-success'
+                    saveError
+                      ? 'text-red-600 dark:text-red-400'
+                      : savingCount > 0
+                        ? 'text-gray-500 dark:text-gray-400'
+                        : 'text-green-600 dark:text-green-400'
                   }`}
                   aria-live="polite"
                   title={saveError ?? undefined}
                 >
                   {savingCount > 0 ? (
-                    <span className="loading loading-spinner loading-xs" aria-hidden="true" />
+                    <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
                   ) : null}
                   {statusText}
                 </span>
-                {version ? <span className="badge badge-sm badge-ghost">v{version}</span> : null}
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost"
+                {version ? (
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                    v{version}
+                  </span>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  iconOnly
                   aria-label={resolvedTheme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
                   title={resolvedTheme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
                   onClick={() => void toggleTheme()}
@@ -572,10 +593,10 @@ export default function Options() {
                   ) : (
                     <Moon size={15} aria-hidden="true" />
                   )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost"
+                </Button>
+                <Button
+                  variant="ghost"
+                  iconOnly
                   aria-label="打开翻译测试页"
                   title="打开翻译测试页"
                   onClick={async () => {
@@ -584,29 +605,29 @@ export default function Options() {
                   }}
                 >
                   <FlaskConical size={15} aria-hidden="true" />
-                </button>
+                </Button>
               </div>
             </header>
 
             <div className="w-full px-4 py-5 pb-16 sm:px-6">
               {loadError && !settings ? (
-                <div className="alert alert-warning">
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
                   <span className="min-w-0 break-words">{loadError}</span>
                   <span className="ml-auto shrink-0">
-                    <button type="button" className="btn btn-xs" onClick={() => void loadAll()}>
+                    <Button size="xs" variant="secondary" onClick={() => void loadAll()}>
                       重试
-                    </button>
+                    </Button>
                   </span>
                 </div>
               ) : (
                 <div className="flex flex-col gap-4">
                   {enginesError ? (
-                    <div className="alert alert-warning">
+                    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
                       <span className="min-w-0 break-words">读取实例列表失败：{enginesError}</span>
                       <span className="ml-auto shrink-0">
-                        <button type="button" className="btn btn-xs" onClick={() => void refreshInstances()}>
+                        <Button size="xs" variant="secondary" onClick={() => void refreshInstances()}>
                           重试
-                        </button>
+                        </Button>
                       </span>
                     </div>
                   ) : null}

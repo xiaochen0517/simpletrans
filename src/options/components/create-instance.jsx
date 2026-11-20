@@ -13,6 +13,7 @@ import { useState } from 'react';
 import { AlertTriangle, Languages, Sparkles } from 'lucide-react';
 import ConfirmDialog from './confirm-dialog.jsx';
 import Field from '../../shared/ui/field.jsx';
+import { buttonClass } from '../../shared/ui/button.jsx';
 import { PRESET_LABELS, useApp } from '../lib.js';
 import { createInstance } from '../../shared/config/instances.js';
 import {
@@ -139,7 +140,7 @@ export default function CreateInstance({ hint, onClose }) {
       onCancel={onClose}
     >
       {atLimit ? (
-        <div className="alert alert-warning">
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
           <AlertTriangle size={15} aria-hidden="true" />
           <span className="min-w-0 break-words">
             已达上限（{MAX_INSTANCES} 个）；删除不需要的实例后才能新增。
@@ -149,7 +150,7 @@ export default function CreateInstance({ hint, onClose }) {
       <div className="grid gap-2.5" role="group" aria-label="实例类型">
         <button
           type="button"
-          className={`btn btn-outline h-auto justify-start${type === 'openai' ? ' btn-active' : ''}`}
+          className={`${buttonClass({ variant: 'secondary', className: 'h-auto justify-start' })} aria-pressed:border-indigo-600 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-700 aria-pressed:hover:bg-indigo-100 dark:aria-pressed:border-indigo-400 dark:aria-pressed:bg-indigo-950/40 dark:aria-pressed:text-indigo-200 dark:aria-pressed:hover:bg-indigo-900/60`}
           aria-pressed={type === 'openai'}
           onClick={() => chooseType('openai', preset)}
           disabled={busy}
@@ -157,14 +158,14 @@ export default function CreateInstance({ hint, onClose }) {
           <Sparkles size={16} aria-hidden="true" />
           <span>
             <span className="flex items-center gap-1.5 text-sm font-semibold">OpenAI 兼容</span>
-            <span className="text-xs leading-relaxed text-base-content/60 break-words">
+            <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
               chat completions、流式、JSONL 批量、可编辑提示词；自定义可接本地模型。
             </span>
           </span>
         </button>
         <button
           type="button"
-          className={`btn btn-outline h-auto justify-start${type === 'baidu' ? ' btn-active' : ''}`}
+          className={`${buttonClass({ variant: 'secondary', className: 'h-auto justify-start' })} aria-pressed:border-indigo-600 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-700 aria-pressed:hover:bg-indigo-100 dark:aria-pressed:border-indigo-400 dark:aria-pressed:bg-indigo-950/40 dark:aria-pressed:text-indigo-200 dark:aria-pressed:hover:bg-indigo-900/60`}
           aria-pressed={type === 'baidu'}
           onClick={() => chooseType('baidu')}
           disabled={busy}
@@ -172,7 +173,7 @@ export default function CreateInstance({ hint, onClose }) {
           <Languages size={16} aria-hidden="true" />
           <span>
             <span className="flex items-center gap-1.5 text-sm font-semibold">百度翻译</span>
-            <span className="text-xs leading-relaxed text-base-content/60 break-words">通用文本翻译、无流式、APPID + 密钥。</span>
+            <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">通用文本翻译、无流式、APPID + 密钥。</span>
           </span>
         </button>
       </div>
@@ -185,7 +186,7 @@ export default function CreateInstance({ hint, onClose }) {
               <button
                 key={value}
                 type="button"
-                className={`btn btn-sm${preset === value ? ' btn-active' : ''}`}
+                className={`${buttonClass({ size: 'sm' })} aria-pressed:border-indigo-600 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-700 aria-pressed:hover:bg-indigo-100 dark:aria-pressed:border-indigo-400 dark:aria-pressed:bg-indigo-950/40 dark:aria-pressed:text-indigo-200 dark:aria-pressed:hover:bg-indigo-900/60`}
                 aria-pressed={preset === value}
                 onClick={() => chooseType('openai', value)}
                 disabled={busy}
@@ -194,7 +195,7 @@ export default function CreateInstance({ hint, onClose }) {
               </button>
             ))}
           </div>
-          <span className="text-xs leading-relaxed text-base-content/60 break-words">
+          <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
             {preset === 'deepseek'
               ? '使用 DeepSeek 默认地址与模型，可再修改。'
               : '自定义 endpoint：需要填写 baseUrl 与模型，并授权接口域名。'}
@@ -213,7 +214,7 @@ export default function CreateInstance({ hint, onClose }) {
             <input
               id="new-baseurl"
               type="url"
-              className="input input-sm w-full"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
               value={customBaseUrl}
               onChange={(event) => {
                 setCustomBaseUrl(event.target.value);
@@ -229,7 +230,7 @@ export default function CreateInstance({ hint, onClose }) {
             <input
               id="new-model"
               type="text"
-              className="input input-sm w-full"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
               value={customModel}
               onChange={(event) => {
                 setCustomModel(event.target.value);
@@ -248,7 +249,7 @@ export default function CreateInstance({ hint, onClose }) {
         <input
           id="new-name"
           type="text"
-          className="input input-sm w-full"
+          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
           value={name}
           onChange={(event) => {
             setName(event.target.value);

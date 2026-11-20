@@ -202,7 +202,7 @@ export async function readSettings(harness) {
  * @returns {HTMLDetailsElement | undefined}
  */
 export function findSelect(label, root = document) {
-  return [...root.querySelectorAll('details.dropdown')].find(
+  return [...root.querySelectorAll('details[data-slot="select"]')].find(
     (details) => details.querySelector('summary')?.getAttribute('aria-label') === label
   );
 }

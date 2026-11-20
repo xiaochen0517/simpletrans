@@ -220,7 +220,7 @@ describe('凭据与认证', () => {
 
     await click(findButton('清除凭据', drawer));
     expect(container.textContent).toContain('清除该实例的凭据？');
-    const dialog = [...container.querySelectorAll('.modal-box')].find((box) =>
+    const dialog = [...container.querySelectorAll('[data-slot="dialog-panel"]')].find((box) =>
       box.textContent.includes('清除该实例的凭据？')
     );
     const confirm = [...dialog.querySelectorAll('button')].find(
@@ -357,14 +357,13 @@ describe('实例编辑弹窗与两套提示词（P11）', () => {
     const container = await mountOptions(harness, '#/instances');
     const editor = await openEditor(container, 'DeepSeek');
 
-    const sections = [...editor.querySelectorAll('details.collapse')];
+    const sections = [...editor.querySelectorAll('details[data-slot="accordion"]')];
     expect(sections.length).toBeGreaterThanOrEqual(2);
     for (const details of sections) {
-      expect(details.className).toContain('collapse-arrow');
       const summary = details.querySelector(':scope > summary');
-      expect(summary.className).toContain('collapse-title');
+      expect(summary.getAttribute('data-slot')).toBe('accordion-trigger');
       expect(summary.textContent.trim()).not.toBe('');
-      expect(details.querySelector(':scope > .collapse-content')).toBeTruthy();
+      expect(details.querySelector(':scope > [data-slot="accordion-content"]')).toBeTruthy();
     }
   });
 
@@ -372,10 +371,11 @@ describe('实例编辑弹窗与两套提示词（P11）', () => {
     const container = await mountOptions(harness, '#/instances');
     const editor = await openEditor(container, 'DeepSeek');
 
-    expect(editor.className).toContain('modal-box');
+    expect(editor.getAttribute('data-slot')).toBe('dialog-panel');
     expect(editor.className).toContain('max-w-4xl');
-    const modal = editor.closest('.modal');
-    expect(modal.className).not.toContain('justify-items-end');
+    const overlay = editor.closest('[data-slot="dialog-overlay"]');
+    expect(overlay).toBeTruthy();
+    expect(overlay.className).not.toContain('justify-items-end');
   });
 
   it('同时显示默认与快速提示词，保存快速提示词到 local', async () => {

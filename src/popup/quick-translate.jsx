@@ -18,6 +18,8 @@ import { TARGET_LANGS, languageLabel } from '../shared/languages.js';
 import { createLogger, newTraceId } from '../shared/log/logger.js';
 import Select from '../shared/ui/select.jsx';
 import Notice from '../shared/ui/notice.jsx';
+import Button from '../shared/ui/button.jsx';
+import StatusBadge from '../shared/ui/status-badge.jsx';
 import { engineOptionsOf, usableInstances } from './instance-option.js';
 
 const log = createLogger('B3');
@@ -210,10 +212,13 @@ export default function QuickTranslate({
       aria-labelledby="popup-tab-quick"
       hidden={!active}
     >
-      <section className="card gap-2 bg-base-200 p-3" aria-label="快速翻译设置">
+      <section
+        className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800"
+        aria-label="快速翻译设置"
+      >
         <div className="flex flex-col gap-1">
-          <span className="flex items-center gap-1 text-xs font-semibold">
-            <Sparkles size={14} className="text-primary" aria-hidden="true" />
+          <span className="flex items-center gap-1 text-xs font-semibold text-gray-700 dark:text-gray-200">
+            <Sparkles size={14} className="text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
             <span>翻译实例</span>
           </span>
           <Select
@@ -227,8 +232,8 @@ export default function QuickTranslate({
           />
         </div>
         <div className="flex flex-col gap-1">
-          <span className="flex items-center gap-1 text-xs font-semibold">
-            <Languages size={14} className="text-primary" aria-hidden="true" />
+          <span className="flex items-center gap-1 text-xs font-semibold text-gray-700 dark:text-gray-200">
+            <Languages size={14} className="text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
             <span>目标语言</span>
           </span>
           <Select
@@ -246,10 +251,13 @@ export default function QuickTranslate({
         {configFailed ? <Notice tone="error">读取配置失败，请到设置页检查</Notice> : null}
       </section>
 
-      <section className="card gap-2 bg-base-200 p-3" aria-label="待翻译内容">
+      <section
+        className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800"
+        aria-label="待翻译内容"
+      >
         <textarea
           id="quick-input"
-          className="textarea w-full resize-y text-sm"
+          className="w-full resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
           rows={4}
           maxLength={MAX_SEGMENT_CHARS}
           value={input}
@@ -261,33 +269,36 @@ export default function QuickTranslate({
           disabled={busy}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-base-content/60">
+          <span className="text-xs text-gray-500 dark:text-gray-400">
             {input.length} / {MAX_SEGMENT_CHARS}
           </span>
-          <button
-            type="button"
-            className="btn btn-xs btn-ghost gap-1"
+          <Button
+            variant="ghost"
+            size="xs"
             onClick={() => void loadSelection(true)}
             disabled={busy}
           >
             <ScanText size={13} aria-hidden="true" />
             读取选区
-          </button>
+          </Button>
           <span className="ml-auto" />
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
+          <Button
+            variant="primary"
             onClick={() => void translate()}
             disabled={busy || input.trim() === '' || engineOptions.length === 0}
+            busy={busy}
           >
-            {busy ? <span className="loading loading-spinner loading-xs" aria-hidden="true" /> : null}
             <span>{busy ? '翻译中…' : '翻译'}</span>
-          </button>
+          </Button>
         </div>
-        <p className="flex items-center gap-1 text-xs text-base-content/60">
-          <kbd className="kbd kbd-xs">Ctrl</kbd>
+        <p className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+          <kbd className="rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+            Ctrl
+          </kbd>
           <span>+</span>
-          <kbd className="kbd kbd-xs">Enter</kbd>
+          <kbd className="rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+            Enter
+          </kbd>
           <span>快速翻译</span>
         </p>
       </section>
@@ -296,21 +307,21 @@ export default function QuickTranslate({
       {error ? <Notice tone="error">{error}</Notice> : null}
 
       {result ? (
-        <section className="card gap-2 bg-base-200 p-3" aria-label="快速翻译结果" aria-live="polite">
+        <section
+          className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800"
+          aria-label="快速翻译结果"
+          aria-live="polite"
+        >
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs font-semibold">译文</span>
-            <span className="badge badge-sm badge-ghost">
+            <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">译文</span>
+            <StatusBadge tone="idle">
               {String(result.engine?.name ?? '')} · {targetLabel}
-            </span>
+            </StatusBadge>
             <span className="ml-auto" />
-            <button
-              type="button"
-              className="btn btn-xs btn-ghost gap-1"
-              onClick={() => void copyResult()}
-            >
+            <Button variant="ghost" size="xs" onClick={() => void copyResult()}>
               <ClipboardCopy size={13} aria-hidden="true" />
               复制
-            </button>
+            </Button>
           </div>
           <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
             {String(result.text ?? '')}

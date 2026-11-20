@@ -2,7 +2,7 @@
 /**
  * E5 共享单选下拉测试
  *
- * 覆盖：daisyUI Dropdown 结构、展开/关闭、选择回调、两行选项、禁用、加载、空列表、
+ * 覆盖：HyperUI 触发器 + 面板结构、展开/关闭、选择回调、两行选项、禁用、加载、空列表、
  *       方向键/Home/End/Escape 以及单选 ARIA。
  */
 
@@ -94,17 +94,20 @@ afterEach(async () => {
 });
 
 describe('E5 Select', () => {
-  it('使用 daisyUI dropdown + menu 结构并显示两行选项', async () => {
+  it('使用 HyperUI 触发器 + 面板结构并显示两行选项', async () => {
     await render();
     expect(details()).toBeTruthy();
-    expect(summary().className).toContain('select');
+    expect(summary().getAttribute('data-slot')).toBe('select-trigger');
+    expect(summary().className).toContain('rounded-lg');
+    expect(summary().className).toContain('border-gray-300');
     expect(summary().textContent).toContain('DeepSeek');
 
     await open();
     const menu = details().querySelector('ul[role="radiogroup"]');
     expect(menu).toBeTruthy();
-    expect(menu.className).toContain('dropdown-content');
-    expect(menu.className).toContain('menu');
+    expect(menu.getAttribute('data-slot')).toBe('select-panel');
+    expect(menu.className).toContain('rounded-lg');
+    expect(menu.className).toContain('border-gray-200');
     expect(options()).toHaveLength(3);
     expect(options()[0].textContent).toContain('OpenAI 兼容');
   });
@@ -152,9 +155,9 @@ describe('E5 Select', () => {
     expect(details().open).toBe(false);
   });
 
-  it('加载态显示 daisyUI spinner', async () => {
+  it('加载态显示 spinner', async () => {
     await render({ loading: true });
-    expect(summary().querySelector('.loading.loading-spinner')).toBeTruthy();
+    expect(summary().querySelector('.animate-spin')).toBeTruthy();
   });
 
   it('空选项显示占位文字且不产生选项', async () => {

@@ -15,6 +15,7 @@ import { useMemo, useState } from 'react';
 import { ClipboardCopy, FlaskConical, RotateCcw, ShieldAlert } from 'lucide-react';
 import StatusBadge from '../../shared/ui/status-badge.jsx';
 import Select from '../../shared/ui/select.jsx';
+import { buttonClass } from '../../shared/ui/button.jsx';
 import {
   credentialState,
   formatCount,
@@ -182,11 +183,11 @@ export default function TestTranslation() {
   if (instances.length === 0) {
     return (
       <div className="flex flex-col gap-4">
-        <div className="alert alert-warning">
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
           <FlaskConical size={16} aria-hidden="true" />
           <span className="min-w-0 break-words">还没有翻译实例，先到「翻译实例」新增一个再测试。</span>
           <span className="ml-auto shrink-0">
-            <button type="button" className="btn btn-xs btn-primary" onClick={() => app.openCreate(null)}>
+            <button type="button" className={buttonClass({ variant: 'primary', size: 'xs' })} onClick={() => app.openCreate(null)}>
               新增翻译实例
             </button>
           </span>
@@ -206,11 +207,11 @@ export default function TestTranslation() {
             <FlaskConical size={15} aria-hidden="true" />
             测试翻译
           </h2>
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">使用已保存的实例参数与密钥；修改配置后请先保存再测试。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">使用已保存的实例参数与密钥；修改配置后请先保存再测试。</p>
         </div>
       </div>
 
-      <section className="card gap-2 bg-base-100 p-4" aria-label="测试输入">
+      <section className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900 p-4" aria-label="测试输入">
         <div className="flex flex-col gap-1">
           <span className="text-xs font-semibold">翻译实例</span>
           <Select
@@ -234,10 +235,10 @@ export default function TestTranslation() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs leading-relaxed text-base-content/60 break-words">
+          <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
             语言：{languageLabel(settings?.sourceLang) || '未知'} → {languageLabel(settings?.targetLang) || '未知'}
           </span>
-          <button type="button" className="btn btn-xs" onClick={() => app.navigate('#/general')}>
+          <button type="button" className={buttonClass({ size: 'xs' })} onClick={() => app.navigate('#/general')}>
             去修改
           </button>
           {selected ? (
@@ -251,14 +252,14 @@ export default function TestTranslation() {
         </div>
 
         {!eligibility.ok && selected?.kind !== 'unsupported' ? (
-          <div className="alert alert-warning">
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
             <ShieldAlert size={15} aria-hidden="true" />
             <span className="min-w-0 break-words">{eligibility.reason}</span>
             {selected?.type === 'openai' && selected.permission !== 'granted' ? (
               <span className="ml-auto shrink-0">
                 <button
                   type="button"
-                  className="btn btn-xs btn-warning"
+                  className={buttonClass({ variant: 'warning', size: 'xs' })}
                   onClick={authorize}
                   disabled={authorizing}
                 >
@@ -272,7 +273,7 @@ export default function TestTranslation() {
         <label className="flex flex-col gap-1">
           <span className="text-xs font-semibold">待翻译文本</span>
           <textarea
-            className="textarea w-full"
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500 dark:focus:border-indigo-400 dark:focus:ring-indigo-900"
             rows={4}
             value={text}
             onChange={(event) => setText(event.target.value)}
@@ -281,17 +282,17 @@ export default function TestTranslation() {
           />
         </label>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs leading-relaxed text-base-content/60 break-words" id="test-text-count">
+          <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words" id="test-text-count">
             {text.length} / {TEST_TEXT_MAX_CHARS} 字符
           </span>
-          <span className="text-xs leading-relaxed text-base-content/60 break-words">测试只使用已保存的实例；未保存的草稿不参与。</span>
+          <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">测试只使用已保存的实例；未保存的草稿不参与。</span>
         </div>
-        {tooLong ? <span className="text-xs leading-relaxed text-error" role="alert">文本超过 {TEST_TEXT_MAX_CHARS} 字符上限，请缩短后重试。</span> : null}
+        {tooLong ? <span className="text-xs leading-relaxed text-red-600 dark:text-red-400" role="alert">文本超过 {TEST_TEXT_MAX_CHARS} 字符上限，请缩短后重试。</span> : null}
 
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            className="btn btn-sm btn-primary"
+            className={buttonClass({ variant: 'primary' })}
             onClick={runTest}
             disabled={busy || tooLong || !selected}
           >
@@ -300,7 +301,7 @@ export default function TestTranslation() {
           </button>
           <button
             type="button"
-            className="btn btn-sm"
+            className={buttonClass({ size: 'sm' })}
             onClick={() => {
               setText('');
               app.updateTestState({ result: null });
@@ -316,26 +317,26 @@ export default function TestTranslation() {
       <section className="flex flex-col gap-3" aria-live="polite" aria-label="测试结果">
         <h2 className="flex items-center gap-2 text-base font-bold">结果</h2>
         {busy ? (
-          <div className="card gap-2 bg-base-100 p-4" aria-busy="true">
+          <div className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900 p-4" aria-busy="true">
             <div className="grid gap-2.5" aria-label="正在测试翻译">
-              <span className="skeleton block h-3 w-[35%]" />
-              <span className="skeleton block h-3 w-[85%]" />
-              <span className="skeleton block h-3 w-[60%]" />
+              <span className="h-3 w-[35%] block animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+              <span className="h-3 w-[85%] block animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+              <span className="h-3 w-[60%] block animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
             </div>
           </div>
         ) : !result ? (
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">选择实例并输入文本后测试。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">选择实例并输入文本后测试。</p>
         ) : result.status === 'success' ? (
-          <div className="card gap-2 bg-base-100 p-4">
+          <div className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <StatusBadge tone="ok">测试成功</StatusBadge>
-              <button type="button" className="btn btn-xs" onClick={copyResult}>
+              <button type="button" className={buttonClass({ size: 'xs' })} onClick={copyResult}>
                 <ClipboardCopy size={12} aria-hidden="true" />
                 复制译文
               </button>
             </div>
             <p className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm leading-relaxed">{result.text}</p>
-            <p className="text-xs leading-relaxed text-base-content/60 break-words">
+            <p className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">
               {result.engine?.name ?? selected?.name ?? '实例'} ·{' '}
               {result.engine?.type === 'openai'
                 ? `${result.engine?.preset === 'deepseek' ? 'OpenAI 兼容 · DeepSeek' : 'OpenAI 兼容 · 自定义'}`
@@ -348,13 +349,13 @@ export default function TestTranslation() {
             </p>
           </div>
         ) : (
-          <div className="card gap-2 bg-base-100 p-4" role="alert">
+          <div className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900 p-4" role="alert">
             <div className="flex flex-wrap items-center gap-2">
               <StatusBadge tone="error">测试失败</StatusBadge>
-              {result.code ? <span className="text-xs leading-relaxed text-base-content/60 break-words">错误码 {result.code}</span> : null}
+              {result.code ? <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">错误码 {result.code}</span> : null}
             </div>
             <p className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm leading-relaxed">{result.message}</p>
-            <p className="text-xs leading-relaxed text-base-content/60 break-words">{nextStep(result.code, String(result.message))}</p>
+            <p className="text-xs leading-relaxed text-gray-500 dark:text-gray-400 break-words">{nextStep(result.code, String(result.message))}</p>
           </div>
         )}
       </section>

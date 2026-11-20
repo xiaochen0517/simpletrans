@@ -14,6 +14,7 @@ import { AlertTriangle, Languages, Plus, Sparkles } from 'lucide-react';
 import InstanceCard from '../components/instance-card.jsx';
 import ConfirmDialog from '../components/confirm-dialog.jsx';
 import EmptyState from '../components/empty-state.jsx';
+import { buttonClass } from '../../shared/ui/button.jsx';
 import { requestOriginPermission, useApp } from '../lib.js';
 import {
   duplicateInstance,
@@ -184,11 +185,11 @@ export default function Instances() {
   if (loading) {
     return (
       <div className="flex flex-col gap-4" aria-busy="true">
-        <div className="card gap-2 bg-base-100 p-4">
+        <div className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900 p-4">
           <div className="grid gap-2.5" aria-label="正在读取实例">
-            <span className="skeleton block h-3 w-[35%]" />
-            <span className="skeleton block h-3 w-[65%]" />
-            <span className="skeleton block h-3 w-[50%]" />
+            <span className="h-3 w-[35%] block animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+            <span className="h-3 w-[65%] block animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+            <span className="h-3 w-[50%] block animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
           </div>
         </div>
       </div>
@@ -203,11 +204,11 @@ export default function Instances() {
             <Sparkles size={15} aria-hidden="true" />
             翻译实例
           </h2>
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">管理大模型与传统翻译实例；当前实例用于所有页面翻译。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">管理大模型与传统翻译实例；当前实例用于所有页面翻译。</p>
         </div>
         <button
           type="button"
-          className="btn btn-sm btn-primary"
+          className={buttonClass({ variant: 'primary' })}
           onClick={() => app.openCreate(null)}
           disabled={atLimit}
           title={atLimit ? `最多只能保存 ${MAX_INSTANCES} 个翻译实例` : undefined}
@@ -218,19 +219,29 @@ export default function Instances() {
       </div>
 
       {atLimit ? (
-        <div className="alert alert-warning">
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
           <AlertTriangle size={15} aria-hidden="true" />
           <span className="min-w-0 break-words">已达上限（{MAX_INSTANCES} 个），删除不需要的实例后才能新增。</span>
         </div>
       ) : null}
 
       {instances.length > 0 ? (
-        <div className="tabs tabs-boxed w-fit" role="group" aria-label="筛选实例">
+        <div
+          className="inline-flex w-fit flex-wrap rounded-lg border border-gray-200 bg-gray-100 p-1 dark:border-gray-700 dark:bg-gray-800"
+          role="group"
+          aria-label="筛选实例"
+        >
           {FILTERS.map((item) => (
             <button
               key={item.id}
               type="button"
-              className={`tab${filter === item.id ? ' tab-active' : ''}`}
+              data-slot="filter-tab"
+              data-active={filter === item.id ? 'true' : 'false'}
+              className={`rounded-md px-3 py-1 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                filter === item.id
+                  ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-900 dark:text-white'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white'
+              }`}
               aria-pressed={filter === item.id}
               onClick={() => setFilter(item.id)}
               disabled={counts[item.id] === 0 && item.id !== 'all'}
@@ -249,21 +260,21 @@ export default function Instances() {
         >
           <button
             type="button"
-            className="btn btn-sm btn-primary"
+            className={buttonClass({ variant: 'primary' })}
             onClick={() => app.openCreate({ type: 'openai', preset: 'deepseek' })}
           >
             OpenAI 兼容（DeepSeek）
           </button>
           <button
             type="button"
-            className="btn btn-sm"
+            className={buttonClass({ size: 'sm' })}
             onClick={() => app.openCreate({ type: 'openai', preset: 'custom' })}
           >
             OpenAI 兼容（自定义）
           </button>
           <button
             type="button"
-            className="btn btn-sm"
+            className={buttonClass({ size: 'sm' })}
             onClick={() => app.openCreate({ type: 'baidu' })}
           >
             <Languages size={13} aria-hidden="true" />
@@ -271,8 +282,8 @@ export default function Instances() {
           </button>
         </EmptyState>
       ) : visible.length === 0 ? (
-        <div className="card gap-2 bg-base-100 p-4">
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">当前筛选下没有实例。</p>
+        <div className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900 p-4">
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">当前筛选下没有实例。</p>
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -304,7 +315,7 @@ export default function Instances() {
           onConfirm={confirmAction}
           onCancel={() => setConfirm(null)}
         >
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">已提交的段落不会重新翻译；新提交的段落会使用改选后的实例。</p>
+          <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">已提交的段落不会重新翻译；新提交的段落会使用改选后的实例。</p>
         </ConfirmDialog>
       ) : null}
 
@@ -318,7 +329,7 @@ export default function Instances() {
           onConfirm={confirmAction}
           onCancel={() => setConfirm(null)}
         >
-          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-base-content/80">
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-sm leading-relaxed text-gray-700 dark:text-gray-200">
             <li>删除该实例的配置、凭据与本地提示词。</li>
             <li>若为当前实例，会先改选为下一个可用实例。</li>
             <li>主机权限是扩展级授权，不随实例删除自动撤销。</li>

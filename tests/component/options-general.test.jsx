@@ -107,6 +107,56 @@ describe('即时保存', () => {
   });
 });
 
+describe('快捷键', () => {
+  it('悬停快捷键即时保存并提示刷新后生效', async () => {
+    const container = await mountOptions(harness, '#/general');
+    expect(block(container, '快捷键')).toBeTruthy();
+
+    await chooseOption('悬停翻译快捷键', 'Alt', container);
+
+    expect((await readSettings(harness)).hoverShortcut).toBe('alt');
+    expect(container.textContent).toContain('已保存；刷新网页后生效');
+  });
+
+  it('显示整页当前快捷键并可打开浏览器快捷键设置页', async () => {
+    const container = await mountOptions(harness, '#/general');
+    expect(container.textContent).toContain('Ctrl+Shift+Y');
+
+    await click(findButton('打开浏览器快捷键设置', container));
+
+    expect(harness.chrome.tabs.__created).toContainEqual({
+      url: 'chrome://extensions/shortcuts',
+    });
+  });
+
+  it('整页快捷键未绑定时显示「未设置」', async () => {
+    harness.chrome.commands.__shortcuts = [
+      { name: 'translate-page', shortcut: '', description: '翻译整页' },
+    ];
+    const container = await mountOptions(harness, '#/general');
+
+    expect(container.textContent).toContain('未设置');
+  });
+
+  it('读取整页快捷键失败时显示「读取失败」', async () => {
+    harness.chrome.commands.__error = new Error('not available');
+    const container = await mountOptions(harness, '#/general');
+
+    expect(container.textContent).toContain('读取失败');
+  });
+
+  it('打开浏览器快捷键设置失败时显示行内提示', async () => {
+    const container = await mountOptions(harness, '#/general');
+    harness.chrome.tabs.create = async () => {
+      throw new Error('cannot open');
+    };
+
+    await click(findButton('打开浏览器快捷键设置', container));
+
+    expect(container.textContent).toContain('无法打开浏览器快捷键设置');
+  });
+});
+
 describe('密钥存放位置', () => {
   it('切换前确认，确认后迁移凭据并更新设置', async () => {
     const container = await mountOptions(harness, '#/general');

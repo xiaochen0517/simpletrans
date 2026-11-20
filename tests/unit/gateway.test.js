@@ -315,7 +315,7 @@ describe('A2 请求网关：连接与心跳', () => {
     expect(wrongSenderDisconnect).toHaveBeenCalled();
   });
 
-  it('ST_PING 立即回 ST_PONG，随后下发一次 ST_LOG_CONFIG', async () => {
+  it('ST_PING 立即回 ST_PONG，随后下发一次日志与内容配置', async () => {
     const { client, frames } = connectGateway();
     client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 42 } });
 
@@ -325,33 +325,55 @@ describe('A2 请求网关：连接与心跳', () => {
 
     await vi.waitFor(() => {
       expect(frames.some((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toBe(true);
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG)).toBe(true);
     });
     const config = frames.find((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG);
     expect(config.payload.level).toBe('info');
+    const contentConfig = frames.find((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG);
+    expect(contentConfig.payload.hoverShortcut).toBe('ctrl');
   });
 
-  it('同一连接只下发一次 ST_LOG_CONFIG', async () => {
+  it('同一连接只下发一次日志与内容配置', async () => {
     const { client, frames } = connectGateway();
     client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 1 } });
     client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 2 } });
 
     await vi.waitFor(() => {
       expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toHaveLength(1);
+      expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG)).toHaveLength(1);
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toHaveLength(1);
+    expect(frames.filter((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG)).toHaveLength(1);
   });
 
-  it('日志级别非法时归一为 info', async () => {
-    await chrome.storage.sync.set({ settings: { logLevel: 'nope' } });
+  it('日志级别与悬停快捷键非法时归一为 info / ctrl', async () => {
+    await chrome.storage.sync.set({
+      settings: { logLevel: 'nope', hoverShortcut: 'Command' },
+    });
     const { client, frames } = connectGateway();
     client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 3 } });
 
     await vi.waitFor(() => {
       expect(frames.some((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG)).toBe(true);
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG)).toBe(true);
     });
     const config = frames.find((frame) => frame.type === MESSAGE_TYPES.LOG_CONFIG);
     expect(config.payload.level).toBe('info');
+    const contentConfig = frames.find((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG);
+    expect(contentConfig.payload.hoverShortcut).toBe('ctrl');
+  });
+
+  it('悬停快捷键配置随连接下发', async () => {
+    await chrome.storage.sync.set({ settings: { hoverShortcut: 'alt' } });
+    const { client, frames } = connectGateway();
+    client.postMessage({ type: MESSAGE_TYPES.PING, payload: { sentAt: 4 } });
+
+    await vi.waitFor(() => {
+      expect(frames.some((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG)).toBe(true);
+    });
+    const contentConfig = frames.find((frame) => frame.type === MESSAGE_TYPES.CONTENT_CONFIG);
+    expect(contentConfig.payload.hoverShortcut).toBe('alt');
   });
 });
 

@@ -31,7 +31,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ## 界面组件与图标
 
-- **daisyUI 5.8.1**：MIT License，Copyright (c) 2020 Pouya Saadeghi；作为 Tailwind CSS 插件在构建期使用，组件样式随页面产物分发。
+- **HyperUI**：MIT License，Copyright (c) Mark Mead；界面组件标记与 Tailwind 类复制自 <https://www.hyperui.dev/components/application/> 与 <https://www.hyperui.dev/components/neobrutalism/>（关于页），不通过 npm 安装、不引入运行时依赖。
 - **lucide-react**：ISC License，Copyright (c) Lucide Icons and Contributors；按名导入的界面图标随页面产物分发。
 
 ## 运行时依赖

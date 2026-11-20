@@ -2,16 +2,16 @@
  * E5 单选下拉
  *
  * 模块：公共模块（E）/ 共享展示组件
- * 职责：用 daisyUI 的 Dropdown 组件提供单选下拉：触发器使用 `select` 表单类，面板使用
- *       `menu` / `dropdown-content`；处理展开、关闭、键盘导航、焦点返回与单选 ARIA。
- * 依赖：React、`lucide-react`；只输出 daisyUI 类与 Tailwind 布局类，不携带自定义 CSS。
- * 实现阶段：P10（UI 规范化）
+ * 职责：用 `details` + `summary` + 单选列表实现产品内下拉：触发器与面板使用 HyperUI 表单/面板样式；
+ *       处理展开、关闭、键盘导航、焦点返回与单选 ARIA。
+ * 依赖：React、`lucide-react`；只输出 Tailwind 类，不携带自定义 CSS。
+ * 实现阶段：P10（UI 规范化）；HyperUI 迁移（替换旧下拉外观）
  *
  * 选项结构：{ value, label, detail?, disabled? }。label 为第一行，detail 为第二行。
  */
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Check } from 'lucide-react';
+import { Check, ChevronDown, LoaderCircle } from 'lucide-react';
 
 /**
  * @param {{
@@ -147,14 +147,19 @@ export default function Select({
     <details
       ref={detailsRef}
       id={selectId}
-      className={`dropdown w-full ${dropTop ? 'dropdown-top' : ''} ${className}`.trim()}
+      data-slot="select"
+      data-open={open ? 'true' : 'false'}
+      className={`relative w-full ${className}`.trim()}
       onToggle={handleToggle}
       onKeyDown={handleKeyDown}
       onBlur={handleBlur}
     >
       <summary
         ref={summaryRef}
-        className={`select select-sm w-full ${locked ? 'pointer-events-none opacity-60' : ''}`.trim()}
+        data-slot="select-trigger"
+        className={`flex w-full list-none items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm transition-colors [&::-webkit-details-marker]:hidden focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:focus-visible:ring-offset-gray-950 ${
+          locked ? 'pointer-events-none opacity-60' : 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800'
+        }`}
         aria-label={ariaLabel}
         aria-describedby={ariaDescribedBy}
         aria-haspopup="true"
@@ -164,20 +169,38 @@ export default function Select({
         onClick={handleSummaryClick}
         onKeyDown={handleSummaryKeyDown}
       >
-        <span className={`block min-w-0 flex-1 truncate ${current ? '' : 'text-base-content/60'}`}>
+        <span
+          className={`block min-w-0 flex-1 truncate ${
+            current ? '' : 'text-gray-500 dark:text-gray-400'
+          }`}
+        >
           {current ? current.label : placeholder}
         </span>
-        {loading ? <span className="loading loading-spinner loading-xs" aria-hidden="true" /> : null}
+        {loading ? (
+          <LoaderCircle className="size-4 shrink-0 animate-spin text-gray-500" aria-hidden="true" />
+        ) : (
+          <ChevronDown
+            className={`size-4 shrink-0 text-gray-500 transition-transform dark:text-gray-400 ${
+              open ? 'rotate-180' : ''
+            }`}
+            aria-hidden="true"
+          />
+        )}
       </summary>
       <ul
         ref={listRef}
         role="radiogroup"
         aria-label={ariaLabel}
-        className="menu dropdown-content mt-1 max-h-72 w-full overflow-y-auto rounded-box bg-base-100 p-2 shadow-sm"
+        data-slot="select-panel"
+        className={`absolute left-0 z-30 max-h-72 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-900 ${
+          dropTop ? 'bottom-full mb-1' : 'top-full mt-1'
+        }`}
       >
         {options.length === 0 ? (
           <li role="none">
-            <span className="text-sm opacity-60">{placeholder}</span>
+            <span className="block px-2 py-1.5 text-sm text-gray-500 dark:text-gray-400">
+              {placeholder}
+            </span>
           </li>
         ) : (
           options.map((option) => {
@@ -190,17 +213,24 @@ export default function Select({
                   aria-checked={selected}
                   data-value={option.value}
                   data-active={selected ? 'true' : 'false'}
+                  data-slot="select-option"
                   disabled={option.disabled}
-                  className={selected ? 'menu-active' : undefined}
+                  className={`flex w-full items-start justify-between gap-2 rounded-md px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    selected
+                      ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-200'
+                      : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800'
+                  }`}
                   onClick={() => choose(option)}
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm">{option.label}</span>
                     {option.detail ? (
-                      <span className="block truncate text-xs opacity-60">{option.detail}</span>
+                      <span className="block truncate text-xs text-gray-500 dark:text-gray-400">
+                        {option.detail}
+                      </span>
                     ) : null}
                   </span>
-                  {selected ? <Check size={14} aria-hidden="true" /> : null}
+                  {selected ? <Check size={14} className="mt-0.5 shrink-0" aria-hidden="true" /> : null}
                 </button>
               </li>
             );

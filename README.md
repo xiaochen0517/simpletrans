@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh.md)
 
-SimpleTrans is a Chrome extension (Manifest V3) that translates web pages in place and keeps the page bilingual: every translation is inserted right after the original paragraph instead of replacing it. Translate the whole page — the first batch covers the paragraphs around the current viewport and new paragraphs are submitted as you scroll — or translate a single paragraph by hovering over it and pressing `Ctrl`. Translations come from engine instances you configure yourself: OpenAI-compatible chat APIs (DeepSeek preset or any compatible endpoint) or Baidu Translate, each with its own credentials, batching, streaming and QPS settings, and results are cached locally so repeated paragraphs render instantly.
+SimpleTrans is a Chrome extension (Manifest V3) that translates web pages in place and keeps the page bilingual: every translation is inserted right after the original paragraph instead of replacing it. Translate the whole page — the first batch covers the paragraphs around the current viewport and new paragraphs are submitted as you scroll — or translate a single paragraph by hovering over it and pressing the configured hover shortcut (`Ctrl` by default). Translations come from engine instances you configure yourself: OpenAI-compatible chat APIs (DeepSeek preset or any compatible endpoint) or Baidu Translate, each with its own credentials, batching, streaming and QPS settings, and results are cached locally so repeated paragraphs render instantly.
 
 ## Installation
 
@@ -71,7 +71,7 @@ docs/              architecture, module details, requirement and bug records
 
 Main features:
 
-- **Two modes** — whole-page translation (viewport-first, with incremental submission on scroll) and single-paragraph translation (`Ctrl` while hovering).
+- **Two modes** — whole-page translation (viewport-first, with incremental submission on scroll) and single-paragraph translation (the configured hover shortcut, `Ctrl` by default).
 - **Multiple engine instances** — OpenAI-compatible chat APIs (DeepSeek preset or a custom endpoint) and Baidu Translate; each instance keeps its own credentials, parameters and prompt.
 - **Batching and streaming** — one request translates several paragraphs; OpenAI-compatible instances stream results while generating.
 - **Resilience** — retry on network and rate-limit errors, per-instance Baidu QPS limiting, batch-alignment split, per-paragraph retry.

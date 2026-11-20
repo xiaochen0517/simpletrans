@@ -17,14 +17,15 @@
  */
 export default function EmptyState({ icon, title, description, children }) {
   return (
-    <div className="card items-center gap-2.5 bg-base-100 p-8 text-center">
-      <span className="grid size-11 place-items-center rounded-box bg-base-300 text-primary" aria-hidden="true">
+    <div className="flex flex-col items-center gap-2 rounded-lg border border-gray-200 bg-white p-8 text-center shadow-sm dark:border-gray-700 dark:bg-gray-900">
+      <span
+        className="grid size-14 place-items-center rounded-full bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500"
+        aria-hidden="true"
+      >
         {icon}
       </span>
-      <p className="m-0 text-sm font-semibold">
-        {title}
-      </p>
-      {description ? <p className="m-0 text-sm leading-relaxed text-base-content/70 break-words">{description}</p> : null}
+      <p className="m-0 text-sm font-semibold text-gray-900 dark:text-white">{title}</p>
+      {description ? <p className="m-0 text-sm leading-relaxed text-gray-600 dark:text-gray-300 break-words">{description}</p> : null}
       {children ? <div className="flex flex-wrap items-center justify-center gap-2">{children}</div> : null}
     </div>
   );
