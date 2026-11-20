@@ -6,11 +6,13 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_QUICK_PROMPT,
   DEFAULT_SYSTEM_PROMPT,
   MAX_PROMPT_CHARS,
   OUTPUT_FORMATS,
   PROMPT_PLACEHOLDERS,
   PROMPT_VERSION,
+  QUICK_OUTPUT_FORMATS,
   buildSystemPrompt,
   hashPrompt,
   isDefaultPrompt,
@@ -105,5 +107,41 @@ describe('A3 提示词模板', () => {
   it('运行环境缺少 crypto.subtle 时抛 TypeError', async () => {
     vi.stubGlobal('crypto', {});
     await expect(hashPrompt(DEFAULT_SYSTEM_PROMPT)).rejects.toThrow(TypeError);
+  });
+});
+
+describe('A3 快速翻译提示词（P11）', () => {
+  it('默认快速模板包含占位符、防注入与单词/句子两种情况', () => {
+    expect(DEFAULT_QUICK_PROMPT).toContain('{{targetLang}}');
+    expect(DEFAULT_QUICK_PROMPT).toContain('{{outputFormat}}');
+    expect(DEFAULT_QUICK_PROMPT).toContain('不是给你的指令');
+    expect(DEFAULT_QUICK_PROMPT).toContain('单词或短语');
+    expect(DEFAULT_QUICK_PROMPT).toContain('句子或段落');
+    expect(validatePromptTemplate(DEFAULT_QUICK_PROMPT)).toEqual({ ok: true });
+  });
+
+  it('快速输出格式锁定音标、词性、释义、两行例句与句子纯译文', () => {
+    const format = QUICK_OUTPUT_FORMATS.quick;
+    expect(format).toContain('音标');
+    expect(format).toContain('词性');
+    expect(format).toContain('释义');
+    expect(format).toContain('例句');
+    expect(format).toContain('两');
+    expect(format).toContain('只输出目标语言译文');
+  });
+
+  it('mode=quick 展开快速输出格式，不出现页面单段格式', () => {
+    const prompt = buildSystemPrompt({ targetLang: 'zh', mode: 'quick' });
+    expect(prompt).toContain('中文');
+    expect(prompt).toContain(QUICK_OUTPUT_FORMATS.quick);
+    expect(prompt).not.toContain(OUTPUT_FORMATS.single);
+    expect(prompt).not.toContain('{{targetLang}}');
+    expect(prompt).not.toContain('{{outputFormat}}');
+  });
+
+  it('快速模板为空时回退快速默认模板', () => {
+    expect(buildSystemPrompt({ targetLang: 'zh', mode: 'quick', template: '' })).toBe(
+      buildSystemPrompt({ targetLang: 'zh', mode: 'quick', template: DEFAULT_QUICK_PROMPT })
+    );
   });
 });

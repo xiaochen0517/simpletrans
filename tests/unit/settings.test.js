@@ -9,10 +9,15 @@ import { installChrome } from '../helpers/load.js';
 import {
   CONFIG_VERSION,
   DEFAULT_SETTINGS,
+  POPUP_DEFAULT_TABS,
+  THEMES,
   getSettings,
   keyArea,
   normalizeKeyStorage,
+  normalizePopupDefaultTab,
   normalizeSettings,
+  normalizeTheme,
+  resolveTheme,
   saveSettings,
 } from '../../src/shared/settings.js';
 
@@ -29,6 +34,10 @@ describe('E2 设置 schema v2', () => {
     expect(DEFAULT_SETTINGS.targetLang).toBe('zh');
     expect(DEFAULT_SETTINGS.keyStorage).toBe('local');
     expect(DEFAULT_SETTINGS.activeInstanceId).toBeNull();
+    expect(DEFAULT_SETTINGS.popupDefaultTab).toBe('default');
+    expect(DEFAULT_SETTINGS.theme).toBe('system');
+    expect(POPUP_DEFAULT_TABS).toEqual(['default', 'quick']);
+    expect(THEMES).toEqual(['system', 'light', 'dark']);
   });
 
   it('默认值合并：缺字段补默认，不丢未知字段', async () => {
@@ -79,11 +88,40 @@ describe('E2 设置 schema v2', () => {
     expect(settings.configVersion).toBe(CONFIG_VERSION);
   });
 
+  it('popupDefaultTab 保存后读取', async () => {
+    await saveSettings({ popupDefaultTab: 'quick' });
+    expect((await getSettings()).popupDefaultTab).toBe('quick');
+    await saveSettings({ popupDefaultTab: 'nope' });
+    expect((await getSettings()).popupDefaultTab).toBe('default');
+  });
+
   it('keyStorage 归一：只认 sync，其余一律 local', () => {
     expect(normalizeKeyStorage('sync')).toBe('sync');
     expect(normalizeKeyStorage('local')).toBe('local');
     expect(normalizeKeyStorage('cloud')).toBe('local');
     expect(normalizeKeyStorage(undefined)).toBe('local');
+  });
+
+  it('弹窗初始页：只认 quick，其余回退 default，并可保存读取', () => {
+    expect(normalizePopupDefaultTab('quick')).toBe('quick');
+    expect(normalizePopupDefaultTab('default')).toBe('default');
+    expect(normalizePopupDefaultTab('nope')).toBe('default');
+    expect(normalizePopupDefaultTab(undefined)).toBe('default');
+    expect(normalizeSettings({ popupDefaultTab: 'quick' }).popupDefaultTab).toBe('quick');
+  });
+
+  it('主题：system / light / dark 归一，system 跟随系统', () => {
+    expect(normalizeTheme('light')).toBe('light');
+    expect(normalizeTheme('dark')).toBe('dark');
+    expect(normalizeTheme('system')).toBe('system');
+    expect(normalizeTheme('nope')).toBe('system');
+    expect(normalizeTheme(undefined)).toBe('system');
+
+    expect(resolveTheme('light', true)).toBe('light');
+    expect(resolveTheme('dark', false)).toBe('dark');
+    expect(resolveTheme('system', true)).toBe('dark');
+    expect(resolveTheme('system', false)).toBe('light');
+    expect(normalizeSettings({ theme: 'dark' }).theme).toBe('dark');
   });
 
   it('keyArea 按 keyStorage 归一返回分区', async () => {

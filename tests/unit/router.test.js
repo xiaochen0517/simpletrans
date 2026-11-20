@@ -1110,3 +1110,53 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.3）', () => {
     expect(item).not.toContain('Secret paragraph one');
   });
 });
+
+describe('A1 控制面：快速翻译与读取选区（P11）', () => {
+  it('ST_QUICK_TRANSLATE 交给 A5 并以 quick 模式调用引擎', async () => {
+    translate.mockResolvedValue({ text: '你好', usage: { totalTokens: 3 } });
+
+    const response = await handleMessage(
+      {
+        type: MESSAGE_TYPES.QUICK_TRANSLATE,
+        payload: { text: 'hello', targetLang: 'zh', instanceId: instance.id, traceId: 'quick-1' },
+      },
+      sender
+    );
+
+    expect(response.ok).toBe(true);
+    expect(response.data).toMatchObject({ text: '你好', targetLang: 'zh', chars: 5 });
+    expect(translate).toHaveBeenCalledTimes(1);
+    expect(translate.mock.calls[0][0].mode).toBe('quick');
+  });
+
+  it('ST_QUICK_TRANSLATE 参数错误原样返回失败', async () => {
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.QUICK_TRANSLATE, payload: { text: '   ' } },
+      sender
+    );
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.EMPTY_TEXT);
+  });
+
+  it('ST_GET_SELECTION 返回去空白文本；超长截断；不可注入返回空文本', async () => {
+    chrome.scripting.__executeResult = [{ result: '  hello  ' }];
+    const selected = await handleMessage(
+      { type: MESSAGE_TYPES.GET_SELECTION, payload: { traceId: 'sel-1' } },
+      sender
+    );
+    expect(selected).toEqual({ ok: true, data: { text: 'hello', truncated: false } });
+    const lastCall = chrome.scripting.__calls.at(-1);
+    expect(lastCall.api).toBe('executeScript');
+    expect(lastCall.details.target.tabId).toBe(1);
+
+    chrome.scripting.__executeResult = [{ result: 'x'.repeat(4005) }];
+    const truncated = await handleMessage({ type: MESSAGE_TYPES.GET_SELECTION }, sender);
+    expect(truncated.data.truncated).toBe(true);
+    expect(truncated.data.text).toHaveLength(4000);
+
+    chrome.scripting.__error = new Error('Cannot access contents of the page');
+    const failed = await handleMessage({ type: MESSAGE_TYPES.GET_SELECTION }, sender);
+    expect(failed).toEqual({ ok: true, data: { text: '', truncated: false } });
+    chrome.scripting.__error = null;
+  });
+});

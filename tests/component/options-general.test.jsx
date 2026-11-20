@@ -63,6 +63,18 @@ describe('即时保存', () => {
     expect(container.textContent).toContain('已保存');
   });
 
+  it('弹窗初始页即时保存', async () => {
+    const container = await mountOptions(harness, '#/general');
+    expect(container.querySelector('section[aria-label="弹窗"]')).toBeTruthy();
+    expect(container.textContent).toContain('打开时显示');
+
+    await chooseOption('弹窗打开时显示', '快速翻译页面', container);
+
+    const settings = await readSettings(harness);
+    expect(settings.popupDefaultTab).toBe('quick');
+    expect(findSelect('弹窗打开时显示', container).textContent).toContain('快速翻译页面');
+  });
+
   it('缓存开关即时保存', async () => {
     const container = await mountOptions(harness, '#/general');
     await click(container.querySelector('input[aria-label="启用译文缓存"]'));

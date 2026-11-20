@@ -1,10 +1,46 @@
 /*
  * 全局样式（弹窗、设置页与测试页共用）
- * 职责：只引入 Tailwind 与 daisyUI 默认 light/dark 主题；不覆盖主题变量，不新增自定义视觉规则。
- * 实现阶段：P7（主题入口）；UI 规范化（改为 daisyUI 默认主题）
+ * 职责：引入 Tailwind 与 daisyUI 主题；light 使用 daisyUI 默认主题，dark 在默认 dark 上调整 base 色阶，
+ *       保证页面背景、卡片/默认按钮与边框三档层次可辨；不新增其它自定义视觉规则。
+ * 实现阶段：P7（主题入口）；UI 规范化（改为 daisyUI 默认主题）；P11（深色色阶与主题切换）
  */
 @import "tailwindcss";
 
 @plugin "daisyui" {
-  themes: light --default, dark --prefersdark;
+  themes: light --default;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+  default: false;
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(22% 0.015 255);
+  --color-base-200: oklch(34% 0.02 255);
+  --color-base-300: oklch(42% 0.02 255);
+  --color-base-content: oklch(97% 0.01 255);
+  --color-primary: oklch(58% 0.233 277.117);
+  --color-primary-content: oklch(96% 0.018 272.314);
+  --color-secondary: oklch(65% 0.241 354.308);
+  --color-secondary-content: oklch(94% 0.028 342.258);
+  --color-accent: oklch(77% 0.152 181.912);
+  --color-accent-content: oklch(38% 0.063 188.416);
+  --color-neutral: oklch(14% 0.005 285.823);
+  --color-neutral-content: oklch(92% 0.004 286.32);
+  --color-info: oklch(74% 0.16 232.661);
+  --color-info-content: oklch(29% 0.066 243.157);
+  --color-success: oklch(76% 0.177 163.223);
+  --color-success-content: oklch(37% 0.077 168.94);
+  --color-warning: oklch(82% 0.189 84.429);
+  --color-warning-content: oklch(41% 0.112 45.904);
+  --color-error: oklch(71% 0.194 13.428);
+  --color-error-content: oklch(27% 0.105 12.094);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.25rem;
+  --radius-box: 0.5rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
 }

@@ -35,6 +35,7 @@ import {
   BAIDU_BATCH_SIZE,
   BAIDU_MAX_CONCURRENCY,
   BAIDU_QPS,
+  DEFAULT_QUICK_PROMPT,
   DEFAULT_SYSTEM_PROMPT,
   MAX_INSTANCES,
 } from '../../src/shared/config/registry.js';
@@ -88,8 +89,13 @@ describe('E3 实例 CRUD 与默认值', () => {
     expect(raw).toHaveLength(1);
     expect(raw[0]).not.toHaveProperty('systemPrompt');
     expect(raw[0]).not.toHaveProperty('apiKey');
-    const local = await readLocal([`systemPrompt:${created.id}`]);
+    const local = await readLocal([
+      `systemPrompt:${created.id}`,
+      `quickPrompt:${created.id}`,
+    ]);
     expect(local[`systemPrompt:${created.id}`]).toBe(DEFAULT_SYSTEM_PROMPT);
+    expect(local[`quickPrompt:${created.id}`]).toBe(DEFAULT_QUICK_PROMPT);
+    expect(created.quickPrompt).toBe(DEFAULT_QUICK_PROMPT);
   });
 
   it('createInstance 百度实例使用固定地址/模型并夹取批次范围', async () => {
@@ -492,6 +498,34 @@ describe('E3 提示词与公开字段', () => {
     await chrome.storage.local.set({ [`systemPrompt:${created.id}`]: '自定义 {{targetLang}} {{outputFormat}}' });
     [instance] = await getInstances();
     expect(instance.systemPrompt).toBe('自定义 {{targetLang}} {{outputFormat}}');
+  });
+
+  it('快速翻译提示词：默认写入、可更新、复制与删除', async () => {
+    const created = await createInstance({ type: 'openai' });
+    let local = await readLocal([`quickPrompt:${created.id}`]);
+    expect(local[`quickPrompt:${created.id}`]).toBe(DEFAULT_QUICK_PROMPT);
+
+    let [instance] = await getInstances();
+    expect(instance.quickPrompt).toBe(DEFAULT_QUICK_PROMPT);
+
+    const custom = '快速模板 {{targetLang}} {{outputFormat}}';
+    const updated = await updateInstance(created.id, { quickPrompt: custom });
+    expect(updated.quickPrompt).toBe(custom);
+    [instance] = await getInstances();
+    expect(instance.quickPrompt).toBe(custom);
+
+    await expect(updateInstance(created.id, { quickPrompt: '缺少占位符' })).rejects.toThrow(
+      '快速翻译提示词'
+    );
+
+    const duplicate = await duplicateInstance(created.id);
+    expect(duplicate.quickPrompt).toBe(custom);
+    local = await readLocal([`quickPrompt:${duplicate.id}`]);
+    expect(local[`quickPrompt:${duplicate.id}`]).toBe(custom);
+
+    await removeInstance(created.id);
+    local = await readLocal([`quickPrompt:${created.id}`]);
+    expect(local[`quickPrompt:${created.id}`]).toBeUndefined();
   });
 
   it('迁移前旧实例内提示词作为读取回退，local 优先', async () => {

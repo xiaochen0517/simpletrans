@@ -19,6 +19,7 @@ import {
   findButton,
   flush,
   mountOptions,
+  readSettings,
   setValue,
   unmountOptions,
 } from '../helpers/options.jsx';
@@ -42,9 +43,28 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await unmountOptions(harness);
+  document.documentElement.removeAttribute('data-theme');
+  document.documentElement.style.colorScheme = '';
 });
 
 describe('设置页壳层与概览', () => {
+  it('顶栏主题按钮在 light / dark 间切换并写入设置', async () => {
+    const container = await mountOptions(harness);
+
+    const toDark = container.querySelector('button[aria-label="切换为深色主题"]');
+    expect(toDark).toBeTruthy();
+    expect(document.documentElement.dataset.theme).toBe('light');
+
+    await click(toDark);
+    expect((await readSettings(harness)).theme).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+
+    const toLight = container.querySelector('button[aria-label="切换为浅色主题"]');
+    expect(toLight).toBeTruthy();
+    await click(toLight);
+    expect((await readSettings(harness)).theme).toBe('light');
+    expect(document.documentElement.dataset.theme).toBe('light');
+  });
   it('默认进入概览，显示当前翻译方式、语言、缓存、密钥、日志与实例健康', async () => {
     const container = await mountOptions(harness);
 
@@ -221,13 +241,16 @@ describe('设置页样式契约', () => {
     expect(source).not.toMatch(/\bop-[a-z]/);
   });
 
-  it('使用 daisyUI 默认主题，不新增自定义视觉 CSS', async () => {
+  it('使用 daisyUI 主题，dark 仅覆盖 base 色阶', async () => {
     const source = await readFile(join(process.cwd(), 'src/options/Options.jsx'), 'utf8');
     const globalCss = await readFile(join(process.cwd(), 'src/shared/global.css'), 'utf8');
 
     expect(source).toContain('bg-base-200');
     expect(source).not.toContain('@keyframes');
-    expect(globalCss).toContain('themes: light --default, dark --prefersdark');
+    expect(globalCss).toContain('themes: light --default');
+    expect(globalCss).toContain('name: "dark"');
+    expect(globalCss).toContain('--color-base-100: oklch(22% 0.015 255)');
+    expect(globalCss).toContain('--color-base-200: oklch(34% 0.02 255)');
     expect(globalCss).not.toContain('simpletrans-light');
   });
 

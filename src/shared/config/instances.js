@@ -8,7 +8,8 @@
  *       E3 OpenAI 兼容配置（openai.js）、E3 主机权限（host-permission.js）。
  * 实现阶段：P1（引擎层与密钥配置）；P6.2 增加实例参数归一与并发迁移；
  *           P8-2 改为多实例模型：公共字段、百度类型、每实例凭据、启用/当前实例、
- *           `storage.local` 提示词、`keyStorage` 迁移与 v1 → v2 迁移框架。
+ *           `storage.local` 提示词、`keyStorage` 迁移与 v1 → v2 迁移框架；
+ *           P11 增加快速翻译提示词（`quickPrompt:<id>`）的读写、复制与删除。
  *
  * 实例与设置写 `storage.sync`，提示词与凭据写 `storage.local`/`sync`（分区由 `keyStorage` 决定）。
  * 只有本模块能读凭据明文；公开字段只暴露 `hasKey`/`credentialStatus`/`requiresKey`。
@@ -26,6 +27,7 @@ import {
   DEFAULT_BATCH_MAX_CHARS,
   DEFAULT_BATCH_SIZE,
   DEFAULT_MAX_CONCURRENCY,
+  DEFAULT_QUICK_PROMPT,
   DEFAULT_SYSTEM_PROMPT,
   ENGINE_TYPE_IDS,
   MAX_INSTANCE_BYTES,
@@ -58,6 +60,7 @@ const log = createLogger('E3');
 /** 运行时字段：只存在于内存视图，不写 `storage.sync`。 */
 const RUNTIME_FIELDS = Object.freeze([
   'systemPrompt',
+  'quickPrompt',
   'apiKey',
   'appId',
   'secretKey',
@@ -107,6 +110,15 @@ function normalizeTimestamp(value, fallback) {
  */
 export function promptKey(id) {
   return STORAGE_KEYS.promptPrefix + id;
+}
+
+/**
+ * 取实例快速翻译提示词的存储键。
+ * @param {string} id
+ * @returns {string}
+ */
+export function quickPromptKey(id) {
+  return STORAGE_KEYS.quickPromptPrefix + id;
 }
 
 /**
@@ -278,6 +290,18 @@ export async function getInstances() {
     }
   }
 
+  const quickIds = instances
+    .filter((instance) => instance.type === ENGINE_TYPE_IDS.OPENAI)
+    .map((instance) => quickPromptKey(instance.id));
+  let quickPrompts = {};
+  if (quickIds.length > 0) {
+    try {
+      quickPrompts = await read('local', quickIds);
+    } catch {
+      quickPrompts = {};
+    }
+  }
+
   return instances.map((instance) => {
     if (instance.type !== ENGINE_TYPE_IDS.OPENAI) return instance;
     const stored = prompts[promptKey(instance.id)];
@@ -285,10 +309,15 @@ export async function getInstances() {
       typeof stored === 'string' && stored.trim() !== ''
         ? stored
         : legacyPrompts.get(String(instance.id));
+    const storedQuick = quickPrompts[quickPromptKey(instance.id)];
     return {
       ...instance,
       systemPrompt:
         typeof prompt === 'string' && prompt.trim() !== '' ? prompt : DEFAULT_SYSTEM_PROMPT,
+      quickPrompt:
+        typeof storedQuick === 'string' && storedQuick.trim() !== ''
+          ? storedQuick
+          : DEFAULT_QUICK_PROMPT,
     };
   });
 }
@@ -517,7 +546,7 @@ async function getInstanceView(instance) {
 }
 
 /**
- * 转为公开字段：不含凭据明文；OpenAI 含 endpoint/auth/headers/model/params/systemPrompt，
+ * 转为公开字段：不含凭据明文；OpenAI 含 endpoint/auth/headers/model/params/systemPrompt/quickPrompt，
  * 百度含 model 与批次参数，不支持类型只保留公共字段。
  *
  * `credentialFields` 只给出各凭据字段是否已填写（布尔），用于「部分配置」显示；
@@ -561,6 +590,7 @@ export function toPublicInstance(instance) {
       model: instance.model,
       params: instance.params,
       systemPrompt: instance.systemPrompt,
+      quickPrompt: instance.quickPrompt,
       batchSize: instance.batchSize,
       batchMaxChars: instance.batchMaxChars,
       maxConcurrency: instance.maxConcurrency,
@@ -646,13 +676,18 @@ export async function createInstance(input = {}) {
   const id = createId();
   const prompt =
     typeof source.systemPrompt === 'string' ? source.systemPrompt : DEFAULT_SYSTEM_PROMPT;
+  const quickPrompt =
+    typeof source.quickPrompt === 'string' ? source.quickPrompt : DEFAULT_QUICK_PROMPT;
   if (type === ENGINE_TYPE_IDS.OPENAI) {
     const promptCheck = validatePromptTemplate(prompt);
     if (!promptCheck.ok) throw new Error(promptCheck.error);
+    const quickCheck = validatePromptTemplate(quickPrompt);
+    if (!quickCheck.ok) throw new Error(`快速翻译提示词：${quickCheck.error}`);
   }
 
   const {
     systemPrompt: _prompt,
+    quickPrompt: _quickPrompt,
     id: _id,
     type: _type,
     createdAt: _createdAt,
@@ -692,12 +727,15 @@ export async function createInstance(input = {}) {
     updatedAt: now,
   });
   if (type === ENGINE_TYPE_IDS.OPENAI) merged.systemPrompt = prompt;
+  if (type === ENGINE_TYPE_IDS.OPENAI) merged.quickPrompt = quickPrompt;
   const validation = validateInstance(merged);
   if (!validation.ok) throw new Error(validation.errors.join('；'));
 
   const prospective = [...instances, merged].map(stripRuntimeFields);
   assertInstanceState(prospective);
-  if (type === ENGINE_TYPE_IDS.OPENAI) await write('local', { [promptKey(id)]: prompt });
+  if (type === ENGINE_TYPE_IDS.OPENAI) {
+    await write('local', { [promptKey(id)]: prompt, [quickPromptKey(id)]: quickPrompt });
+  }
 
   const settings = await getSettings();
   let nextSettings = null;
@@ -736,7 +774,14 @@ export async function updateInstance(id, patch = {}) {
   if (!getEngineType(existing.type)) throw new Error('不支持的实例类型，只能删除');
 
   const source = isPlainObject(patch) ? patch : {};
-  const { systemPrompt, id: _id, type: _type, createdAt: _createdAt, ...rest } = source;
+  const {
+    systemPrompt,
+    quickPrompt,
+    id: _id,
+    type: _type,
+    createdAt: _createdAt,
+    ...rest
+  } = source;
   const patchWithPreset = applyPresetSwitch(existing, rest);
 
   const merged = normalizeInstance({
@@ -748,6 +793,7 @@ export async function updateInstance(id, patch = {}) {
     updatedAt: Date.now(),
   });
   if (existing.type === ENGINE_TYPE_IDS.OPENAI) merged.systemPrompt = existing.systemPrompt;
+  if (existing.type === ENGINE_TYPE_IDS.OPENAI) merged.quickPrompt = existing.quickPrompt;
 
   let nextPrompt = null;
   if (existing.type === ENGINE_TYPE_IDS.OPENAI && typeof systemPrompt === 'string') {
@@ -755,6 +801,14 @@ export async function updateInstance(id, patch = {}) {
     if (!promptCheck.ok) throw new Error(promptCheck.error);
     nextPrompt = systemPrompt;
     merged.systemPrompt = nextPrompt;
+  }
+
+  let nextQuickPrompt = null;
+  if (existing.type === ENGINE_TYPE_IDS.OPENAI && typeof quickPrompt === 'string') {
+    const quickCheck = validatePromptTemplate(quickPrompt);
+    if (!quickCheck.ok) throw new Error(`快速翻译提示词：${quickCheck.error}`);
+    nextQuickPrompt = quickPrompt;
+    merged.quickPrompt = nextQuickPrompt;
   }
 
   if (isNameTaken(instances, merged.name, id)) throw new Error('实例名称已存在');
@@ -765,7 +819,10 @@ export async function updateInstance(id, patch = {}) {
   list[index] = merged;
   assertInstanceState(list.map(stripRuntimeFields));
 
-  if (nextPrompt != null) await write('local', { [promptKey(id)]: nextPrompt });
+  const promptWrites = {};
+  if (nextPrompt != null) promptWrites[promptKey(id)] = nextPrompt;
+  if (nextQuickPrompt != null) promptWrites[quickPromptKey(id)] = nextQuickPrompt;
+  if (Object.keys(promptWrites).length > 0) await write('local', promptWrites);
 
   const settings = await getSettings();
   let nextSettings = null;
@@ -786,6 +843,7 @@ export async function updateInstance(id, patch = {}) {
     preset: merged.type === ENGINE_TYPE_IDS.OPENAI ? merged.preset : null,
     fields: Object.keys(patchWithPreset).sort(),
     promptUpdated: nextPrompt != null,
+    quickPromptUpdated: nextQuickPrompt != null,
     activeChanged: Boolean(nextSettings),
   });
 
@@ -794,6 +852,8 @@ export async function updateInstance(id, patch = {}) {
       ...merged,
       systemPrompt:
         nextPrompt ?? (existing.type === ENGINE_TYPE_IDS.OPENAI ? existing.systemPrompt : undefined),
+      quickPrompt:
+        nextQuickPrompt ?? (existing.type === ENGINE_TYPE_IDS.OPENAI ? existing.quickPrompt : undefined),
     })
   );
 }
@@ -847,6 +907,7 @@ export async function duplicateInstance(id) {
     updatedAt: now,
   });
   if (merged.type === ENGINE_TYPE_IDS.OPENAI) merged.systemPrompt = source.systemPrompt;
+  if (merged.type === ENGINE_TYPE_IDS.OPENAI) merged.quickPrompt = source.quickPrompt;
   const validation = validateInstance(merged);
   if (!validation.ok) throw new Error(validation.errors.join('；'));
 
@@ -854,13 +915,22 @@ export async function duplicateInstance(id) {
   if (merged.type === ENGINE_TYPE_IDS.OPENAI && typeof source.systemPrompt === 'string') {
     await write('local', { [promptKey(newId)]: source.systemPrompt });
   }
+  if (merged.type === ENGINE_TYPE_IDS.OPENAI && typeof source.quickPrompt === 'string') {
+    await write('local', { [quickPromptKey(newId)]: source.quickPrompt });
+  }
   await writeSyncState({ instances: [...instances, merged] });
   log.info('config.instance.duplicate', '已复制翻译实例', {
     instanceId: newId,
     sourceId: id,
     type: merged.type,
   });
-  return toPublicInstance(await getInstanceView({ ...merged, systemPrompt: source.systemPrompt }));
+  return toPublicInstance(
+    await getInstanceView({
+      ...merged,
+      systemPrompt: source.systemPrompt,
+      quickPrompt: source.quickPrompt,
+    })
+  );
 }
 
 /**
@@ -879,6 +949,7 @@ export async function removeInstance(id) {
   if (activeInstanceId === id) activeInstanceId = await electActiveId(remaining);
 
   await removeKeys('local', promptKey(id));
+  await removeKeys('local', quickPromptKey(id));
   await removeKeys('local', credentialKey(id));
   await removeKeys('sync', credentialKey(id));
 

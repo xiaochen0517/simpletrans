@@ -74,7 +74,7 @@ export default function InstanceCard({
       aria-label={`翻译实例 ${instance.name}`}
     >
       <div className="flex items-start gap-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-base-200 text-primary" aria-hidden="true">
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-base-300 text-primary" aria-hidden="true">
           <Icon size={15} />
         </span>
         <div className="min-w-0 flex-1">

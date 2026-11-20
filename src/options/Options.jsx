@@ -3,7 +3,7 @@
  *
  * 模块：插件独立页面（C）/ 设置页
  * 职责：分区导航与哈希路由、全局数据加载（设置 / 实例公开字段 / 缓存占用）、写操作串行与刷新、
- *       全局保存状态与 toast、外部变更提示、编辑抽屉与新增对话框的挂载、未保存离开兜底。
+ *       全局保存状态与 toast、外部变更提示、实例编辑弹窗与新增对话框的挂载、未保存离开兜底。
  * 依赖：React、`lucide-react`、E1（protocol）、E2（settings）、E3（instances 公开字段）、
  *       E4（日志）、各分区与组件、设置页共享工具。
  * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
@@ -19,12 +19,14 @@ import {
   FlaskConical,
   Info,
   LayoutDashboard,
+  Moon,
   Settings2,
   Sparkles,
+  Sun,
 } from 'lucide-react';
 import { MESSAGE_TYPES } from '../shared/protocol.js';
 import { STORAGE_KEYS } from '../shared/storage.js';
-import { getSettings } from '../shared/settings.js';
+import { getSettings, resolveTheme, saveSettings } from '../shared/settings.js';
 import { AppContext, DEFAULT_ROUTE, ROUTES, openTestPage, sendToBackground } from './lib.js';
 import Toast from './components/toast.jsx';
 import CreateInstance from './components/create-instance.jsx';
@@ -103,6 +105,11 @@ export default function Options() {
     busy: false,
   });
   const [clearCacheRequest, setClearCacheRequest] = useState(false);
+  const [systemDark, setSystemDark] = useState(() =>
+    Boolean(globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches)
+  );
+
+  const resolvedTheme = resolveTheme(settings?.theme, systemDark);
 
   const writeDepth = useRef(0);
   const writeChain = useRef(Promise.resolve());
@@ -193,6 +200,24 @@ export default function Options() {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  // 跟随系统暗色只在 theme=system 时生效；显式主题不受系统变化影响。
+  useEffect(() => {
+    const query = globalThis.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!query?.addEventListener) return undefined;
+    const onChange = (event) => setSystemDark(event.matches);
+    query.addEventListener('change', onChange);
+    return () => {
+      query.removeEventListener('change', onChange);
+    };
+  }, []);
+
+  // 把实际主题写到根节点，daisyUI 与原生控件共用同一 color-scheme。
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = resolvedTheme;
+    root.style.colorScheme = resolvedTheme;
+  }, [resolvedTheme]);
 
   useEffect(() => {
     const onFocus = () => {
@@ -294,9 +319,19 @@ export default function Options() {
     [refreshInstances, refreshSettings]
   );
 
+  /** 在 light / dark 之间切换并写入设置；失败由壳层显示保存失败。 */
+  const toggleTheme = useCallback(async () => {
+    const next = resolvedTheme === 'dark' ? 'light' : 'dark';
+    try {
+      await mutate(() => saveSettings({ theme: next }));
+      notify('ok', next === 'dark' ? '已切换为深色主题' : '已切换为浅色主题');
+    } catch {
+      notify('error', '切换主题失败，请重试');
+    }
+  }, [mutate, notify, resolvedTheme]);
+
   // ------------------------------------------------------------ 外部变更同步
-  useEffect(() => {
-    const onChanged = (changes, area) => {
+  useEffect(() => {    const onChanged = (changes, area) => {
       if (area !== 'sync') return;
       const keys = Object.keys(changes ?? {});
       if (!keys.includes(STORAGE_KEYS.settings) && !keys.includes(STORAGE_KEYS.instances)) return;
@@ -326,8 +361,8 @@ export default function Options() {
     };
   }, [fetchInstances, fetchSettings]);
 
-  // ---------------------------------------------------------- 抽屉与对话框
-  /** 打开实例编辑抽屉，并记录当前 updatedAt 作为外部变更基线。 */
+  // ---------------------------------------------------------- 弹窗与对话框
+  /** 打开实例编辑弹窗，并记录当前 updatedAt 作为外部变更基线。 */
   const openEditor = useCallback((id) => {
     const target = instancesRef.current.find((instance) => instance.id === id);
     editorStampRef.current = target?.updatedAt ?? null;
@@ -389,7 +424,7 @@ export default function Options() {
     };
   }, [editorDirty]);
 
-  // 实例被外部删除时关闭抽屉。
+  // 实例被外部删除时关闭弹窗。
   useEffect(() => {
     if (!editorId || loading) return;
     if (!instances.some((instance) => instance.id === editorId)) {
@@ -524,6 +559,20 @@ export default function Options() {
                   {statusText}
                 </span>
                 {version ? <span className="badge badge-sm badge-ghost">v{version}</span> : null}
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  aria-label={resolvedTheme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
+                  title={resolvedTheme === 'dark' ? '切换为浅色主题' : '切换为深色主题'}
+                  onClick={() => void toggleTheme()}
+                  disabled={savingCount > 0}
+                >
+                  {resolvedTheme === 'dark' ? (
+                    <Sun size={15} aria-hidden="true" />
+                  ) : (
+                    <Moon size={15} aria-hidden="true" />
+                  )}
+                </button>
                 <button
                   type="button"
                   className="btn btn-sm btn-ghost"

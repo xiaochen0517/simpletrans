@@ -266,6 +266,23 @@ describe('A3 OpenAI 请求构造：提示词与批量', () => {
     expect(request.body.messages[0].content).toContain('JSONL');
     expect(request.body.messages[1].content).toBe(text);
   });
+
+  it('快速模式 system 使用快速输出格式（单词字段 / 句子纯译文）', () => {
+    const request = buildRequest({
+      config: deepseek(),
+      apiKey: 'k',
+      targetLang: 'zh',
+      systemPrompt: '快速模板 {{targetLang}}。{{outputFormat}}',
+      text: 'hello',
+      mode: 'quick',
+    });
+    const system = request.body.messages[0].content;
+    expect(system).toContain('快速模板 中文。');
+    expect(system).toContain('音标');
+    expect(system).toContain('只输出目标语言译文');
+    expect(system).not.toContain('{{targetLang}}');
+    expect(system).not.toContain('{{outputFormat}}');
+  });
 });
 
 describe('A3 OpenAI 请求构造：校验失败不发请求', () => {

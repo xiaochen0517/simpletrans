@@ -8,7 +8,8 @@
  *           `normalizeDomain` 与两条缓存消息在 P5 落地；`ST_ROUTE` / `ST_START` / `ST_TOGGLE` /
  *           `ST_PAGE_SUBMIT` 在 P6.1 落地，见 docs/modules/E1-消息协议.md；本轮段落去掉上下文，
  *           `hostId` 兼作结果帧 `itemId`）；P9 删除 `ST_ENGINE_CHANGED` 与 `fallbackable`，
- *           失败段「刷新」复用 `ST_PAGE_SUBMIT(scope='single')`
+ *           失败段「刷新」复用 `ST_PAGE_SUBMIT(scope='single')`；
+ *           P11 增加 `ST_QUICK_TRANSLATE` 与 `ST_GET_SELECTION`（弹窗快速翻译）
  */
 
 /** 统一错误码。分类依据见项目架构 6.8。 */
@@ -73,6 +74,8 @@ export const MESSAGE_TYPES = Object.freeze({
   CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部标记与译文（P4）；响应 removed（P6.1）
   LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表（P2）
   TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译（P2）
+  QUICK_TRANSLATE: 'ST_QUICK_TRANSLATE', // 弹窗 → 后台：快速翻译（P11），返回纯文本译文
+  GET_SELECTION: 'ST_GET_SELECTION', // 弹窗 → 后台：读取当前活动标签页选中文字（P11）
   CACHE_STATS: 'ST_CACHE_STATS', // 设置页 → 后台：读取缓存占用（P5）
   CLEAR_CACHE: 'ST_CLEAR_CACHE', // 设置页 → 后台：清空缓存（P5）
 

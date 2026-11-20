@@ -137,6 +137,8 @@ afterEach(async () => {
   });
   container.remove();
   delete globalThis.chrome;
+  document.documentElement.removeAttribute('data-theme');
+  document.documentElement.style.colorScheme = '';
 });
 
 describe('弹窗基础信息', () => {
@@ -298,6 +300,66 @@ describe('翻译方式切换', () => {
   });
 });
 
+describe('弹窗标签与初始页', () => {
+  it('渲染两个标签，默认选中「默认」页', async () => {
+    await renderPopup();
+
+    const defaultTab = container.querySelector('#popup-tab-default');
+    const quickTab = container.querySelector('#popup-tab-quick');
+    expect(container.querySelector('[role="tablist"]')).toBeTruthy();
+    expect(defaultTab.getAttribute('aria-selected')).toBe('true');
+    expect(quickTab.getAttribute('aria-selected')).toBe('false');
+    expect(defaultTab.textContent).toContain('默认');
+    expect(quickTab.textContent).toContain('快速翻译');
+    const quickPanel = container.querySelector('#popup-panel-quick');
+    expect(quickPanel).toBeTruthy();
+    expect(quickPanel.className).toContain('hidden');
+  });
+
+  it('popupDefaultTab=quick 时先显示快速翻译页', async () => {
+    await chromeStub.storage.sync.set({
+      [STORAGE_KEYS.settings]: { logLevel: 'info', targetLang: 'zh', popupDefaultTab: 'quick' },
+    });
+    await renderPopup();
+
+    expect(container.querySelector('#popup-tab-quick').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#quick-input')).toBeTruthy();
+    expect(container.querySelector('#popup-panel-default').className).toContain('hidden');
+  });
+
+  it('按 settings.theme 应用深色主题', async () => {
+    await chromeStub.storage.sync.set({
+      [STORAGE_KEYS.settings]: { logLevel: 'info', targetLang: 'zh', theme: 'dark' },
+    });
+    await renderPopup();
+
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.style.colorScheme).toBe('dark');
+  });
+
+  it('点击与方向键切换标签，切换不写 popupDefaultTab', async () => {
+    await renderPopup();
+
+    await click(container.querySelector('#popup-tab-quick'));
+    expect(container.querySelector('#quick-input')).toBeTruthy();
+    expect(container.querySelector('#popup-panel-quick').className).not.toContain('hidden');
+    expect(container.querySelector('#popup-tab-quick').getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => {
+      container
+        .querySelector('#popup-tab-quick')
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('#popup-panel-default').className).not.toContain('hidden');
+    expect(container.querySelector('#popup-panel-quick').className).toContain('hidden');
+    expect(container.querySelector('#popup-tab-default').getAttribute('aria-selected')).toBe('true');
+
+    const stored = await chromeStub.storage.sync.get(STORAGE_KEYS.settings);
+    expect(stored[STORAGE_KEYS.settings].popupDefaultTab).toBeUndefined();
+  });
+});
+
 describe('图标导航入口', () => {
   it('点击「设置」调用 openOptionsPage', async () => {
     await renderPopup();
@@ -354,11 +416,12 @@ describe('尺寸与样式契约', () => {
     expect(source).toContain('grid grid-cols-2 gap-2');
   });
 
-  it('共享样式使用 daisyUI 默认 light/dark 主题', async () => {
+  it('共享样式使用 daisyUI 主题，dark 覆盖 base 色阶', async () => {
     const css = await readFile(join(process.cwd(), 'src/shared/global.css'), 'utf8');
 
-    expect(css).toContain('themes: light --default, dark --prefersdark');
+    expect(css).toContain('themes: light --default');
+    expect(css).toContain('name: "dark"');
+    expect(css).toContain('--color-base-100: oklch(22% 0.015 255)');
     expect(css).not.toContain('simpletrans-light');
-    expect(css).not.toContain('@plugin "daisyui/theme"');
   });
 });

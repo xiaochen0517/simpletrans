@@ -1,13 +1,14 @@
 /**
- * C 实例编辑抽屉
+ * C 实例编辑弹窗
  *
  * 模块：插件独立页面（C）/ 设置页组件
  * 职责：按类型编辑一个已保存实例：基础信息、连接（baseUrl/path/query/stream）、认证、模型、
  *       生成参数（temperature/top_p/max_tokens/思考强度/额外参数）、批次与并发（含百度接口 QPS）、
- *       提示词与凭据；域名权限在保存手势内按需申请；未保存离开需确认。
+ *       两套提示词（默认翻译 / 快速翻译）与凭据；域名权限在保存手势内按需申请；未保存离开需确认。
  * 依赖：React、`lucide-react`、E3（instances CRUD、registry 校验常量、openai 配置）、
  *       设置页共享工具与字段/徽标/对话框组件。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）；P9 增加百度实例「接口 QPS」。
+ * 实现阶段：P8-3（设置页内容分类与 UI 规范化）；P9 增加百度实例「接口 QPS」；
+ *           P11 改为居中弹窗并增加快速翻译提示词。
  *
  * 本组件不读取凭据明文：凭据输入框始终为空，占位文字说明「留空表示不修改」。
  */
@@ -49,6 +50,7 @@ import {
   BAIDU_BATCH_SIZE,
   BAIDU_MAX_CONCURRENCY,
   BAIDU_QPS,
+  DEFAULT_QUICK_PROMPT,
   DEFAULT_SYSTEM_PROMPT,
   MAX_INSTANCE_NAME_CHARS,
   MAX_MODEL_CHARS,
@@ -154,6 +156,7 @@ export function toDraft(instance) {
     maxConcurrency: String(instance.maxConcurrency ?? (isOpenAI ? 4 : 1)),
     qps: String(instance.qps ?? 1),
     systemPrompt: String(instance.systemPrompt ?? DEFAULT_SYSTEM_PROMPT),
+    quickPrompt: String(instance.quickPrompt ?? DEFAULT_QUICK_PROMPT),
   };
 }
 
@@ -284,6 +287,8 @@ function validateDraft(draft, instances, selfId) {
 
     const promptCheck = validatePromptTemplate(draft.systemPrompt);
     if (!promptCheck.ok) errors.systemPrompt = promptCheck.error;
+    const quickPromptCheck = validatePromptTemplate(draft.quickPrompt);
+    if (!quickPromptCheck.ok) errors.quickPrompt = `快速翻译提示词：${quickPromptCheck.error}`;
   }
 
   const batchLimits =
@@ -393,11 +398,12 @@ export function toInstancePatch(draft) {
         })),
     },
     systemPrompt: draft.systemPrompt,
+    quickPrompt: draft.quickPrompt,
   };
 }
 
 /**
- * 设置页实例编辑抽屉。
+ * 设置页实例编辑弹窗。
  * @param {{
  *   instance: Record<string, any>,
  *   active: boolean,
@@ -430,7 +436,8 @@ export default function InstanceEditor({
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [conflictOpen, setConflictOpen] = useState(externalChange);
   const promptRef = useRef(null);
-  const drawerRef = useRef(null);
+  const quickPromptRef = useRef(null);
+  const modalRef = useRef(null);
   const askedOriginsRef = useRef(new Set());
 
   const isOpenAI = instance.type === 'openai';
@@ -479,7 +486,7 @@ export default function InstanceEditor({
   // 打开时焦点进入名称输入框，关闭后回到触发元素。
   useEffect(() => {
     const previous = typeof document !== 'undefined' ? document.activeElement : null;
-    const first = drawerRef.current?.querySelector('#ed-name');
+    const first = modalRef.current?.querySelector('#ed-name');
     if (first && typeof first.focus === 'function') first.focus();
     return () => {
       if (previous && typeof previous.focus === 'function' && previous.isConnected !== false) {
@@ -492,12 +499,12 @@ export default function InstanceEditor({
     };
   }, []);
 
-  // 抽屉内 Tab 循环；嵌套确认弹窗打开时交给弹窗自己处理。
+  // 弹窗内 Tab 循环；嵌套确认弹窗打开时交给弹窗自己处理。
   useEffect(() => {
     const onKeyDown = (event) => {
-      if (event.key !== 'Tab' || !drawerRef.current) return;
+      if (event.key !== 'Tab' || !modalRef.current) return;
       if (confirmDiscard || confirmClear) return;
-      const items = [...drawerRef.current.querySelectorAll(FOCUSABLE)];
+      const items = [...modalRef.current.querySelectorAll(FOCUSABLE)];
       if (items.length === 0) return;
       const first = items[0];
       const last = items[items.length - 1];
@@ -574,15 +581,21 @@ export default function InstanceEditor({
     update('preset', 'custom');
   }
 
-  /** 在提示词光标处插入占位符。 */
-  function insertPromptToken(token) {
-    const element = promptRef.current;
-    const start = Number.isInteger(element?.selectionStart) ? element.selectionStart : draft.systemPrompt.length;
+  /**
+   * 在指定提示词文本域的光标处插入占位符。
+   * @param {'systemPrompt'|'quickPrompt'} field
+   * @param {{ current: HTMLTextAreaElement | null }} ref
+   * @param {string} token
+   */
+  function insertPromptToken(field, ref, token) {
+    const current = String(draft[field] ?? '');
+    const element = ref.current;
+    const start = Number.isInteger(element?.selectionStart) ? element.selectionStart : current.length;
     const end = Number.isInteger(element?.selectionEnd) ? element.selectionEnd : start;
-    const next = `${draft.systemPrompt.slice(0, start)}${token}${draft.systemPrompt.slice(end)}`;
-    update('systemPrompt', next);
+    const next = `${current.slice(0, start)}${token}${current.slice(end)}`;
+    update(field, next);
     const placeCursor = () => {
-      const target = promptRef.current;
+      const target = ref.current;
       if (!target) return;
       target.focus();
       try {
@@ -705,15 +718,16 @@ export default function InstanceEditor({
       : '所有大模型实例固定使用 JSONL 批量；批次与并发只影响调度，不进入缓存 key。';
 
   const promptCount = draft.systemPrompt.length;
+  const quickPromptCount = draft.quickPrompt.length;
 
   return (
-    <div className="modal modal-open items-stretch justify-items-end p-0">
+    <div className="modal modal-open p-4">
       <div
-        className="flex h-full w-full max-w-md flex-col bg-base-100 max-md:max-w-none"
+        className="modal-box flex max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-4xl flex-col overflow-hidden p-0"
         role="dialog"
         aria-modal="true"
         aria-labelledby="editor-title"
-        ref={drawerRef}
+        ref={modalRef}
       >
         <header className="flex items-start gap-2.5 border-b border-base-300 p-4">
           <div className="min-w-0 flex-1">
@@ -730,7 +744,7 @@ export default function InstanceEditor({
             type="button"
             className="btn btn-sm btn-circle btn-ghost"
             onClick={requestClose}
-            aria-label="关闭编辑抽屉"
+            aria-label="关闭编辑弹窗"
           >
             <X size={16} aria-hidden="true" />
           </button>
@@ -1506,63 +1520,114 @@ export default function InstanceEditor({
                 </div>
               </section>
 
-              <details className="collapse bg-base-200">
-                <summary>高级参数（提示词）</summary>
-                <div className="flex flex-col gap-3 pt-3">
-                  <Field
-                    id="ed-prompt"
-                    label="翻译 system 提示词"
-                    error={errors.systemPrompt}
-                    help="必须保留 {{targetLang}} 与 {{outputFormat}}，不能出现其它占位符；只保存在本机，不随账号同步。"
-                  >
-                    <textarea
+              <details className="collapse collapse-arrow bg-base-200">
+                <summary className="collapse-title text-sm font-semibold">高级参数（提示词）</summary>
+                <div className="collapse-content flex flex-col gap-4 pt-3">
+                  <div className="flex flex-col gap-3">
+                    <Field
                       id="ed-prompt"
-                      ref={promptRef}
-                      className="textarea w-full font-mono text-xs"
-                      rows={10}
-                      value={draft.systemPrompt}
-                      onChange={(event) => update('systemPrompt', event.target.value)}
-                      spellCheck={false}
-                      disabled={saving}
-                    />
-                  </Field>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      className="btn btn-xs btn-outline"
-                      onClick={() => insertPromptToken('{{targetLang}}')}
-                      disabled={saving}
+                      label="默认翻译提示词"
+                      error={errors.systemPrompt}
+                      help="用于整页与悬停段落翻译；必须保留 {{targetLang}} 与 {{outputFormat}}，不能出现其它占位符；只保存在本机，不随账号同步。"
                     >
-                      插入目标语言
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-xs btn-outline"
-                      onClick={() => insertPromptToken('{{outputFormat}}')}
-                      disabled={saving}
+                      <textarea
+                        id="ed-prompt"
+                        ref={promptRef}
+                        className="textarea w-full font-mono text-xs"
+                        rows={10}
+                        value={draft.systemPrompt}
+                        onChange={(event) => update('systemPrompt', event.target.value)}
+                        spellCheck={false}
+                        disabled={saving}
+                      />
+                    </Field>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => insertPromptToken('systemPrompt', promptRef, '{{targetLang}}')}
+                        disabled={saving}
+                      >
+                        插入目标语言
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => insertPromptToken('systemPrompt', promptRef, '{{outputFormat}}')}
+                        disabled={saving}
+                      >
+                        插入输出格式
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => update('systemPrompt', DEFAULT_SYSTEM_PROMPT)}
+                        disabled={saving}
+                      >
+                        恢复默认提示词
+                      </button>
+                      <span className="text-xs leading-relaxed text-base-content/60 break-words">
+                        {promptCount} / {MAX_PROMPT_CHARS}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-3 border-t border-base-300 pt-3">
+                    <Field
+                      id="ed-quick-prompt"
+                      label="快速翻译提示词"
+                      error={errors.quickPrompt}
+                      help="只用于弹窗快速翻译：单词返回音标、词性、释义与两行例句，句子只返回译文；必须保留 {{targetLang}} 与 {{outputFormat}}；只保存在本机。"
                     >
-                      插入输出格式
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-xs btn-outline"
-                      onClick={() => update('systemPrompt', DEFAULT_SYSTEM_PROMPT)}
-                      disabled={saving}
-                    >
-                      恢复默认提示词
-                    </button>
-                    <span className="text-xs leading-relaxed text-base-content/60 break-words">
-                      {promptCount} / {MAX_PROMPT_CHARS}
-                    </span>
+                      <textarea
+                        id="ed-quick-prompt"
+                        ref={quickPromptRef}
+                        className="textarea w-full font-mono text-xs"
+                        rows={10}
+                        value={draft.quickPrompt}
+                        onChange={(event) => update('quickPrompt', event.target.value)}
+                        spellCheck={false}
+                        disabled={saving}
+                      />
+                    </Field>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => insertPromptToken('quickPrompt', quickPromptRef, '{{targetLang}}')}
+                        disabled={saving}
+                      >
+                        插入目标语言
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => insertPromptToken('quickPrompt', quickPromptRef, '{{outputFormat}}')}
+                        disabled={saving}
+                      >
+                        插入输出格式
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline"
+                        onClick={() => update('quickPrompt', DEFAULT_QUICK_PROMPT)}
+                        disabled={saving}
+                      >
+                        恢复默认提示词
+                      </button>
+                      <span className="text-xs leading-relaxed text-base-content/60 break-words">
+                        {quickPromptCount} / {MAX_PROMPT_CHARS}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </details>
             </>
           ) : null}
 
-          <details className="collapse bg-base-200" open={!isOpenAI}>
-            <summary>批次与并发</summary>
-            <div className="flex flex-col gap-3 pt-3">
+          <details className="collapse collapse-arrow bg-base-200" open={!isOpenAI}>
+            <summary className="collapse-title text-sm font-semibold">批次与并发</summary>
+            <div className="collapse-content flex flex-col gap-3 pt-3">
               <p className="text-sm leading-relaxed text-base-content/70 break-words">{batchLimitText}</p>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 <Field id="ed-batch-size" label="单批段数" error={errors.batchSize}>

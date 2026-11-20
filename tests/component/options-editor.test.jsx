@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
- * 设置页实例编辑抽屉的组件测试（P8-3）
+ * 设置页实例编辑弹窗的组件测试（P8-3 / P11）
  *
  * 覆盖：字段回填与凭据不回填明文、字段级校验、名称唯一、保存写入实例与凭据、
  *       生成参数开关、认证方式切换（无认证）、百度部分配置、域名权限申请与拒绝、
- *       清除凭据确认、未保存离开提示。
+ *       清除凭据确认、未保存离开提示、居中弹窗外壳与两套提示词。
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -20,6 +20,7 @@ import {
   unmountOptions,
 } from '../helpers/options.jsx';
 import { createInstance, writeCredentials } from '../../src/shared/config/instances.js';
+import { DEFAULT_QUICK_PROMPT } from '../../src/shared/config/registry.js';
 import { saveSettings } from '../../src/shared/settings.js';
 
 /** @type {ReturnType<typeof createHarness>} */
@@ -65,7 +66,7 @@ function card(name) {
   );
 }
 
-/** 打开某实例的编辑抽屉。 */
+/** 打开某实例的编辑弹窗。 */
 async function openEditor(container, name) {
   const target = card(name);
   const edit = [...target.querySelectorAll('button')].find((button) =>
@@ -219,7 +220,10 @@ describe('凭据与认证', () => {
 
     await click(findButton('清除凭据', drawer));
     expect(container.textContent).toContain('清除该实例的凭据？');
-    const confirm = [...container.querySelectorAll('.modal-box button')].find(
+    const dialog = [...container.querySelectorAll('.modal-box')].find((box) =>
+      box.textContent.includes('清除该实例的凭据？')
+    );
+    const confirm = [...dialog.querySelectorAll('button')].find(
       (button) => button.textContent.trim() === '清除凭据'
     );
     await click(confirm);
@@ -345,5 +349,64 @@ describe('百度接口 QPS（P9）', () => {
 
     expect(drawer.querySelector('#ed-qps')).toBeNull();
     expect(drawer.textContent).not.toContain('接口 QPS');
+  });
+});
+
+describe('实例编辑弹窗与两套提示词（P11）', () => {
+  it('可折叠区块有标题、展开箭头与内容容器', async () => {
+    const container = await mountOptions(harness, '#/instances');
+    const editor = await openEditor(container, 'DeepSeek');
+
+    const sections = [...editor.querySelectorAll('details.collapse')];
+    expect(sections.length).toBeGreaterThanOrEqual(2);
+    for (const details of sections) {
+      expect(details.className).toContain('collapse-arrow');
+      const summary = details.querySelector(':scope > summary');
+      expect(summary.className).toContain('collapse-title');
+      expect(summary.textContent.trim()).not.toBe('');
+      expect(details.querySelector(':scope > .collapse-content')).toBeTruthy();
+    }
+  });
+
+  it('编辑界面为居中弹窗，而不是右侧抽屉', async () => {
+    const container = await mountOptions(harness, '#/instances');
+    const editor = await openEditor(container, 'DeepSeek');
+
+    expect(editor.className).toContain('modal-box');
+    expect(editor.className).toContain('max-w-4xl');
+    const modal = editor.closest('.modal');
+    expect(modal.className).not.toContain('justify-items-end');
+  });
+
+  it('同时显示默认与快速提示词，保存快速提示词到 local', async () => {
+    const container = await mountOptions(harness, '#/instances');
+    const editor = await openEditor(container, 'DeepSeek');
+
+    expect(editor.querySelector('#ed-prompt').value).toContain('{{targetLang}}');
+    expect(editor.querySelector('#ed-quick-prompt').value).toBe(DEFAULT_QUICK_PROMPT);
+    expect(editor.textContent).toContain('默认翻译提示词');
+    expect(editor.textContent).toContain('快速翻译提示词');
+
+    await setValue(editor.querySelector('#ed-quick-prompt'), '快速 {{targetLang}} {{outputFormat}}');
+    await save(container);
+
+    const local = await harness.chrome.storage.local.get(`quickPrompt:${fixtures.deepseek.id}`);
+    expect(local[`quickPrompt:${fixtures.deepseek.id}`]).toBe(
+      '快速 {{targetLang}} {{outputFormat}}'
+    );
+  });
+
+  it('快速提示词缺少占位符时报错且不保存', async () => {
+    const container = await mountOptions(harness, '#/instances');
+    const editor = await openEditor(container, 'DeepSeek');
+    const before = (await readInstances(harness)).find((item) => item.id === fixtures.deepseek.id);
+
+    await setValue(editor.querySelector('#ed-quick-prompt'), '没有占位符');
+    await save(container);
+    await flush();
+
+    expect(editor.textContent).toContain('快速翻译提示词：提示词缺少');
+    const after = (await readInstances(harness)).find((item) => item.id === fixtures.deepseek.id);
+    expect(after.updatedAt).toBe(before.updatedAt);
   });
 });

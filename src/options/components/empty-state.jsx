@@ -18,7 +18,7 @@
 export default function EmptyState({ icon, title, description, children }) {
   return (
     <div className="card items-center gap-2.5 bg-base-100 p-8 text-center">
-      <span className="grid size-11 place-items-center rounded-box bg-base-200 text-primary" aria-hidden="true">
+      <span className="grid size-11 place-items-center rounded-box bg-base-300 text-primary" aria-hidden="true">
         {icon}
       </span>
       <p className="m-0 text-sm font-semibold">

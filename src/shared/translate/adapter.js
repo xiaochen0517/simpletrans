@@ -9,7 +9,8 @@
  * 实现阶段：P1–P6.4 提供 DeepSeek 契约；P8-1 改为 OpenAI 兼容适配器入口；
  *           P8-2 按 `instance.type` 分发 OpenAI/百度，未知类型返回 `CONFIG`。
  *
- * 页面翻译与设置页测试翻译共用本入口；凭据由调用方从存储读取后随实例传入，本模块不读写存储。
+ * 页面翻译与设置页测试翻译共用本入口；`mode: 'quick'` 供弹窗快速翻译使用快速输出格式。
+ * 凭据由调用方从存储读取后随实例传入，本模块不读写存储。
  */
 
 import { resolveOpenAIConfig } from '../config/openai.js';
@@ -63,6 +64,7 @@ function toOpenAIInstance(instance) {
  *   targetLang?: string,
  *   sourceLang?: string,
  *   instance?: Record<string, unknown>,
+ *   mode?: 'single'|'quick',
  *   onDelta?: (delta: string) => void,
  *   signal?: AbortSignal,
  *   fetchImpl?: Function,

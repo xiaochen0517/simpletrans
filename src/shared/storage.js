@@ -4,7 +4,8 @@
  * 模块：公共模块（E）/ E2
  * 职责：封装扩展存储的分区读写（local / sync / session），只做存取，不承载业务语义。
  * 依赖：无（P1 起）。
- * 实现阶段：P1（引擎层与密钥配置）；P8-2 增加实例提示词键前缀（提示词存 `storage.local`）。
+ * 实现阶段：P1（引擎层与密钥配置）；P8-2 增加实例提示词键前缀（提示词存 `storage.local`）；
+ *           P11 增加快速翻译提示词键前缀（`quickPrompt:`，与默认提示词分开存放）。
  *
  * P1 只提供分区读写与存储键常量；`chrome` 仅在函数体内访问，便于测试用 stub 替换。
  */
@@ -16,6 +17,7 @@ export const STORAGE_KEYS = Object.freeze({
   preferred: 'preferredEngine', // storage.sync：首选/备用引擎
   keyPrefix: 'engineKey:', // storage.local/sync：每实例凭据 JSON 前缀（分区由 keyStorage 决定）
   promptPrefix: 'systemPrompt:', // storage.local：每实例 system 提示词前缀
+  quickPromptPrefix: 'quickPrompt:', // storage.local：每实例快速翻译提示词前缀
 });
 
 /**

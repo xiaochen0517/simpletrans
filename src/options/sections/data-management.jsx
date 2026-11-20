@@ -144,7 +144,7 @@ export default function DataManagement() {
           <li>
             密钥：{settings?.keyStorage === 'sync' ? '跟随账号同步（会经过账号云端）' : '仅本机'}；每个实例独立保存。
           </li>
-          <li>system 提示词：本机 storage.local，不随账号同步。</li>
+          <li>默认与快速翻译提示词：本机 storage.local，不随账号同步。</li>
           <li>日志：只在浏览器控制台，不持久化、不上传。</li>
           <li>导入导出配置：本轮不提供。</li>
         </ul>

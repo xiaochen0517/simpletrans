@@ -110,6 +110,28 @@ describe('A3 OpenAI 适配器：单段翻译', () => {
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body).stream).toBe(false);
   });
 
+  it('mode=quick 时 system message 使用快速输出格式', async () => {
+    const config = deepseekInstance({
+      endpoint: { ...createOpenAIConfig('deepseek').endpoint, stream: false },
+      systemPrompt: '快速模板 {{targetLang}}。{{outputFormat}}',
+    });
+    const fetchImpl = fetchOf(() => jsonResponse(completionBody('你好')));
+
+    await translate({
+      text: 'hello',
+      targetLang: 'zh',
+      instance: config,
+      mode: 'quick',
+      fetchImpl,
+    });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    const system = body.messages[0].content;
+    expect(system).toContain('快速模板 中文。');
+    expect(system).toContain('音标');
+    expect(system).not.toContain('只输出译文本身');
+  });
+
   it('请求流式但服务端返回 JSON 时按非流式解析', async () => {
     const fetchImpl = fetchOf(() => jsonResponse(completionBody('JSON 回退')));
     const onDelta = vi.fn();

@@ -10,7 +10,8 @@
  *           `ST_PAGE_SUBMIT` 接收；P6.2 `ST_LIST_ENGINES` 返回完整实例参数；
  *           P6.3 `ST_PAGE_SUBMIT` 校验后按 `sender.tab.id` 转交 A2；
  *           P8-2 `ST_LIST_ENGINES` 返回多实例公开字段、不创建默认实例，
- *           `ST_TEST_ENGINE` 支持 `instanceId` 与每实例凭据/权限校验。
+ *           `ST_TEST_ENGINE` 支持 `instanceId` 与每实例凭据/权限校验；
+ *           P11 增加 `ST_QUICK_TRANSLATE`（交给 A5）与 `ST_GET_SELECTION`（只读页面选区）。
  *
  * 标签页转发有两处入口：P4 的快捷键走 `ST_TOGGLE`（commands.js），P6.1 的弹窗走 `ST_ROUTE`
  * 的 `start` / `clear`（本文件），两者共用 `sendToTab` 的补注入与错误归一。
@@ -23,6 +24,7 @@ import {
   findForbiddenField,
   isKnownMessageType,
   makeError,
+  normalizeDomain,
   normalizeTraceId,
 } from '../shared/protocol.js';
 import { MAX_PAGE_PARAGRAPHS, MAX_SEGMENT_CHARS } from '../shared/constants.js';
@@ -40,6 +42,7 @@ import { getEngineType, getTypeLabel, validateInstance } from '../shared/config/
 import { getCacheStore } from '../shared/cache/store.js';
 import { translate, TranslateError } from '../shared/translate/adapter.js';
 import { normalizeConcurrency, withUpstreamSlot, acceptPageSubmit, findConnectionByTab } from './gateway.js';
+import { quickTranslate } from './quick.js';
 
 /** A1 日志入口。 */
 const log = createLogger('A1');
@@ -76,6 +79,10 @@ export async function handleMessage(message, sender) {
       response = await listEngines();
     } else if (message.type === MESSAGE_TYPES.TEST_ENGINE) {
       response = await testEngine(message.payload);
+    } else if (message.type === MESSAGE_TYPES.QUICK_TRANSLATE) {
+      response = await quickTranslate(message.payload);
+    } else if (message.type === MESSAGE_TYPES.GET_SELECTION) {
+      response = await readSelection(message.payload, traceId);
     } else if (message.type === MESSAGE_TYPES.CACHE_STATS) {
       response = await cacheStats();
     } else if (message.type === MESSAGE_TYPES.CLEAR_CACHE) {
@@ -138,6 +145,65 @@ async function clearCache() {
     return { ok: true, data: await getCacheStore().clear() };
   } catch {
     return failure(ERROR_CODES.OTHER, '清空缓存失败，请稍后重试');
+  }
+}
+
+/**
+ * 只读当前活动标签页的选中文字：截断到单段上限，页面不可注入时返回空文本。
+ * @param {unknown} payload
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data: { text: string, truncated: boolean } } | { ok: false, error: object }>}
+ */
+async function readSelection(payload, traceId) {
+  if (payload != null) {
+    if (typeof payload !== 'object' || Array.isArray(payload)) {
+      return failure(ERROR_CODES.OTHER, '请求参数无效', FAILURE_REASONS.INVALID_MESSAGE);
+    }
+    if (findForbiddenField(payload)) {
+      return failure(ERROR_CODES.OTHER, '请求包含不允许的字段', FAILURE_REASONS.FORBIDDEN_FIELD);
+    }
+  }
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  } catch {
+    tabs = [];
+  }
+  const tab = Array.isArray(tabs) ? tabs.find((entry) => entry?.active) ?? tabs[0] : null;
+  if (!tab?.id) return { ok: true, data: { text: '', truncated: false } };
+
+  let domain = '';
+  try {
+    domain = normalizeDomain(new URL(String(tab.url ?? '')).hostname);
+  } catch {
+    domain = '';
+  }
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => String(window.getSelection()?.toString() ?? ''),
+    });
+    const raw = Array.isArray(results) ? String(results[0]?.result ?? '') : '';
+    const text = raw.trim();
+    const truncated = text.length > MAX_SEGMENT_CHARS;
+    log.withTrace(traceId).debug('selection.read', '已读取页面选中文字', {
+      length: text.length,
+      truncated,
+      domain,
+    });
+    return {
+      ok: true,
+      data: { text: truncated ? text.slice(0, MAX_SEGMENT_CHARS) : text, truncated },
+    };
+  } catch {
+    log.withTrace(traceId).debug('selection.read', '页面不支持读取选区', {
+      length: 0,
+      truncated: false,
+      domain,
+    });
+    return { ok: true, data: { text: '', truncated: false } };
   }
 }
 

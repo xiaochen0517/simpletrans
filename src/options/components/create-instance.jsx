@@ -3,7 +3,7 @@
  *
  * 模块：插件独立页面（C）/ 设置页组件
  * 职责：选择类型（OpenAI 兼容 / 百度翻译）与预设（DeepSeek / 自定义）、填写名称并创建实例；
- *       创建成功后关闭对话框并打开编辑抽屉，不自动设为当前。
+ *       创建成功后关闭对话框并打开编辑弹窗，不自动设为当前。
  * 依赖：React、`lucide-react`、E3（instances.createInstance、registry 默认名与名称上限）、
  *       设置页共享工具与对话框/字段组件。
  * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
@@ -72,7 +72,7 @@ export default function CreateInstance({ hint, onClose }) {
     return null;
   }
 
-  /** 创建实例并打开编辑抽屉。 */
+  /** 创建实例并打开编辑弹窗。 */
   async function create() {
     const normalized = normalizeInstanceName(name);
     if (normalized === '') {
@@ -131,7 +131,7 @@ export default function CreateInstance({ hint, onClose }) {
   return (
     <ConfirmDialog
       title="新增翻译实例"
-      description="选择类型后填写名称；创建后继续在编辑抽屉里完成连接与凭据配置。"
+      description="选择类型后填写名称；创建后继续在编辑弹窗里完成连接与凭据配置。"
       confirmLabel="创建"
       busy={busy}
       confirmDisabled={atLimit}

@@ -6,13 +6,21 @@
  *       失败回滚并给出行内错误；密钥存放位置切换前确认、期间显示进度、失败保留原数据。
  * 依赖：React、`lucide-react`、E2（getSettings/saveSettings）、E3（setKeyStorage）、
  *       E4（日志级别）、语言目录与设置页共享工具。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
+ * 实现阶段：P8-3（设置页内容分类与 UI 规范化）；P11 增加弹窗初始页设置。
  *
- * 这里不做实例表单的显式保存；实例配置在「翻译实例」的编辑抽屉里保存。
+ * 这里不做实例表单的显式保存；实例配置在「翻译实例」的编辑弹窗里保存。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeftRight, Database, Globe2, KeyRound, ScrollText, Power } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  Database,
+  Globe2,
+  KeyRound,
+  PanelTop,
+  ScrollText,
+  Power,
+} from 'lucide-react';
 import ConfirmDialog from '../components/confirm-dialog.jsx';
 import { useApp } from '../lib.js';
 import { saveSettings } from '../../shared/settings.js';
@@ -39,6 +47,12 @@ const KEY_STORAGE_OPTIONS = Object.freeze([
     label: '跟随账号同步',
     help: '密钥会经过账号云端同步到其他设备，请只在信任的设备上使用。',
   },
+]);
+
+/** 弹窗打开时先显示的页面。 */
+const POPUP_TAB_OPTIONS = Object.freeze([
+  { value: 'default', label: '默认页面' },
+  { value: 'quick', label: '快速翻译页面' },
 ]);
 
 /**
@@ -124,7 +138,7 @@ export default function General() {
             <Globe2 size={15} aria-hidden="true" />
             通用设置
           </h2>
-          <p className="text-sm leading-relaxed text-base-content/70 break-words">开关与下拉改动会立即保存；实例配置在「翻译实例」里单独保存。</p>
+          <p className="text-sm leading-relaxed text-base-content/70 break-words">开关与下拉改动会立即保存；实例配置在「翻译实例」的编辑弹窗里单独保存。</p>
         </div>
       </div>
 
@@ -189,6 +203,36 @@ export default function General() {
           <span className="text-xs leading-relaxed text-base-content/60 break-words">{notice.text}</span>
         ) : null}
         {error?.field === 'sourceLang' || error?.field === 'targetLang' ? (
+          <span className="text-xs leading-relaxed text-error" role="alert">{error.text}</span>
+        ) : null}
+      </section>
+
+      <section className="card gap-2 bg-base-100 p-4" aria-label="弹窗">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
+          <PanelTop size={13} aria-hidden="true" />
+          弹窗
+        </span>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-semibold">打开时显示</span>
+          <Select
+            id="general-popup-tab"
+            value={settings?.popupDefaultTab ?? 'default'}
+            options={POPUP_TAB_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.label,
+            }))}
+            onChange={(next) => saveField('popupDefaultTab', next, '已保存')}
+            ariaLabel="弹窗打开时显示"
+            disabled={savingField === 'popupDefaultTab'}
+          />
+        </div>
+        <p className="text-sm leading-relaxed text-base-content/70 break-words">
+          只决定打开弹窗时先显示哪一页；在弹窗内切换标签不会改变该设置。
+        </p>
+        {notice?.field === 'popupDefaultTab' ? (
+          <span className="text-xs leading-relaxed text-base-content/60 break-words">{notice.text}</span>
+        ) : null}
+        {error?.field === 'popupDefaultTab' ? (
           <span className="text-xs leading-relaxed text-error" role="alert">{error.text}</span>
         ) : null}
       </section>

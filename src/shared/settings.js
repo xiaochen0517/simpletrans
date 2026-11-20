@@ -5,7 +5,8 @@
  * 职责：定义设置 schema v2、默认值、枚举归一与读写；提供密钥存放位置（keyStorage）的分区选择。
  * 依赖：E2 存储读写（storage.js）、语言目录（languages.js，P8-2 起）。
  * 实现阶段：P1（引擎层与密钥配置）；P8-2 升级 schema v2：增加 `configVersion`，
- *           移除默认 `concurrency`，语言改由共享目录校验，未知字段保留。
+ *           移除默认 `concurrency`，语言改由共享目录校验，未知字段保留；
+ *           P11 增加弹窗初始页 `popupDefaultTab`；P11 增加主题 `theme`。
  *
  * 每实例凭据、提示词与当前实例改选由 E3（config/instances.js）承担，因为需要实例 id。
  */
@@ -31,7 +32,15 @@ export const DEFAULT_SETTINGS = Object.freeze({
   cacheEnabled: true, // 译文缓存开关
   logLevel: 'info', // 日志级别：debug / info / warn / error / off
   activeInstanceId: null, // 当前生效实例 id
+  popupDefaultTab: 'default', // 弹窗初始页：default / quick
+  theme: 'system', // 界面主题：system / light / dark
 });
+
+/** 弹窗初始页取值。 */
+export const POPUP_DEFAULT_TABS = Object.freeze(['default', 'quick']);
+
+/** 主题取值。 */
+export const THEMES = Object.freeze(['system', 'light', 'dark']);
 
 /**
  * 归一布尔值：只认真正的布尔与字符串 `'true'`/`'false'`，其余回退默认。
@@ -53,6 +62,36 @@ function normalizeBoolean(value, fallback) {
  */
 export function normalizeKeyStorage(value) {
   return value === 'sync' ? 'sync' : 'local';
+}
+
+/**
+ * 归一弹窗初始页：只认 `quick`，其余一律 `default`。
+ * @param {unknown} value
+ * @returns {'default'|'quick'}
+ */
+export function normalizePopupDefaultTab(value) {
+  return value === 'quick' ? 'quick' : 'default';
+}
+
+/**
+ * 归一主题：只认 `light` / `dark`，其余一律 `system`（跟随系统）。
+ * @param {unknown} value
+ * @returns {'system'|'light'|'dark'}
+ */
+export function normalizeTheme(value) {
+  return value === 'light' || value === 'dark' ? value : 'system';
+}
+
+/**
+ * 解析实际主题：`system` 时按系统暗色偏好，显式主题直接返回。
+ * @param {unknown} theme
+ * @param {boolean} prefersDark
+ * @returns {'light'|'dark'}
+ */
+export function resolveTheme(theme, prefersDark) {
+  const normalized = normalizeTheme(theme);
+  if (normalized === 'system') return prefersDark ? 'dark' : 'light';
+  return normalized;
 }
 
 /**
@@ -86,6 +125,8 @@ export function normalizeSettings(raw) {
       typeof merged.activeInstanceId === 'string' && merged.activeInstanceId.trim() !== ''
         ? merged.activeInstanceId
         : null,
+    popupDefaultTab: normalizePopupDefaultTab(merged.popupDefaultTab),
+    theme: normalizeTheme(merged.theme),
   };
 }
 

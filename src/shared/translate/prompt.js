@@ -4,12 +4,14 @@
  * 模块：后台服务（A）/ A3
  * 职责：提供默认 system 提示词模板、占位符校验与展开、单段/批量输出格式，以及提示词哈希（供 A4 缓存 key）。
  * 依赖：E3 引擎类型目录（默认模板、长度上限与占位符校验）、语言目录（语言显示名，P8-2 起）。
- * 实现阶段：P6.2（翻译实例参数配置）；P8-2 改用共享语言目录，`PROMPT_VERSION` 升到 3。
+ * 实现阶段：P6.2（翻译实例参数配置）；P8-2 改用共享语言目录，`PROMPT_VERSION` 升到 3；
+ *           P11 增加快速翻译输出格式（`mode='quick'`），页面提示词结构未变，版本保持 3。
  *
  * 提示词正文不进入日志；本模块只返回字符串与哈希，不读写存储、不调用引擎。
  */
 
 import {
+  DEFAULT_QUICK_PROMPT,
   DEFAULT_SYSTEM_PROMPT,
   isDefaultPrompt,
   MAX_PROMPT_CHARS,
@@ -22,6 +24,7 @@ import { LANGUAGES, SOURCE_LANGS, TARGET_LANGS, languageLabel } from '../languag
 export const PROMPT_VERSION = 3;
 
 export {
+  DEFAULT_QUICK_PROMPT,
   DEFAULT_SYSTEM_PROMPT,
   isDefaultPrompt,
   MAX_PROMPT_CHARS,
@@ -66,13 +69,27 @@ export const OUTPUT_FORMATS = Object.freeze({
 });
 
 /**
+ * 快速翻译专用的输出格式（P11 起）：单词/短语按固定字段输出，句子/段落只输出译文。
+ * 字段名与行顺序由程序锁定，用户模板只负责风格与语言要求。
+ */
+export const QUICK_OUTPUT_FORMATS = Object.freeze({
+  quick:
+    '按以下规范输出，不要输出其它内容、解释、引号或 Markdown 代码块：\n' +
+    '- 输入是单词或短语：每行一个字段，依次为「音标：<国际音标，无法确定时写 未知>」' +
+    '「词性：<n. / v. / adj. 等，多个用 / 分隔>」「释义：<目标语言释义，多个义项用分号分隔>」' +
+    '「例句：<两个简短例句，每个例句单独一行并在句后附目标语言译文；没有则写 无>」。\n' +
+    '- 输入是句子或段落：只输出目标语言译文本身，不要输出字段名、原文或解释。',
+});
+
+/**
  * 取实际使用的模板：空值回退默认模板（旧实例或运行时缺字段）。
  * @param {unknown} template
+ * @param {string} [fallback]
  * @returns {string}
  */
-function resolveTemplate(template) {
+function resolveTemplate(template, fallback = DEFAULT_SYSTEM_PROMPT) {
   const text = template == null ? '' : String(template);
-  return text.trim() === '' ? DEFAULT_SYSTEM_PROMPT : text;
+  return text.trim() === '' ? fallback : text;
 }
 
 /**
@@ -86,13 +103,15 @@ export function normalizePromptText(template) {
 
 /**
  * 展开系统提示：替换 `{{targetLang}}` 与 `{{outputFormat}}`。
- * @param {{ targetLang?: string, template?: string, mode?: 'single'|'batch' }} [params]
+ * @param {{ targetLang?: string, template?: string, mode?: 'single'|'batch'|'quick' }} [params]
  * @returns {string}
  */
 export function buildSystemPrompt({ targetLang, template, mode = 'single' } = {}) {
   const lang = languageLabel(targetLang) || targetLang || '目标语言';
-  const outputFormat = OUTPUT_FORMATS[mode] ?? OUTPUT_FORMATS.single;
-  return resolveTemplate(template)
+  const isQuick = mode === 'quick';
+  const formats = isQuick ? QUICK_OUTPUT_FORMATS : OUTPUT_FORMATS;
+  const outputFormat = formats[mode] ?? formats.single;
+  return resolveTemplate(template, isQuick ? DEFAULT_QUICK_PROMPT : DEFAULT_SYSTEM_PROMPT)
     .replaceAll('{{targetLang}}', lang)
     .replaceAll('{{outputFormat}}', outputFormat)
     .trim();

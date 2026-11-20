@@ -113,7 +113,7 @@ export default function Instances() {
     await applyToggle(instance, enabled);
   }
 
-  /** 复制实例；成功后打开编辑抽屉提示补授权。 */
+  /** 复制实例；成功后打开编辑弹窗提示补授权。 */
   async function duplicate(instance) {
     setBusyId(instance.id);
     try {

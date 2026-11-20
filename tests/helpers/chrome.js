@@ -9,6 +9,7 @@
  * P2 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
  * P3 补 storage.onChanged、getManifest、getURL；P4 补 commands.onCommand、tabs.query / sendMessage、
  * scripting.insertCSS / executeScript（记录调用顺序）；P6.5 补 tabs.create（打开测试页，记录创建参数）；
+ * P11 让 executeScript 返回可配置结果（读取选区）。
  * P7 补 runtime.openOptionsPage（打开设置页，记录调用次数与可注入的失败）；
  * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`；
  * P8-2 补 permissions（contains / request / remove 与已授权集合）；P8-3 让 getManifest 返回
@@ -259,6 +260,8 @@ export function createChrome() {
     /** 按调用顺序记录 { api, details }，用于断言「先样式后脚本」。 */
     __calls: [],
     __error: null,
+    /** executeScript 的返回结果；测试可整体替换或传函数。 */
+    __executeResult: [{ result: '' }],
     async insertCSS(details) {
       scripting.__calls.push({ api: 'insertCSS', details });
       if (scripting.__error) throw scripting.__error;
@@ -266,6 +269,9 @@ export function createChrome() {
     async executeScript(details) {
       scripting.__calls.push({ api: 'executeScript', details });
       if (scripting.__error) throw scripting.__error;
+      return typeof scripting.__executeResult === 'function'
+        ? scripting.__executeResult(details)
+        : scripting.__executeResult;
     },
   };
 

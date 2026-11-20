@@ -177,7 +177,7 @@ export function buildHeaders(config, credential = '') {
  *   systemPrompt?: unknown,
  *   targetLang?: string,
  *   text?: unknown,
- *   mode?: 'single'|'batch',
+ *   mode?: 'single'|'batch'|'quick',
  * }} params
  * @returns {{
  *   url: string,

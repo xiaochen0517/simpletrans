@@ -188,10 +188,12 @@ function finishError(error, { config, mode, startedAt, signal }) {
 
 /**
  * 单段翻译：成功返回 `{ text, usage }`；失败抛 `TranslateError`。
+ * `mode` 默认 `'single'`；快速翻译传 `'quick'`，使用快速输出格式。
  * @param {{
  *   text?: unknown,
  *   targetLang?: string,
  *   instance?: Record<string, unknown>,
+ *   mode?: 'single'|'quick',
  *   onDelta?: (delta: string) => void,
  *   signal?: AbortSignal,
  *   fetchImpl?: Function,
@@ -204,6 +206,7 @@ export async function translate({
   text,
   targetLang,
   instance,
+  mode = 'single',
   onDelta,
   signal,
   fetchImpl,
@@ -212,6 +215,7 @@ export async function translate({
 } = {}) {
   const prompt = String(text ?? '');
   if (prompt.trim() === '') return { text: '', usage: null };
+  const promptMode = mode === 'quick' ? 'quick' : 'single';
 
   const startedAt = Date.now();
   let config = null;
@@ -226,9 +230,9 @@ export async function translate({
       systemPrompt: instance?.systemPrompt,
       targetLang,
       text: prompt,
-      mode: 'single',
+      mode: promptMode,
     });
-    logRequest(config, 'single');
+    logRequest(config, promptMode);
 
     const result = await execute({
       request,
@@ -244,13 +248,13 @@ export async function translate({
     log.debug('engine.openai.done', 'OpenAI 兼容接口返回', {
       preset: config.preset,
       model: config.model,
-      mode: 'single',
+      mode: promptMode,
       elapsedMs: Date.now() - startedAt,
       totalTokens: result.usage?.totalTokens ?? null,
     });
     return { text: normalized, usage: result.usage ?? null };
   } catch (error) {
-    throw finishError(error, { config, mode: 'single', startedAt, signal });
+    throw finishError(error, { config, mode: promptMode, startedAt, signal });
   }
 }
 
