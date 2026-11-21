@@ -5,7 +5,6 @@
  * 职责：用 HyperUI 的主/次/幽灵/危险/警告按钮样式提供统一按钮，支持尺寸、图标按钮与加载态；
  *       只输出 Tailwind 类，不携带自定义 CSS。
  * 依赖：React、`lucide-react`。
- * 实现阶段：P10（UI 规范化）；HyperUI 迁移（改为 Tailwind 调色板与 dark 变体）
  */
 
 import { LoaderCircle } from 'lucide-react';

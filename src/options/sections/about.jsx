@@ -5,7 +5,6 @@
  * 职责：显示扩展名称与版本、配置版本、缓存数据库版本、声明权限与主机权限用途、隐私说明，
  *       并提供「复制诊断信息」（不含密钥、APPID、提示词、原文/译文或完整 URL）。
  * 依赖：React、`lucide-react`、E2（设置中的 `configVersion`）、`constants.js`（缓存库版本）、设置页共享工具。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
  */
 
 import { useState } from 'react';

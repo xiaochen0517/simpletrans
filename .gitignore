@@ -5,3 +5,8 @@ dist/
 
 .tmp/
 .idea/
+
+# 本地过程文档，不纳入版本库
+docs/demand/
+docs/bug/
+docs/任务文档索引.md

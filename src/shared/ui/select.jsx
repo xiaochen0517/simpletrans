@@ -5,7 +5,6 @@
  * 职责：用 `details` + `summary` + 单选列表实现产品内下拉：触发器与面板使用 HyperUI 表单/面板样式；
  *       处理展开、关闭、键盘导航、焦点返回与单选 ARIA。
  * 依赖：React、`lucide-react`；只输出 Tailwind 类，不携带自定义 CSS。
- * 实现阶段：P10（UI 规范化）；HyperUI 迁移（替换旧下拉外观）
  *
  * 选项结构：{ value, label, detail?, disabled? }。label 为第一行，detail 为第二行。
  */

@@ -3,18 +3,10 @@
  *
  * 模块：公共模块（E）/ E1
  * 职责：定义扩展内部的统一错误码、错误分类标志、消息名、端口名与载荷校验辅助，作为后台、弹窗、设置页与页面注入的协议来源。
- * 依赖：无（P1 起）。
- * 实现阶段：P1–P5（错误码在 P1 落地；消息名、端口名与报文在 P2 落地；`traceId` 在 P3；
- *           `normalizeDomain` 与两条缓存消息在 P5 落地；`ST_ROUTE` / `ST_START` /
- *           `ST_PAGE_SUBMIT` 在 P6.1 落地，见 docs/modules/E1-消息协议.md；本轮段落去掉上下文，
- *           `hostId` 兼作结果帧 `itemId`）；P9 删除 `ST_ENGINE_CHANGED` 与 `fallbackable`，
- *           失败段「刷新」复用 `ST_PAGE_SUBMIT(scope='single')`；
- *           P11 增加 `ST_QUICK_TRANSLATE` 与 `ST_GET_SELECTION`（弹窗快速翻译）；
- *           P12 增加 `ST_CONTENT_CONFIG` 与 `ST_GET_STATUS`，删除 `ST_TOGGLE`；
- *           P13 增加 `ST_HOVER_TRIGGER`（悬停手势经后台广播到所有 frame）。
+ * 依赖：无。
  */
 
-/** 统一错误码。分类依据见项目架构 6.8。 */
+/** 统一错误码。分类依据见项目架构 6.5。 */
 export const ERROR_CODES = Object.freeze({
   CONFIG: 'CONFIG', // 配置：缺密钥 / 缺引擎 / 配置无效
   AUTH: 'AUTH', // 鉴权与额度：鉴权失败 / 额度不足
@@ -26,7 +18,7 @@ export const ERROR_CODES = Object.freeze({
 });
 
 /**
- * 每个错误码的分类标志（P9 起）。
+ * 每个错误码的分类标志。
  * - retryable：是否可重试（仅限流、网络、超时、流中断重试）。
  * - splittable：是否通过拆批解决（仅批量对齐）。
  *
@@ -65,22 +57,22 @@ export const PORT_NAME = 'st-gateway';
 
 /**
  * 扩展内部消息名。
- * 4.6 的清单在这里完整声明；P2 只实现其中的控制面与数据面消息，其余名字由后续阶段接入。
+ * 消息清单在这里完整声明。
  */
 export const MESSAGE_TYPES = Object.freeze({
   // 控制面：一次性消息
-  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发（P6.1 start / clear；P12 status）
-  START: 'ST_START', // 后台 → 页面注入：开始整页取段并提交（P6.1）
-  PAGE_SUBMIT: 'ST_PAGE_SUBMIT', // 页面注入 → 后台：统一提交段落（P6.1，scope=page/single；每段 index/hostId/text，hostId 即结果帧 itemId；后台校验、计数、逐段日志并回执）
-  CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部标记与译文（P4）；响应 removed（P6.1）
-  GET_STATUS: 'ST_GET_STATUS', // 后台 → 页面注入：读取整页会话状态（P12），响应 { active }
-  HOVER_TRIGGER: 'ST_HOVER_TRIGGER', // 页面注入 → 后台 → 全部 frame：悬停手势广播（P13），不携带载荷
-  LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表（P2）
-  TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译（P2）
-  QUICK_TRANSLATE: 'ST_QUICK_TRANSLATE', // 弹窗 → 后台：快速翻译（P11），返回纯文本译文
-  GET_SELECTION: 'ST_GET_SELECTION', // 弹窗 → 后台：读取当前活动标签页选中文字（P11）
-  CACHE_STATS: 'ST_CACHE_STATS', // 设置页 → 后台：读取缓存占用（P5）
-  CLEAR_CACHE: 'ST_CLEAR_CACHE', // 设置页 → 后台：清空缓存（P5）
+  ROUTE: 'ST_ROUTE', // 弹窗 → 后台：命令转发
+  START: 'ST_START', // 后台 → 页面注入：开始整页取段并提交
+  PAGE_SUBMIT: 'ST_PAGE_SUBMIT', // 页面注入 → 后台：统一提交段落
+  CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部标记与译文；响应 removed
+  GET_STATUS: 'ST_GET_STATUS', // 后台 → 页面注入：读取整页会话状态，响应 { active }
+  HOVER_TRIGGER: 'ST_HOVER_TRIGGER', // 页面注入 → 后台 → 全部 frame：悬停手势广播，不携带载荷
+  LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表
+  TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译
+  QUICK_TRANSLATE: 'ST_QUICK_TRANSLATE', // 弹窗 → 后台：快速翻译，返回纯文本译文
+  GET_SELECTION: 'ST_GET_SELECTION', // 弹窗 → 后台：读取当前活动标签页选中文字
+  CACHE_STATS: 'ST_CACHE_STATS', // 设置页 → 后台：读取缓存占用
+  CLEAR_CACHE: 'ST_CLEAR_CACHE', // 设置页 → 后台：清空缓存
 
   // 数据面：长连接
   PING: 'ST_PING',
@@ -94,14 +86,14 @@ export const MESSAGE_TYPES = Object.freeze({
   CANCEL_BATCH: 'ST_CANCEL_BATCH',
   CANCEL_ITEM: 'ST_CANCEL_ITEM',
   CLOSE: 'ST_CLOSE',
-  LOG_CONFIG: 'ST_LOG_CONFIG', // 后台 → 页面注入：连接建立后下发日志级别（P3）
-  CONTENT_CONFIG: 'ST_CONTENT_CONFIG', // 后台 → 页面注入：连接建立后下发内容配置（P12，目前为悬停快捷键）
+  LOG_CONFIG: 'ST_LOG_CONFIG', // 后台 → 页面注入：连接建立后下发日志级别
+  CONTENT_CONFIG: 'ST_CONTENT_CONFIG', // 后台 → 页面注入：连接建立后下发内容配置
 });
 
 const KNOWN_MESSAGE_TYPES = new Set(Object.values(MESSAGE_TYPES));
 
 /**
- * 判断是否架构 4.6 已声明的消息名。
+ * 判断是否为 MESSAGE_TYPES 已声明的消息名。
  * @param {unknown} type
  * @returns {boolean}
  */
@@ -136,7 +128,7 @@ export const FAILURE_REASONS = Object.freeze({
 
 /**
  * 批次与控制面请求里不允许出现的字段：地址、密钥、模型等只能来自用户配置。
- * 见架构 5.5 第 2、3 条。
+ * 见架构安全边界。
  *
  * 不导出、不加 Object.freeze：content 只需要消息名与失败原因，
  * 这里保持纯字面量，构建时才能把未使用的校验代码从 content 产物里摇掉。

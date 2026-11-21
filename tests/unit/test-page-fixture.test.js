@@ -1,5 +1,5 @@
 /**
- * C6 翻译测试页夹具结构测试（P6.5）
+ * C6 翻译测试页夹具结构测试
  *
  * 直接读取并解析 `src/testpage/index.html`，验证它是一份稳定、离线、可翻译的固定夹具：
  * - 语言、`main` 与页内操作条（两个按钮、无模拟开关）的骨架；
@@ -108,7 +108,7 @@ const EXTERNAL_URL = /^(?:https?:)?\/\//i;
 const html = await readFile(FIXTURE_PATH, 'utf8');
 const { document } = new JSDOM(html).window;
 
-describe('C6 翻译测试页夹具（P6.5）', () => {
+describe('C6 翻译测试页夹具', () => {
   it('页面声明英文，包含 main 与不参与翻译的操作条', () => {
     expect(document.documentElement.getAttribute('lang')).toBe('en');
 

@@ -3,11 +3,7 @@
  *
  * 模块：公共模块（E）/ E2
  * 职责：定义设置 schema v2、默认值、枚举归一与读写；提供密钥存放位置（keyStorage）的分区选择。
- * 依赖：E2 存储读写（storage.js）、语言目录（languages.js，P8-2 起）。
- * 实现阶段：P1（引擎层与密钥配置）；P8-2 升级 schema v2：增加 `configVersion`，
- *           移除默认 `concurrency`，语言改由共享目录校验，未知字段保留；
- *           P11 增加弹窗初始页 `popupDefaultTab`；P11 增加主题 `theme`；
- *           P12 增加悬停翻译快捷键 `hoverShortcut`。
+ * 依赖：E2 存储读写（storage.js）、语言目录（languages.js）。
  *
  * 每实例凭据、提示词与当前实例改选由 E3（config/instances.js）承担，因为需要实例 id。
  */
@@ -24,7 +20,7 @@ import { DEFAULT_HOVER_SHORTCUT, normalizeHoverShortcut } from './shortcut.js';
 /** 当前设置 schema 版本；迁移完成后写入。 */
 export const CONFIG_VERSION = 2;
 
-/** 默认设置（完整编辑界面见 P8-3；这里定 schema 与默认值）。 */
+/** 默认设置（完整编辑界面见；这里定 schema 与默认值）。 */
 export const DEFAULT_SETTINGS = Object.freeze({
   configVersion: CONFIG_VERSION,
   enabled: true, // 扩展总开关

@@ -1,5 +1,5 @@
 /**
- * E2 设置测试（P8-2 schema v2）
+ * E2 设置测试
  *
  * 覆盖默认值、枚举归一、未知字段保留、configVersion、keyStorage 与语言目录。
  */

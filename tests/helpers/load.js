@@ -3,9 +3,8 @@
  *
  * 模块：测试基建（tests/helpers）
  * 职责：安装 chrome stub、清模块缓存、动态导入被测模块。
- * 实现阶段：P1（引擎层与密钥配置）
  *
- * P1 主要用于依赖 chrome 的 E2/E3 模块；P2 入口模块（background/content 顶层注册监听器）
+ * 主要用于依赖 chrome 的 E2/E3 模块；入口模块（background/content 顶层注册监听器）
  * 必须用这里的「先装 stub 再动态导入」顺序。
  */
 

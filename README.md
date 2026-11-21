@@ -66,7 +66,7 @@ src/
   shared/          protocol, storage and settings, engine configs, adapters, cache, logging, UI components
 scripts/           build orchestration, smoke checks, icon generation
 tests/             unit and component tests
-docs/              architecture, module details, requirement and bug records
+docs/              architecture and module docs
 ```
 
 Main features:

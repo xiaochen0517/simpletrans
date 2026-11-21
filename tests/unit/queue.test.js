@@ -1,5 +1,5 @@
 /**
- * A3 翻译队列测试（P6.4）
+ * A3 翻译队列测试
  *
  * 注入假 `execute`，只测 FIFO、并发上限、取消、摘除 group、统计与回调口径；
  * 不依赖真实计时器、引擎或网络。
@@ -51,7 +51,7 @@ function makeJob(id, overrides = {}) {
   };
 }
 
-describe('A3 翻译队列（P6.4）', () => {
+describe('A3 翻译队列', () => {
   beforeEach(() => {
     initLogging({ level: 'off', sessionId: 'queue-test' });
     vi.spyOn(console, 'debug').mockImplementation(() => {});
@@ -269,7 +269,7 @@ describe('A3 翻译队列（P6.4）', () => {
   });
 });
 
-describe('A3 翻译队列：重试（P9）', () => {
+describe('A3 翻译队列：重试', () => {
   /**
    * 构造带错误码的失败。
    * @param {string} code

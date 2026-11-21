@@ -1,7 +1,7 @@
 /**
  * 后台入口测试
  *
- * 顶层注册监听器，必须在 stub 安装后动态导入（架构 7.6）。
+ * 顶层注册监听器，必须在 stub 安装后动态导入（架构 7.4）。
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

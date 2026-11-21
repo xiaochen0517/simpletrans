@@ -3,13 +3,11 @@
  *
  * 模块：页面注入（D）/ D3
  * 职责：把提交与译文状态内嵌到被翻译节点末尾、更新、隐藏与清除；提交中、已提交、翻译中、流式、
- *       译文与失败共用一套 DOM 契约；P9 起错误态在提示文字后提供链接样式的「刷新」按钮。
- * 依赖：D1 的 DOM 标记常量与块级判定（P4 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 收敛为提交状态；本轮恢复翻译中、流式与译文显示；
- *           P9 增加错误态「刷新」按钮（`data-st-retry`，span + role=button）。
+ *       译文与失败共用一套 DOM 契约；错误态在提示文字后提供链接样式的「刷新」按钮。
+ * 依赖：D1 的 DOM 标记常量与块级判定。
  *
  * 约束：状态文本只写 textContent，不使用 innerHTML；不改动原文文字与行内元素；不读 storage。
- * DOM 结构与样式见 docs/modules/D3-译文渲染.md。
+ * DOM 结构与样式见 docs/modules/D-页面注入.md#d3-译文渲染。
  */
 
 import { HOST_ATTR, TRANSLATION_ATTR, isBlockHost } from './scanner.js';
@@ -23,7 +21,7 @@ const TEXT_TAG = 'font';
 /** 正在提交的占位文本。 */
 const SUBMITTING_TEXT = '正在提交…';
 
-/** 已提交标记文本（P6.1 统一提交）。 */
+/** 已提交标记文本。 */
 const SUBMITTED_TEXT = '已提交，等待翻译';
 
 /** 翻译中占位文本（收到 START、尚未有增量）。 */
@@ -188,7 +186,7 @@ export function createRenderer({ document: doc = globalThis.document, onRetry } 
 
   return {
     /**
-     * 标记为「正在提交…」（P6.1：段落已发出提交，等待后台回执）。
+     * 标记为「正在提交…」。
      * @param {Element} host
      * @returns {boolean}
      */
@@ -197,7 +195,7 @@ export function createRenderer({ document: doc = globalThis.document, onRetry } 
     },
 
     /**
-     * 标记为「已提交，等待翻译」（P6.1：后台已接收）。
+     * 标记为「已提交，等待翻译」。
      * @param {Element} host
      * @param {string} [text]
      * @returns {boolean}
@@ -216,7 +214,7 @@ export function createRenderer({ document: doc = globalThis.document, onRetry } 
     },
 
     /**
-     * 写入流式累计文本（P6.1 结果回显）。
+     * 写入流式累计文本。
      * @param {Element} host
      * @param {string} text
      * @returns {boolean}
@@ -236,7 +234,7 @@ export function createRenderer({ document: doc = globalThis.document, onRetry } 
     },
 
     /**
-     * 整页或单段提交失败的提示（P6.1）。
+     * 整页或单段提交失败的提示。
      * @param {Element} host
      * @param {string} message
      * @returns {boolean}

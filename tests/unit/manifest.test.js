@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const MANIFEST = join(ROOT, 'public', 'manifest.json');
 
-describe('清单：跨 frame 注入（P13）', () => {
+describe('清单：跨 frame 注入', () => {
   it('content_scripts 匹配所有 URL 且覆盖所有 frame', async () => {
     const manifest = JSON.parse(await readFile(MANIFEST, 'utf8'));
     const scripts = Array.isArray(manifest.content_scripts) ? manifest.content_scripts : [];

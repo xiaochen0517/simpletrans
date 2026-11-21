@@ -2,8 +2,8 @@
 /**
  * D1 段落提取测试
  *
- * 用 jsdom 验证容器判定、跳过规则、文本归一、译文到宿主的映射（P4 契约不变），
- * 以及 P6.1 的视口段落枚举：文档顺序、最外层宿主、按钮单独成段、跳过规则、
+ * 用 jsdom 验证容器判定、跳过规则、文本归一、译文到宿主的映射，
+ * 以及 视口段落枚举：文档顺序、最外层宿主、按钮单独成段、跳过规则、
  * 只收集视口内段落、不做同文本合并、页面内唯一段落 id、5000 上限、分片让出与日志。
  * 段落不再携带上下文。不加载真实 chrome，不联网。
  */
@@ -275,7 +275,7 @@ describe('D1 宿主登记与译文映射', () => {
 });
 
 // ---------------------------------------------------------------------------
-// P6.1 视口段落枚举
+//  视口段落枚举
 // ---------------------------------------------------------------------------
 
 /** 让扫描不做真实等待。 */
@@ -329,7 +329,7 @@ function stubRect(element, rect) {
   });
 }
 
-describe('D1 视口扫描（P6.1）：顺序与宿主', () => {
+describe('D1 视口扫描：顺序与宿主', () => {
   it('从 body 按文档顺序返回 {index,text,host}，index 从 0 递增且不带上下文', async () => {
     mount(
       '<h1 id="h1">Title</h1>' +
@@ -429,7 +429,7 @@ describe('D1 视口扫描（P6.1）：顺序与宿主', () => {
   });
 });
 
-describe('D1 视口扫描（P6.1）：跳过规则', () => {
+describe('D1 视口扫描：跳过规则', () => {
   it('跳过脚本、样式、媒体、表单值控件与可编辑区整棵子树', async () => {
     mount(
       '<p id="keep">Keep this</p>' +
@@ -529,7 +529,7 @@ describe('D1 视口扫描（P6.1）：跳过规则', () => {
   });
 });
 
-describe('D1 视口扫描（P6.1）：视口、上下文与去重', () => {
+describe('D1 视口扫描：视口、上下文与去重', () => {
   it('只收集 inViewport(host) 为真的段落，视口外的段落不收集', async () => {
     mount('<p id="a">Alpha</p><p id="b">Beta</p><p id="c">Gamma</p>');
     const visible = new Set([document.getElementById('a'), document.getElementById('c')]);
@@ -581,7 +581,7 @@ describe('D1 视口扫描（P6.1）：视口、上下文与去重', () => {
   });
 });
 
-describe('D1 视口扫描（P6.1）：上限、分片、日志与异常', () => {
+describe('D1 视口扫描：上限、分片、日志与异常', () => {
   it('达到 maxParagraphs 后停止扫描，并记录 scan.limit', async () => {
     mount('<p>A one</p><p>B two</p><p>C three</p><p>D four</p>');
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
@@ -709,7 +709,7 @@ describe('D1 视口扫描（P6.1）：上限、分片、日志与异常', () => 
   });
 });
 
-describe('D1 视口判定（P6.1）', () => {
+describe('D1 视口判定', () => {
   it('矩形与视口相交时为真，部分可见也算', () => {
     mount('<p id="a">A</p><p id="b">B</p>');
     const a = document.getElementById('a');

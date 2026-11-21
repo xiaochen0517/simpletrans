@@ -6,7 +6,6 @@
  *       创建成功后关闭对话框并打开编辑弹窗，不自动设为当前。
  * 依赖：React、`lucide-react`、E3（instances.createInstance、registry 默认名与名称上限）、
  *       设置页共享工具与对话框/字段组件。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
  */
 
 import { useState } from 'react';

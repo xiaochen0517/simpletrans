@@ -1,12 +1,12 @@
 /**
- * P0 骨架结构测试
+ * 骨架结构测试
  *
  * 锁定的是结构不变量，不是行为：
- * 1. src/ 下每个文件都有模块头（职责 + 实现阶段）；
+ * 1. src/ 下每个文件都有模块头（模块 + 职责）；
  * 2. src/ 不引用 tests/；
  * 3. 页面注入不引用配置、引擎与缓存模块。
  *
- * 行为测试从 P1 起按模块补在 tests/unit/ 下。
+ * 行为测试按模块补在 tests/unit/ 下。
  */
 
 import { readFile, readdir } from 'node:fs/promises';
@@ -35,11 +35,12 @@ describe('骨架结构', () => {
     expect(files.length).toBeGreaterThan(0);
   });
 
-  it('每个文件都有模块头与实现阶段', async () => {
+  it('每个文件都有模块头', async () => {
     for (const file of files) {
       const text = await readFile(join(SRC, file), 'utf8');
+      expect(text, `${file} 缺少「模块：」`).toContain('模块：');
       expect(text, `${file} 缺少「职责：」`).toContain('职责：');
-      expect(text, `${file} 缺少「实现阶段：P<n>」`).toMatch(/实现阶段：P\d/);
+      expect(text, `${file} 含有实现阶段`).not.toContain('实现阶段');
     }
   });
 

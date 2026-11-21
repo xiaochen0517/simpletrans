@@ -2,12 +2,11 @@
  * A3 翻译队列
  *
  * 模块：后台服务（A）/ A3
- * 职责：按 P6.3 切好的批次排队执行；以实例 `maxConcurrency` 限制同时在途的 job 数；
+ * 职责：按批次排队执行；以实例 `maxConcurrency` 限制同时在途的 job 数；
  *       单段批走单段 `translate` 保留逐字流式，多段批走 `translateBatch` 按段解析并回调；
- *       P9 起对可重试错误（网络、限流）在同一实例内重试，退避带随机抖动。
+ *       对可重试错误（网络、限流）在同一实例内重试，退避带随机抖动。
  * 依赖：A3 adapter（translate / translateBatch / TranslateError）、A3 batch（编码版本）、
  *       E1 protocol（错误码与可重试标志）、E3 registry（默认并发）、E4 logger、公共数值（重试间隔）。
- * 实现阶段：P6.4（批量翻译）；P9 增加重试、退避/抖动与取消重试等待。
  *
  * 队列只在 Service Worker 内存中存在：不持久化、不写缓存、不持有页面连接，结果通过回调交给 A2。
  */

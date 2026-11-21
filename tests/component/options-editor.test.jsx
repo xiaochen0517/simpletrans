@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 设置页实例编辑弹窗的组件测试（P8-3 / P11）
+ * 设置页实例编辑弹窗的组件测试
  *
  * 覆盖：字段回填与凭据不回填明文、字段级校验、名称唯一、保存写入实例与凭据、
  *       生成参数开关、认证方式切换（无认证）、百度部分配置、域名权限申请与拒绝、
@@ -305,7 +305,7 @@ describe('未保存离开', () => {
   });
 });
 
-describe('百度接口 QPS（P9）', () => {
+describe('百度接口 QPS', () => {
   it('百度实例显示默认 QPS=1，保存 10 后写入实例并回填', async () => {
     const container = await mountOptions(harness, '#/instances');
     let drawer = await openEditor(container, '百度翻译');
@@ -352,7 +352,7 @@ describe('百度接口 QPS（P9）', () => {
   });
 });
 
-describe('实例编辑弹窗与两套提示词（P11）', () => {
+describe('实例编辑弹窗与两套提示词', () => {
   it('可折叠区块有标题、展开箭头与内容容器', async () => {
     const container = await mountOptions(harness, '#/instances');
     const editor = await openEditor(container, 'DeepSeek');

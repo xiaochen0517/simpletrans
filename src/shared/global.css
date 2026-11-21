@@ -1,9 +1,8 @@
 /*
  * 全局样式（弹窗、设置页与测试页共用）
+ * 模块：公共模块（E）/ 共享样式
  * 职责：引入 Tailwind；用 `data-theme="dark"` 驱动 dark 变体，并提供基础页面颜色与 color-scheme；
  *       视觉组件来自 HyperUI 复制式标记，不新增其它自定义视觉规则。
- * 实现阶段：P7（主题入口）；UI 规范化（默认主题）；P11（深色色阶与主题切换）；
- *           HyperUI 迁移（移除旧组件库，改用 Tailwind dark 变体）
  */
 @import "tailwindcss";
 

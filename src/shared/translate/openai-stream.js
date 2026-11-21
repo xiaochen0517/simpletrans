@@ -5,8 +5,7 @@
  * 职责：用 `eventsource-parser` 做 SSE 分帧，把标准 OpenAI Chat Completions 流映射为
  *       文本增量、末帧 usage 与流内错误；处理 chunk 任意边界、CRLF/LF、多行 data、注释/ping、`[DONE]`
  *       与末帧无空行。
- * 依赖：`eventsource-parser/stream`（仅分帧，P8-1 起）、A3 错误映射与 usage 归一（openai-errors.js / openai-response.js）。
- * 实现阶段：P8-1（大模型 OpenAI 兼容协议与执行）
+ * 依赖：`eventsource-parser/stream`（仅分帧）、A3 错误映射与 usage 归一（openai-errors.js / openai-response.js）。
  *
  * 分帧交给库，JSON 校验、`[DONE]`、choices、usage、error 与上限由本模块负责；
  * 不按行手写拆分、不自行拼 `data:`，不自动重连。

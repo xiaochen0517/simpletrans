@@ -2,7 +2,7 @@
 /**
  * D5 任务测试
  *
- * 用 jsdom + 假提交验证 P6.1 的统一提交与结果回显：
+ * 用 jsdom + 假提交验证 统一提交与结果回显：
  * - Ctrl 单段与整页都发 `ST_PAGE_SUBMIT`，只用 `scope` 区分；
  * - 整页首次提交、页面会话、滚动 200ms 防抖与段落 id 增量去重；
  * - 提交记录、结果帧路由（START / DELTA / DONE / ERROR）、迟到与作废帧丢弃；
@@ -176,7 +176,7 @@ afterEach(() => {
 // 整页首次提交
 // ---------------------------------------------------------------------------
 
-describe('D5 整页统一提交（P6.1）：成功路径', () => {
+describe('D5 整页统一提交：成功路径', () => {
   it('start 扫描后只提交一次，成功返回 submitted 并为每段写「已提交」标记', async () => {
     const hosts = mountTexts(['Hello', 'World']);
     const scan = vi.fn(async () => paragraphsOf(hosts, ['Hello', 'World']));
@@ -294,7 +294,7 @@ describe('D5 整页统一提交（P6.1）：成功路径', () => {
 // 失败路径
 // ---------------------------------------------------------------------------
 
-describe('D5 整页统一提交（P6.1）：失败路径', () => {
+describe('D5 整页统一提交：失败路径', () => {
   it('提交返回 ok:false 时所有段落 error，错误码与消息沿用后台', async () => {
     const hosts = mountTexts(['Hello', 'World']);
     const submit = vi.fn(async () => ({
@@ -380,7 +380,7 @@ describe('D5 整页统一提交（P6.1）：失败路径', () => {
 // 并发、重复触发与清除
 // ---------------------------------------------------------------------------
 
-describe('D5 整页统一提交（P6.1）：并发、重复触发与清除', () => {
+describe('D5 整页统一提交：并发、重复触发与清除', () => {
   it('扫描进行中再次 start 返回 scanning / total 0，不重复扫描或提交', async () => {
     const host = mountTexts(['Hello'])[0];
     let resolveScan;
@@ -515,7 +515,7 @@ describe('D5 整页统一提交（P6.1）：并发、重复触发与清除', () 
 // 滚动增量
 // ---------------------------------------------------------------------------
 
-describe('D5 整页统一提交（P6.1）：滚动增量', () => {
+describe('D5 整页统一提交：滚动增量', () => {
   it('滚动停止 200ms 后只提交新 hostId，并保留已提交标记', async () => {
     const hosts = mountTexts(['A', 'B']);
     const texts = ['A', 'B', 'C', 'D'];
@@ -638,7 +638,7 @@ describe('D5 整页统一提交（P6.1）：滚动增量', () => {
 // Ctrl 单段
 // ---------------------------------------------------------------------------
 
-describe('D5 统一提交（P6.1）：Ctrl 单段', () => {
+describe('D5 统一提交：Ctrl 单段', () => {
   it('toggle 发 scope=single、1 段提交，成功后显示已提交', async () => {
     const p = mount('<p id="p">Hello world</p>');
     const submit = acceptedSubmit();
@@ -804,7 +804,7 @@ describe('D5 统一提交（P6.1）：Ctrl 单段', () => {
 // 结果回显
 // ---------------------------------------------------------------------------
 
-describe('D5 结果回显（P6.3）', () => {
+describe('D5 结果回显', () => {
   /**
    * 启动一次整页提交，返回宿主与 requestId。
    * @param {string[]} [texts]
@@ -1078,7 +1078,7 @@ describe('D5 结果回显（P6.3）', () => {
 // 日志契约
 // ---------------------------------------------------------------------------
 
-describe('D5 统一提交（P6.1）：日志契约', () => {
+describe('D5 统一提交：日志契约', () => {
   /**
    * @returns {object}
    */
@@ -1177,7 +1177,7 @@ describe('D5 统一提交（P6.1）：日志契约', () => {
   });
 });
 
-describe('D5 失败刷新（P9）', () => {
+describe('D5 失败刷新', () => {
   /**
    * 让一段进入翻译失败态。
    * @param {Element} host
@@ -1326,7 +1326,7 @@ describe('D5 失败刷新（P9）', () => {
   });
 });
 
-describe('D5 清除取消与重连续传（P9）', () => {
+describe('D5 清除取消与重连续传', () => {
   it('clearAll 先对每个未结束提交发取消，再清空页面', async () => {
     const hosts = mountTexts(['Hello', 'World']);
     const submit = acceptedSubmit();

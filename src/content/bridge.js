@@ -3,8 +3,7 @@
  *
  * 模块：页面注入（D）/ D4
  * 职责：维持与后台的 st-gateway 长连接：连接与握手、心跳、断线退避重连、发送批次与取消、断线通知、主动关闭。
- * 依赖：E1 消息协议、constants.js（P2 起）。
- * 实现阶段：P2（后台网关与页面通道）
+ * 依赖：E1 消息协议、constants.js。
  *
  * 约束：不操作 DOM、不读写 storage、不引用 shared/config、shared/translate、shared/cache。
  */

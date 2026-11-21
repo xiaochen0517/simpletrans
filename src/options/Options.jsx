@@ -6,7 +6,6 @@
  *       全局保存状态与 toast、外部变更提示、实例编辑弹窗与新增对话框的挂载、未保存离开兜底。
  * 依赖：React、`lucide-react`、E1（protocol）、E2（settings）、E3（instances 公开字段）、
  *       E4（日志）、各分区与组件、设置页共享工具。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
  *
  * 设置页只读公开字段与 `credentialFields`（布尔），不读凭据明文；实例写入经 E3 后重新拉取
  * `ST_LIST_ENGINES`，不在本地合并可变对象。

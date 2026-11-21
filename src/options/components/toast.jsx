@@ -5,7 +5,6 @@
  * 职责：展示壳层的全局成功/失败/说明提示，用 `aria-live` 让读屏可感知；
  *       失败提示不自动消失（由壳层控制停留时间）。
  * 依赖：React、`lucide-react`；使用 HyperUI 顶部 callout + 关闭按钮。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）；HyperUI 迁移（alert/toast → 顶部 callout）
  */
 
 import { CircleCheck, CircleX, Info, X } from 'lucide-react';

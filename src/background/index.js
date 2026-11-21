@@ -3,8 +3,7 @@
  *
  * 模块：后台服务（A）
  * 职责：在 Service Worker 顶层同步注册 A1 消息路由、快捷键入口、标签页关闭清理与 A2 请求网关的监听器；初始化 E4 日志。
- * 依赖：A1 消息路由（router）、A1 快捷键（commands）、A2 请求网关（gateway）、E1 消息协议、E2 设置、E4 日志（P3 起）。
- * 实现阶段：P4（快捷键监听）；P9 增加 `chrome.tabs.onRemoved` 兜底清理。
+ * 依赖：A1 消息路由（router）、A1 快捷键（commands）、A2 请求网关（gateway）、E1 消息协议、E2 设置、E4 日志。
  *
  * 监听器必须在顶层同步注册，保证 Service Worker 被唤醒时能接住事件；
  * 日志级别读取是异步的，读取完成前使用默认 info，读取后按设置更新。
@@ -94,7 +93,7 @@ chrome.commands.onCommand.addListener((command) => {
   void handleCommand(command);
 });
 
-// 标签页关闭兜底：端口 onDisconnect 之外的显式清理，与断线清理幂等（P9）。
+// 标签页关闭兜底：端口 onDisconnect 之外的显式清理，与断线清理幂等。
 chrome.tabs.onRemoved.addListener((tabId) => {
   cleanupTab(tabId);
 });

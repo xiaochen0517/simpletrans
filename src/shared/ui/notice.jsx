@@ -4,7 +4,6 @@
  * 模块：公共模块（E）/ 共享展示组件
  * 职责：用 HyperUI 的带边框 callout 表达成功 / 失败 / 警告 / 信息四种提示，并带可访问性语义。
  * 依赖：React、`lucide-react`；只输出 Tailwind 类，不携带自定义 CSS。
- * 实现阶段：P10（UI 规范化）；HyperUI 迁移（alert → 带边框 callout）
  */
 
 import { CircleCheck, CircleX, Info, TriangleAlert } from 'lucide-react';

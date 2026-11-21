@@ -4,13 +4,11 @@
  * 模块：页面注入（D）/ D1
  * 职责：悬停时从指针所在元素向上找最近的文字宿主；整页翻译时按文档顺序枚举视口附近的段落级宿主，
  *       给宿主分配页面内唯一段落 id，供 D5 统一提交与结果回显。
- * 依赖：公共数值（MAX_PAGE_PARAGRAPHS / SCAN_CHUNK_SIZE，P6.1 起）；日志由调用方经 E4 注入。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加视口附近段落枚举 `collectParagraphs`；
- *           本轮增加带实例前缀的段落 id，并移除段落上下文。
+ * 依赖：公共数值（MAX_PAGE_PARAGRAPHS / SCAN_CHUNK_SIZE）；日志由调用方经 E4 注入。
  *
  * 约束：不读 storage、不发消息、不直接调用 console（日志由调用方经 E4 输出）。
  *
- * 规则见 docs/modules/D1-段落提取.md。
+ * 规则见 docs/modules/D-页面注入.md#d1-段落提取。
  */
 
 import { MAX_PAGE_PARAGRAPHS, SCAN_CHUNK_SIZE, VIEWPORT_MARGIN_RATIO } from '../../shared/constants.js';
@@ -438,7 +436,7 @@ export function isElementInViewport(element, marginRatio = 0) {
 }
 
 /**
- * 元素是否与「当前视口上下各半屏」相交（P6.1 整页取段范围）。
+ * 元素是否与「当前视口上下各半屏」相交。
  * @param {Element} element
  * @returns {boolean}
  */
@@ -575,7 +573,7 @@ function collectButtons(host, paragraphs, { limit, inViewport }) {
  * 枚举视口附近的段落：按文档顺序扫描，选出最外层可译文字宿主并分配段落 id。
  *
  * 只读 DOM 与计算样式；不改页面文字；给选中的宿主打 `data-st-host`。不做同文本合并：
- * 每个宿主就是一个段落，去重与分批属于后台后续阶段。段落不携带上下文。
+ * 每个宿主就是一个段落，去重与分批属于后台。段落不携带上下文。
  *
  * @param {{
  *   root?: Element,

@@ -1,5 +1,5 @@
 /**
- * A3 提示词模板测试（P6.2）
+ * A3 提示词模板测试
  *
  * 覆盖默认模板、占位符校验与展开、单段/批量输出格式、提示词哈希与版本。
  */
@@ -110,7 +110,7 @@ describe('A3 提示词模板', () => {
   });
 });
 
-describe('A3 快速翻译提示词（P11）', () => {
+describe('A3 快速翻译提示词', () => {
   it('默认快速模板包含占位符、防注入与单词/句子两种情况', () => {
     expect(DEFAULT_QUICK_PROMPT).toContain('{{targetLang}}');
     expect(DEFAULT_QUICK_PROMPT).toContain('{{outputFormat}}');

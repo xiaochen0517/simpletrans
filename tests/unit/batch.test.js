@@ -1,5 +1,5 @@
 /**
- * A3 批量编码与解析测试（P6.4）
+ * A3 批量编码与解析测试
  *
  * 覆盖 JSONL 输入编码、流式逐行解析、代码围栏/空行容错、按 id 对齐与 BatchAlignError 计数。
  */
@@ -14,7 +14,7 @@ import {
   parseBatchOutput,
 } from '../../src/shared/translate/batch.js';
 
-describe('A3 批量编码（P6.4）', () => {
+describe('A3 批量编码', () => {
   it('BATCH_ENCODING_VERSION 为 1 并进入缓存 key 口径', () => {
     expect(BATCH_ENCODING_VERSION).toBe(1);
   });
@@ -47,7 +47,7 @@ describe('A3 批量编码（P6.4）', () => {
   });
 });
 
-describe('A3 批量解析（P6.4）', () => {
+describe('A3 批量解析', () => {
   it('按 id 解析全部段落，顺序不限', () => {
     const output = '{"id":"g1","text":"第二段"}\n{"id":"g0","text":"第一段"}';
     const items = parseBatchOutput(output, ['g0', 'g1']);

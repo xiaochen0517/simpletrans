@@ -4,17 +4,10 @@
  * 模块：页面注入（D）
  * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5/D6、处理后台命令与配置帧；
  *       提供可配置的修饰键手势作为悬停翻译快捷键（Chrome commands 不支持裸修饰键）；
- *       P9 起注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段；
- *       P12 起从 `ST_CONTENT_CONFIG` 读取悬停快捷键并支持整页会话状态查询；
- *       P14 起装配 D6 译文自愈，页面重渲染后按镜像恢复原文未变的译文。
- * 依赖：D1–D6、E1 消息协议、E4 日志、E6 快捷键、content.css（P2 起）。
- * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加 `ST_START` 整页任务入口与统一提交；
- *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务；
- *           P6.3 把后台 `ST_ITEM_*` 结果帧转发给 D5，页面不再生成假数据；
- *           P9 注入 `onRetry` / `cancelBatch`，转发 `ST_BATCH_DONE` 并在重连后触发续传；
- *           P12 悬停手势改为按设置识别修饰键，新增 `ST_GET_STATUS` 查询与配置帧处理；
- *           P13 悬停手势改为经后台广播到同一标签页所有 frame，由持有指针的 frame 处理；
- *           P14 装配 D6 并接入页面生命周期。
+ *       注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段；
+ *       从 `ST_CONTENT_CONFIG` 读取悬停快捷键并支持整页会话状态查询；
+ *       装配 D6 译文自愈，页面重渲染后按镜像恢复原文未变的译文。
+ * 依赖：D1–D6、E1 消息协议、E4 日志、E6 快捷键、content.css。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -278,7 +271,7 @@ function pageUnavailable() {
 }
 
 /**
- * 把视口段落一次性提交给后台；后台收到并回执即算成功（P6.1）。
+ * 把视口段落一次性提交给后台；后台收到并回执即算成功。
  * @param {object} payload
  * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
  */
@@ -427,7 +420,7 @@ function handleDisconnect(pendingRequestIds) {
 }
 
 /**
- * 取消后台的一次已接受提交（P9 清除前调用）。
+ * 取消后台的一次已接受提交。
  * 连接未建立或已断开时抛错，由 D5 忽略并继续清除页面。
  * @param {string} requestId
  */
@@ -516,7 +509,7 @@ if (!(typeof document !== 'undefined' && globalThis[LOAD_FLAG])) {
 }
 
 /**
- * 供测试与后续阶段复用同一个桥。
+ * 供测试复用同一个桥。
  * @returns {ReturnType<typeof createBridge> | null}
  */
 export function getBridge() {

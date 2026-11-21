@@ -4,7 +4,6 @@
  * 模块：公共模块（E）/ 共享展示组件
  * 职责：用 HyperUI 的轨道 + 滑块开关呈现布尔状态；保留 checkbox 语义、可访问名称与禁用态。
  * 依赖：React。
- * 实现阶段：P10（UI 规范化）；HyperUI 迁移（新增共享开关）
  */
 
 const TRACK = Object.freeze({

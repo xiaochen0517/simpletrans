@@ -3,7 +3,6 @@
  *
  * 模块：插件独立页面（C）
  * 职责：初始化 E4 日志，把 Options 组件挂到页面 #root，并加载全局样式。
- * 实现阶段：P3（日志初始化）
  */
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

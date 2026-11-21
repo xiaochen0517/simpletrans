@@ -4,10 +4,9 @@
  * 模块：公共模块（E）/ E3
  * 职责：定义 OpenAI-compatible Chat Completions 的实例配置结构、DeepSeek 预设、通用默认值、
  *       归一规则与校验，以及旧 DeepSeek 实例到 OpenAI 实例的字段映射。
- * 依赖：无（P8-1 起）。
- * 实现阶段：P8-1（大模型 OpenAI 兼容协议与执行）
+ * 依赖：无。
  *
- * 本文件含服务商默认地址与字段名，属于 config/，页面注入（content）禁止引用（架构 5.1）。
+ * 本文件含服务商默认地址与字段名，属于 config/，页面注入（content）禁止引用（见项目架构依赖规则）。
  * 只做结构、默认值与校验，不读写存储、不调用引擎、不记录日志。
  */
 
@@ -76,7 +75,7 @@ export const RESERVED_BODY_FIELDS = Object.freeze(['messages', 'model', 'stream'
 /** 认证 header 禁止项（小写）：只允许用来传凭据的头不能由用户覆盖传输语义。 */
 const FORBIDDEN_AUTH_HEADERS = Object.freeze(['cookie', 'host', 'content-length', 'content-type']);
 
-/** 通用错误提示（与 P8-1 需求文档的错误映射表一致）。 */
+/** 通用错误提示（与  需求文档的错误映射表一致）。 */
 export const OPENAI_ERROR_MESSAGES = Object.freeze({
   ENDPOINT: '接口地址无效，请检查 baseUrl 与 path',
   MISSING_KEY: '缺少密钥，请先在设置页配置',
@@ -440,7 +439,7 @@ export function normalizeOpenAIConfig(raw) {
 
 /**
  * 把旧 DeepSeek 实例字段映射为 OpenAI 实例配置。
- * 只做字段映射，不写存储、不处理密钥（密钥由 P8-2 凭据层迁移）。
+ * 只做字段映射，不写存储、不处理密钥（密钥由  凭据层迁移）。
  * @param {unknown} instance 旧实例（`type: 'deepseek'`）
  * @param {unknown} [presetId] 目标预设，默认 DeepSeek
  * @returns {OpenAIConfig}
@@ -460,7 +459,7 @@ export function mapLegacyDeepSeek(instance, presetId = OPENAI_PRESET_IDS.DEEPSEE
     config.params.reasoning.value = effort;
   }
 
-  // 旧实例的批次/并发/提示词字段由 P8-2 保留，不属于 OpenAI 协议配置。
+  // 旧实例的批次/并发/提示词字段由  保留，不属于 OpenAI 协议配置。
   return config;
 }
 

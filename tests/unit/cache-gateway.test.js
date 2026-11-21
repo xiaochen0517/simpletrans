@@ -1,5 +1,5 @@
 /**
- * A2 网关 + A4 真实缓存 store 集成测试（P5）
+ * A2 网关 + A4 真实缓存 store 集成测试
  *
  * 用 fake-indexeddb 提供真实事务、索引与主键语义，A3 用 vi.mock 隔离；
  * 每个用例重置模块、关闭连接并重建数据库，避免缓存状态跨用例泄漏。
@@ -179,7 +179,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe('A2 + A4：网关接入真实缓存 store（P5）', () => {
+describe('A2 + A4：网关接入真实缓存 store', () => {
   it('未命中调用 A3 后写入真实 store，meta.domain 为归一后的 hostname', async () => {
     const { client, frames } = connectGateway();
     client.postMessage({
@@ -339,7 +339,7 @@ describe('A2 + A4：网关接入真实缓存 store（P5）', () => {
   });
 });
 
-describe('A2 + A4：页面提交接入真实缓存（P6.3）', () => {
+describe('A2 + A4：页面提交接入真实缓存', () => {
   /**
    * 以页面 sender 建立连接（带 tab.id），收集结果帧。
    * @param {number} [tabId]

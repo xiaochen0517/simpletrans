@@ -6,10 +6,6 @@
  *       提示词存储、公开字段与 v1 → v2 配置迁移。
  * 依赖：E2 设置与存储（settings.js/storage.js）、E3 类型目录（registry.js）、
  *       E3 OpenAI 兼容配置（openai.js）、E3 主机权限（host-permission.js）。
- * 实现阶段：P1（引擎层与密钥配置）；P6.2 增加实例参数归一与并发迁移；
- *           P8-2 改为多实例模型：公共字段、百度类型、每实例凭据、启用/当前实例、
- *           `storage.local` 提示词、`keyStorage` 迁移与 v1 → v2 迁移框架；
- *           P11 增加快速翻译提示词（`quickPrompt:<id>`）的读写、复制与删除。
  *
  * 实例与设置写 `storage.sync`，提示词与凭据写 `storage.local`/`sync`（分区由 `keyStorage` 决定）。
  * 只有本模块能读凭据明文；公开字段只暴露 `hasKey`/`credentialStatus`/`requiresKey`。
@@ -174,7 +170,7 @@ async function writeSyncState({ instances, settings } = {}) {
 /**
  * 按类型归一实例：合并默认值、裁剪字符串、归一参数；不校验、不写存储。
  *
- * - `openai`：结构由 P8-1 `normalizeOpenAIConfig` 归一；旧 `deepseek` 先经 `mapLegacyDeepSeek` 映射；
+ * - `openai`：结构由  `normalizeOpenAIConfig` 归一；旧 `deepseek` 先经 `mapLegacyDeepSeek` 映射；
  * - `baidu`：固定地址与虚拟模型，批次/并发按百度范围夹取；
  * - 不支持的类型只补公共字段，其余字段原样保留（只允许查看与删除）。
  *

@@ -252,7 +252,7 @@ describe('A4 建库与结构', () => {
   });
 
   it('从版本 1 升级到版本 2 时清空旧缓存并重建统计', async () => {
-    // 手工建一个版本 1 的旧库，写入一条 P5 缓存。
+    // 手工建一个版本 1 的旧库，写入一条  缓存。
     const legacy = await new Promise((resolve, reject) => {
       const request = fakeIndexedDB.open(factory.actualName(CACHE_DB_NAME), 1);
       request.onupgradeneeded = () => {

@@ -5,7 +5,6 @@
  * 职责：确认弹窗与表单对话框的统一外壳：`role="dialog"` + `aria-modal`、焦点进入、
  *       Tab 焦点循环、Esc 关闭、关闭后焦点回到触发元素；危险操作默认焦点在「取消」。
  * 依赖：React。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
  */
 
 import { useCallback, useEffect, useId, useRef } from 'react';

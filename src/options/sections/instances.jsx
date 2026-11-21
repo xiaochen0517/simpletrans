@@ -6,7 +6,6 @@
  *       破坏性操作列出后果并二次确认。
  * 依赖：React、`lucide-react`、E3（instances 的启停/删除/复制/设为当前）、设置页共享工具、
  *       实例卡片与确认对话框组件。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
  */
 
 import { useMemo, useState } from 'react';

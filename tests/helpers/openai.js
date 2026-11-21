@@ -3,7 +3,6 @@
  *
  * 模块：测试基建（tests/helpers）
  * 职责：用内存 ReadableStream/Response 构造 SSE 与非流式响应，供 OpenAI 协议与适配器测试使用。
- * 实现阶段：P8-1（大模型 OpenAI 兼容协议与执行）
  *
  * 不联网、不依赖真实扩展；chunk 边界由调用方决定。
  */

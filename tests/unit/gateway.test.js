@@ -584,7 +584,7 @@ describe('A2 请求网关：批次执行', () => {
   });
 });
 
-describe('A2 请求网关：译文缓存（P5）', () => {
+describe('A2 请求网关：译文缓存', () => {
   it('未命中时调用上游，并在定稿后写入缓存', async () => {
     const defaultSet = __cache.set.getMockImplementation();
     const { client, frames } = connectGateway();
@@ -1238,7 +1238,7 @@ describe('A2 请求网关：边界与并发入口', () => {
   });
 });
 
-describe('A2 页面提交（P6.3）：缓存、分组与切批', () => {
+describe('A2 页面提交：缓存、分组与切批', () => {
   /**
    * 以页面注入的 sender 建立 st-gateway 连接（带 tab.id），用于接收一次性提交的结果帧。
    * @param {number} [tabId]
@@ -1663,7 +1663,7 @@ describe('A2 页面提交（P6.3）：缓存、分组与切批', () => {
   });
 });
 
-describe('A2 批次切分（P6.3）', () => {
+describe('A2 批次切分', () => {
   /**
    * @param {number} count
    * @param {number} length
@@ -1716,7 +1716,7 @@ describe('A2 批次切分（P6.3）', () => {
   });
 });
 
-describe('A2 页面提交（P6.4）：队列与批量翻译', () => {
+describe('A2 页面提交：队列与批量翻译', () => {
   /**
    * 以页面注入的 sender 建立 st-gateway 连接（带 tab.id）。
    * @param {number} [tabId]
@@ -2091,7 +2091,7 @@ describe('A2 页面提交（P6.4）：队列与批量翻译', () => {
   });
 });
 
-describe('A2 多实例与百度（P8-2）', () => {
+describe('A2 多实例与百度', () => {
   /** 以页面 sender 建立连接（带 tab.id）。 */
   function connectPage(tabId = 7) {
     const client = chrome.runtime.connect({
@@ -2260,7 +2260,7 @@ describe('A2 多实例与百度（P8-2）', () => {
   });
 });
 
-describe('A2 批次切分（P8-2）', () => {
+describe('A2 批次切分', () => {
   it('batchMaxBytes 按 UTF-8 字节切批，且不拆段', () => {
     const groups = Array.from({ length: 5 }, (_, index) => ({
       key: `g${index}`,
@@ -2300,7 +2300,7 @@ describe('A2 批次切分（P8-2）', () => {
   });
 });
 
-describe('A2 网关：QPS、拆批与标签页清理（P9）', () => {
+describe('A2 网关：QPS、拆批与标签页清理', () => {
   /** 以页面 sender 建立连接（带 tab.id）。 */
   function connectPage(tabId = 7) {
     const client = chrome.runtime.connect({
@@ -2673,7 +2673,7 @@ describe('A2 网关：QPS、拆批与标签页清理（P9）', () => {
     expect(cleanupTab(7)).toBe(false);
   });
 });
-describe('A2 请求网关：跨 frame 连接（P13）', () => {
+describe('A2 请求网关：跨 frame 连接', () => {
   /**
    * 以指定 frame 的 sender 建立连接。
    * @param {number} tabId

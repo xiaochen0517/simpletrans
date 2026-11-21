@@ -170,7 +170,7 @@ describe('D3 状态与文本', () => {
   });
 });
 
-describe('D3 结果回显状态（P6.1）', () => {
+describe('D3 结果回显状态', () => {
   it('翻译中、流式与定稿三种状态可区分，文本可增量覆盖', () => {
     const p = host('<p id="p">Original</p>');
 
@@ -233,7 +233,7 @@ describe('D3 结果回显状态（P6.1）', () => {
   });
 });
 
-describe('D3 失败段刷新按钮（P9）', () => {
+describe('D3 失败段刷新按钮', () => {
   /**
    * 取宿主容器里的「刷新」按钮。
    * @param {Element} hostElement

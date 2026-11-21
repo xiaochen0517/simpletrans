@@ -449,7 +449,7 @@ describe('A1 控制面：ST_TEST_ENGINE', () => {
     expect(response.error.message).toContain('没有可用的翻译实例');
   });
 });
-describe('A1 控制面：缓存消息（P5）', () => {
+describe('A1 控制面：缓存消息', () => {
   it('ST_CACHE_STATS 返回条数、字节与上限', async () => {
     const response = await handleMessage(
       { type: MESSAGE_TYPES.CACHE_STATS, payload: {} },
@@ -599,7 +599,7 @@ describe('A1 标签页转发与按需注入', () => {
   });
 });
 
-describe('A1 控制面：ST_ROUTE（P6.1）', () => {
+describe('A1 控制面：ST_ROUTE', () => {
   /**
    * @param {object} payload
    * @returns {Promise<object>}
@@ -626,7 +626,7 @@ describe('A1 控制面：ST_ROUTE（P6.1）', () => {
         },
       },
     });
-    // P6.1 页面侧不建批，ST_START 不再携带 batch。
+    //  页面侧不建批，ST_START 不再携带 batch。
     expect(chrome.tabs.__sent[0].message.payload).not.toHaveProperty('batch');
     expect(chrome.scripting.__calls).toEqual([]);
   });
@@ -804,7 +804,7 @@ describe('A1 控制面：ST_ROUTE（P6.1）', () => {
   });
 });
 
-describe('A1 控制面：ST_PAGE_SUBMIT（P6.3）', () => {
+describe('A1 控制面：ST_PAGE_SUBMIT', () => {
   /**
    * 一条合法的整页提交载荷。
    * @returns {object}
@@ -1139,7 +1139,7 @@ describe('A1 控制面：ST_PAGE_SUBMIT（P6.3）', () => {
   });
 });
 
-describe('A1 控制面：快速翻译与读取选区（P11）', () => {
+describe('A1 控制面：快速翻译与读取选区', () => {
   it('ST_QUICK_TRANSLATE 交给 A5 并以 quick 模式调用引擎', async () => {
     translate.mockResolvedValue({ text: '你好', usage: { totalTokens: 3 } });
 
@@ -1188,7 +1188,7 @@ describe('A1 控制面：快速翻译与读取选区（P11）', () => {
     chrome.scripting.__error = null;
   });
 });
-describe('A1 跨 frame 广播与汇总（P13）', () => {
+describe('A1 跨 frame 广播与汇总', () => {
   /**
    * @param {object} payload
    * @returns {Promise<object>}

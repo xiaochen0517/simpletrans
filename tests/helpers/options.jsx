@@ -5,7 +5,6 @@
  * 模块：测试基建（tests/helpers）
  * 职责：安装 chrome stub、把 `ST_LIST_ENGINES` 绑定到真实的 E3 公开设置（读 stub 存储），
  *       提供渲染、等待、点击、输入与查找工具，供 tests/component/options*.test.jsx 复用。
- * 实现阶段：P8-3（设置页内容分类与 UI 规范化）
  *
  * 不联网、不加载真实扩展：消息由 helper 内的监听器应答，实例数据仍走 E3 的存储路径。
  */

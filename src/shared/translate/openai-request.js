@@ -6,8 +6,7 @@
  *       认证（bearer/header/query/none）、静态 query/header、model、system/user messages、
  *       生成参数（temperature/top_p/max_tokens/思考强度/额外参数）与 stream。
  * 依赖：E3 OpenAI 兼容配置（openai.js）、A3 提示词模板（prompt.js）、A3 错误映射（openai-errors.js）、
- *       E1 消息协议（错误码，P8-1 起）。
- * 实现阶段：P8-1（大模型 OpenAI 兼容协议与执行）
+ *       E1 消息协议（错误码）。
  *
  * `buildRequest()` 是纯函数：不读存储、不发请求、不记日志。密钥只进入请求头/查询参数，不进入日志摘要。
  */

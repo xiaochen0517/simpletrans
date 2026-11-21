@@ -5,18 +5,7 @@
  * 职责：接收页面注入的批次请求与统一段落提交，校验载荷、控制全局并发与每连接在途数量、查缓存、调用 A3
  *       并转发增量与定稿；处理取消、断线与批超时；不保存任务状态，不写 storage。
  * 依赖：A3（adapter）、A4（cache）、E1（protocol）、E2（settings）、E3（instances/registry）、
- *       E3 OpenAI 缓存 profile、语言目录、constants.js（P2 起）。
- * 实现阶段：P2（后台网关与页面通道）；P5 增加按段查缓存、命中帧与成功后写缓存；
- *           P6.2 缓存 key 升 v2，并发改读实例 `maxConcurrency`；
- *           P6.3 增加 `ST_PAGE_SUBMIT` 入口：一次缓存预取、命中回显、唯一 key 分组、
- *           按 `batchMaxChars` / `batchSize` 切批、`inFlightByKey` 在途复用与临时逐 group 执行器；
- *           P6.4 把临时执行器替换为 A3 翻译队列；
- *           P8-2 改为多实例：按当前实例分发 OpenAI/百度、每实例凭据、endpoint 权限、
- *           缓存 key v3、百度字节切批与 30 秒超时；
- *           P9 增加百度实例 QPS 门控、批量对齐二分拆批、重试交接与标签页关闭兜底清理；
- *           P12 连接建立后同时下发日志级别与悬停快捷键；
- *           P13 连接键改为 `tabId + frameId`：同一标签页的不同 frame 连接并存，提交按来源 frame 路由，
- *           标签页关闭清理全部 frame 连接。
+ *       E3 OpenAI 缓存 profile、语言目录、constants.js。
  */
 
 import {
@@ -1277,7 +1266,7 @@ function rejectBatch(conn, requestId, code, message, reason) {
 }
 
 /* ------------------------------------------------------------------------- *
- * P6.3 / P6.4 页面提交：缓存预取、命中回显、唯一 key 分组、切批与队列入队
+ * 页面提交：缓存预取、命中回显、唯一 key 分组、切批与队列入队
  * ------------------------------------------------------------------------- */
 
 /**

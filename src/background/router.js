@@ -6,16 +6,8 @@
  *       页面注入的统一段落提交；把结果回给调用方。
  * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、E3 语言目录、A3（adapter）、
  *       A4（cache）、A2（gateway 的并发名额）、公共数值。
- * 实现阶段：P2（后台网关与页面通道）；P5 增加缓存统计与清空消息；P6.1 增加 `ST_ROUTE` 转发与
- *           `ST_PAGE_SUBMIT` 接收；P6.2 `ST_LIST_ENGINES` 返回完整实例参数；
- *           P6.3 `ST_PAGE_SUBMIT` 校验后按 `sender.tab.id` 转交 A2；
- *           P8-2 `ST_LIST_ENGINES` 返回多实例公开字段、不创建默认实例，
- *           `ST_TEST_ENGINE` 支持 `instanceId` 与每实例凭据/权限校验；
- *           P11 增加 `ST_QUICK_TRANSLATE`（交给 A5）与 `ST_GET_SELECTION`（只读页面选区）；
- *           P13 整页命令改为跨 frame 广播并汇总（段数、清除数、会话状态），
- *           `ST_PAGE_SUBMIT` 按 `sender.frameId` 路由，新增 `ST_HOVER_TRIGGER` 转发。
  *
- * 标签页转发有四处入口：P12 的整页快捷键走 `startPageTranslation`（commands.js）、
+ * 标签页转发有四处入口：整页快捷键走 `startPageTranslation`（commands.js）、
  * 弹窗走 `ST_ROUTE` 的 `start` / `clear` / `status`（本文件）、页面悬停手势走 `ST_HOVER_TRIGGER`；
  * 前三处共用 `sendToFrames` 的补注入与错误归一，悬停手势由 `forwardHoverTrigger` 直接广播。
  */
@@ -310,7 +302,7 @@ async function routeCommand(payload, traceId) {
 
 /**
  * 接收页面注入的统一段落提交：形状校验通过后按 `sender.tab.id + sender.frameId` 把提交转交 A2。
- * A2 负责缓存预取、命中回显、分组切批与临时执行；A1 只等到「提交已创建」，
+ * A2 负责缓存预取、命中回显、分组切批与队列执行；A1 只等到「提交已创建」，
  * 不等待翻译完成，也不因缓存未命中而阻塞回执。
  * @param {unknown} payload
  * @param {{ tab?: { id?: number }, frameId?: number }} [sender]

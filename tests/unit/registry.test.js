@@ -1,5 +1,5 @@
 /**
- * E3 引擎类型目录测试（P8-2）
+ * E3 引擎类型目录测试
  *
  * 覆盖双类型目录、百度上限、实例名称与提示词校验、两种实例的字段校验。
  */
@@ -168,7 +168,7 @@ describe('E3 引擎类型目录', () => {
     expect(validateInstance(validBaidu({ maxConcurrency: 11 })).ok).toBe(false);
     expect(validateInstance(validBaidu({ maxConcurrency: 10 })).ok).toBe(true);
     expect(validateInstance(validBaidu({ batchSize: 2.5 })).ok).toBe(false);
-    // P9：百度接口 QPS 必须是 1–100 的整数。
+    //：百度接口 QPS 必须是 1–100 的整数。
     expect(validateInstance(validBaidu({ qps: 0 })).ok).toBe(false);
     expect(validateInstance(validBaidu({ qps: 101 })).ok).toBe(false);
     expect(validateInstance(validBaidu({ qps: 2.5 })).ok).toBe(false);

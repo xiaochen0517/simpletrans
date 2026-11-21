@@ -3,7 +3,7 @@
  * 页面注入接线测试
  *
  * 在 jsdom 中模拟后台一次性消息，验证：
- * - P6.1：Ctrl 单段与整页都经 ST_PAGE_SUBMIT 提交（scope=single/page）；
+ * -：Ctrl 单段与整页都经 ST_PAGE_SUBMIT 提交（scope=single/page）；
  * - ST_START 异步扫描视口附近段落 → 一条提交 → 每段「已提交」→ 假数据逐段回显；
  * - 滚动 200ms 后只补交新段落；
  * - ST_CLEAR 清除标记并返回 removed；
@@ -27,7 +27,7 @@ let contentMod = null;
 let serverPort = null;
 /** @type {object[]} 收到的 ST_PAGE_SUBMIT 载荷。 */
 let submissions = [];
-/** @type {object[]} 长连接上收到的数据面消息；P6.1 不应出现 ST_TRANSLATE_BATCH。 */
+/** @type {object[]} 长连接上收到的数据面消息； 不应出现 ST_TRANSLATE_BATCH。 */
 let gatewayMessages = [];
 /** @type {Function} ST_PAGE_SUBMIT 的回执。 */
 let submitReply = null;
@@ -250,7 +250,7 @@ async function loadContent() {
 // Ctrl 单段：统一提交
 // ---------------------------------------------------------------------------
 
-describe('页面注入接线（P6.1）：悬停单段统一提交', () => {
+describe('页面注入接线：悬停单段统一提交', () => {
   it('悬停快捷键从当前段落发 scope=single 的 ST_PAGE_SUBMIT 并标记已提交', async () => {
     await loadContent();
     const p = mount('<p id="p">Hello world</p>');
@@ -441,7 +441,7 @@ describe('页面注入接线（P6.1）：悬停单段统一提交', () => {
 // 整页统一提交
 // ---------------------------------------------------------------------------
 
-describe('页面注入整页取段与统一提交（P6.1）', () => {
+describe('页面注入整页取段与统一提交', () => {
   it('ST_START 扫描视口附近段落并通过 ST_PAGE_SUBMIT 提交，成功后标记已提交', async () => {
     await loadContent();
     document.body.innerHTML = '<p id="a">Hello</p><p id="b">World</p>';
@@ -718,7 +718,7 @@ describe('页面注入整页取段与统一提交（P6.1）', () => {
 // 悬停快捷键配置与整页会话状态
 // ---------------------------------------------------------------------------
 
-describe('页面注入接线（P12）：悬停快捷键配置与整页状态', () => {
+describe('页面注入接线：悬停快捷键配置与整页状态', () => {
   /**
    * @param {string} value
    */
@@ -813,7 +813,7 @@ function frame(type, requestId, itemId, payload = {}) {
   return { type, payload: { requestId, itemId, ...payload } };
 }
 
-describe('页面注入结果回显（P6.3）', () => {
+describe('页面注入结果回显', () => {
   it('整页提交后逐段回显：已提交 → 翻译中 → 流式 → 定稿', async () => {
     const mod = await loadContent();
     document.body.innerHTML = '<p id="a">Hello</p><p id="b">World</p>';
@@ -991,7 +991,7 @@ describe('页面注入结果回显（P6.3）', () => {
   });
 });
 
-describe('页面注入失败刷新与清除取消（P9）', () => {
+describe('页面注入失败刷新与清除取消', () => {
   it('失败段显示「刷新」，点击后只重发该段并重新显示「已提交」', async () => {
     await loadContent();
     document.body.innerHTML = '<p id="a">Hello</p><p id="b">World</p>';
@@ -1069,10 +1069,10 @@ describe('页面注入失败刷新与清除取消（P9）', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 重渲染自动恢复（P14）
+// 重渲染自动恢复
 // ---------------------------------------------------------------------------
 
-describe('页面注入重渲染恢复（P14）', () => {
+describe('页面注入重渲染恢复', () => {
   /**
    * 走完一次「整页提交 → 定稿」，返回宿主与本次提交。
    * @returns {Promise<{ host: Element, requestId: string, itemId: string }>}

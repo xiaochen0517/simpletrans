@@ -1,21 +1,17 @@
 /**
  * D5 任务调度
  *
- * 模块：页面注入（D）/ D5（任务调度属流程机制，见项目架构 6.2）
+ * 模块：页面注入（D）/ D5（任务调度属流程机制，见项目架构第 6 章）
  * 职责：悬停单段与整页翻译共用同一提交函数，经 `ST_PAGE_SUBMIT` 把段落发到后台；整页提交当前视口
  *       附近的段落，并在页面会话期间按 200ms 防抖增量提交新出现的段落；按提交记录把逐段结果帧
- *       （含流式增量）显示到对应段落；P9 起支持失败段单段刷新、清除前取消后台提交与重连后续传一次；
- *       P14 起把定稿译文写入 D6 镜像，并按 D6 的调用恢复丢失容器的译文。
+ *       （含流式增量）显示到对应段落；支持失败段单段刷新、清除前取消后台提交与重连后续传一次；
+ *       把定稿译文写入 D6 镜像，并按 D6 的调用恢复丢失容器的译文。
  * 依赖：D1（视口附近段落与段落 id）、D3（渲染）、D6（译文镜像，可选注入）、E1、公共数值、E4。
- * 实现阶段：P4（悬停单段任务）、P5（批次 `domain`）、P6.1（统一提交、页面会话与滚动增量）；
- *           P6.3 结果来源改为后台 D4 帧：提交前登记临时提交记录，命中帧可早到，提交失败时标错并清理；
- *           P9 增加 `retry()`、`clearAll()` 前取消、`resumeAfterReconnect()` 与 `applyBatchDone()`；
- *           P14 增加 `restore()` / `forget()` 与镜像、隐藏集合的调用。
  *
- * 页面不做分批、不做同文本去重、不负责真实翻译：这些都属于后台（P6.3 / P6.4）。
+ * 页面不做分批、不做同文本去重、不负责真实翻译：这些都属于后台。
  * 提交是一次性控制消息（`ST_PAGE_SUBMIT`），后台收到并回执即视为提交成功；
  * 结果帧复用数据面 `ST_ITEM_*` 形状，按 `requestId + itemId` 路由到段落。
- * 任务数据只在页面内存，不写 `storage.session`（状态镜像归 P7）。
+ * 任务数据只在页面内存，不写 `storage.session`，页面不保存状态镜像。
  */
 
 import { ERROR_CODES, MESSAGE_TYPES, makeError, normalizeDomain } from '../shared/protocol.js';
@@ -179,7 +175,7 @@ export function createTask({
     reconnectCount: 0,
   };
 
-  /** 结果来源：后台 D4 帧经 `applyResultFrame` 进入，页面不再生成假数据。 */
+  /** 结果来源：后台 D4 帧经 `applyResultFrame` 进入，页面不生成假数据。 */
 
   /**
    * @param {string} [traceId]
@@ -1062,7 +1058,7 @@ export function createTask({
   }
 
   /**
-   * 供测试与后续阶段读取提交状态快照。
+   * 供测试读取提交状态快照。
    * @returns {{ phase: string, total: number }}
    */
   function getStatus() {

@@ -20,7 +20,7 @@ import {
 } from '../../src/shared/protocol.js';
 
 describe('E1 错误码与分类标志', () => {
-  it('错误码到 retryable 的映射与架构 6.8 一致', () => {
+  it('错误码到 retryable 的映射与架构错误分类一致', () => {
     expect(ERROR_FLAGS[ERROR_CODES.CONFIG].retryable).toBe(false);
     expect(ERROR_FLAGS[ERROR_CODES.AUTH].retryable).toBe(false);
     expect(ERROR_FLAGS[ERROR_CODES.RATE_LIMIT].retryable).toBe(true);
@@ -57,7 +57,7 @@ describe('E1 消息名与载荷校验', () => {
     expect(PORT_NAME).toBe('st-gateway');
   });
 
-  it('消息名覆盖 P2 控制面与数据面', () => {
+  it('消息名覆盖控制面与数据面', () => {
     expect(MESSAGE_TYPES.LIST_ENGINES).toBe('ST_LIST_ENGINES');
     expect(MESSAGE_TYPES.TEST_ENGINE).toBe('ST_TEST_ENGINE');
     expect(MESSAGE_TYPES.TRANSLATE_BATCH).toBe('ST_TRANSLATE_BATCH');
@@ -76,14 +76,14 @@ describe('E1 消息名与载荷校验', () => {
     expect(MESSAGE_TYPES.GET_STATUS).toBe('ST_GET_STATUS');
     expect(MESSAGE_TYPES.QUICK_TRANSLATE).toBe('ST_QUICK_TRANSLATE');
     expect(MESSAGE_TYPES.GET_SELECTION).toBe('ST_GET_SELECTION');
-    // P12：移除悬停备用命令后没有 ST_TOGGLE。
+    //：移除悬停备用命令后没有 ST_TOGGLE。
     expect(MESSAGE_TYPES).not.toHaveProperty('TOGGLE');
-    // P9：失败段刷新复用 ST_PAGE_SUBMIT，没有独立的刷新消息，也没有实例切换消息。
+    //：失败段刷新复用 ST_PAGE_SUBMIT，没有独立的刷新消息，也没有实例切换消息。
     expect(MESSAGE_TYPES).not.toHaveProperty('ENGINE_CHANGED');
     expect(MESSAGE_TYPES).not.toHaveProperty('RETRY');
   });
 
-  it('isKnownMessageType 只认架构 4.6 的名字', () => {
+  it('isKnownMessageType 只认 MESSAGE_TYPES 的名字', () => {
     expect(isKnownMessageType('ST_TRANSLATE_BATCH')).toBe(true);
     expect(isKnownMessageType('ST_LOG_CONFIG')).toBe(true);
     expect(isKnownMessageType('ST_CONTENT_CONFIG')).toBe(true);
@@ -139,8 +139,8 @@ describe('E1 消息名与载荷校验', () => {
   });
 });
 
-describe('E1 缓存消息名（P5）', () => {
-  it('两条缓存消息名与架构 4.6 一致', () => {
+describe('E1 缓存消息名', () => {
+  it('两条缓存消息名与协议定义一致', () => {
     expect(MESSAGE_TYPES.CACHE_STATS).toBe('ST_CACHE_STATS');
     expect(MESSAGE_TYPES.CLEAR_CACHE).toBe('ST_CLEAR_CACHE');
   });
@@ -153,7 +153,7 @@ describe('E1 缓存消息名（P5）', () => {
   });
 });
 
-describe('E1 域名归一（P5）', () => {
+describe('E1 域名归一', () => {
   it('MAX_DOMAIN_CHARS 为 253', () => {
     expect(MAX_DOMAIN_CHARS).toBe(253);
   });

@@ -6,8 +6,6 @@
  * 依赖：A3 OpenAI 适配器（adapters/openai.js）、A3 百度适配器（adapters/baidu.js）、
  *       E3 OpenAI 配置与旧 DeepSeek 映射（config/openai.js）、E3 类型目录（registry.js）、
  *       A3 提示词模板（prompt.js）、A3 批量编码（batch.js）。
- * 实现阶段：P1–P6.4 提供 DeepSeek 契约；P8-1 改为 OpenAI 兼容适配器入口；
- *           P8-2 按 `instance.type` 分发 OpenAI/百度，未知类型返回 `CONFIG`。
  *
  * 页面翻译与设置页测试翻译共用本入口；`mode: 'quick'` 供弹窗快速翻译使用快速输出格式。
  * 凭据由调用方从存储读取后随实例传入，本模块不读写存储。

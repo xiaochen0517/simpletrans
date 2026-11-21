@@ -1,5 +1,5 @@
 /**
- * B2 打开测试页助手测试（P6.5）
+ * B2 打开测试页助手测试
  *
  * 只测试纯函数 `openTestPage()`：用扩展内路径拼 URL、调用 `chrome.tabs.create`、
  * 把不可用与失败归一为可读提示，不抛出未处理异常。
@@ -16,7 +16,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('openTestPage（P6.5）', () => {
+describe('openTestPage', () => {
   it('用扩展内路径拼出 URL，并在新标签页打开', async () => {
     const stub = installChrome();
     const getURL = vi.spyOn(stub.runtime, 'getURL');

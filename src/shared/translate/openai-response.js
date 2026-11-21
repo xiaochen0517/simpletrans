@@ -4,8 +4,7 @@
  * 模块：后台服务（A）/ A3
  * 职责：解析标准 OpenAI Chat Completions JSON 响应与错误体，读取有限长度的错误信息，
  *       归一输出文本（去首尾空白、剥一层成对引号）与 usage。
- * 依赖：A3 OpenAI 错误映射（openai-errors.js，P8-1 起）。
- * 实现阶段：P8-1（大模型 OpenAI 兼容协议与执行）
+ * 依赖：A3 OpenAI 错误映射（openai-errors.js）。
  *
  * 只接受标准响应：`choices[0].message.content` 必须是字符串；content 数组、旧 completions、
  * 缺少 choices 等非标准格式统一按「格式不支持」失败，不做猜测解析。

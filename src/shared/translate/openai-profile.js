@@ -4,11 +4,10 @@
  * 模块：后台服务（A）/ A3
  * 职责：提供 cache key v3 所需的 endpoint 指纹与生成参数哈希，并转出 E3 的主机权限约定。
  * 依赖：E3 OpenAI 兼容配置（openai.js）、E3 主机权限（config/host-permission.js）、
- *       A3 请求参数展开（openai-request.js，P8-1 起）。
- * 实现阶段：P8-1（大模型 OpenAI 兼容协议与执行）；P8-2 主机权限实现移到 E3 供实例资格检查共用。
+ *       A3 请求参数展开（openai-request.js）。
  *
  * profile 只含 endpoint 与生成参数，不含密钥、认证 query 与请求头；实际权限申请
- * （`chrome.permissions.request`）与 UI 由 P8-3 负责。
+ * （`chrome.permissions.request`）与 UI 由  负责。
  */
 
 import { normalizeOpenAIConfig } from '../config/openai.js';
@@ -93,7 +92,7 @@ export function generationProfile(config) {
 
 /**
  * 计算生成参数哈希（SHA-256，小写十六进制）。
- * 键排序、忽略未启用项；密钥、请求头与模型不参与，由 P8-2 的 cache key 统一拼接。
+ * 键排序、忽略未启用项；密钥、请求头与模型不参与，由  cache key 统一拼接。
  * @param {unknown} config
  * @returns {Promise<string>}
  */

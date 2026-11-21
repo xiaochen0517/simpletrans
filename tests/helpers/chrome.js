@@ -3,18 +3,16 @@
  *
  * 模块：测试基建（tests/helpers）
  * 职责：在 Node 环境里用内存实现本项目用到的 chrome API 语义，供单元测试与冒烟脚本复用。
- * 实现阶段：P1–P4（storage 三区 P1；runtime 事件、Port P2；storage.onChanged、getManifest、getURL P3；
- *             commands、tabs、scripting P4）
  *
- * P2 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
- * P3 补 storage.onChanged、getManifest、getURL；P4 补 commands.onCommand、tabs.query / sendMessage、
- * scripting.insertCSS / executeScript（记录调用顺序）；P6.5 补 tabs.create（打开测试页，记录创建参数）；
- * P11 让 executeScript 返回可配置结果（读取选区）。
- * P7 补 runtime.openOptionsPage（打开设置页，记录调用次数与可注入的失败）；
- * P6.3 connect 支持传入 sender，模拟页面注入的 `sender.tab`；
- * P8-2 补 permissions（contains / request / remove 与已授权集合）；P8-3 让 getManifest 返回
- * 与清单一致的名字、版本与权限，供设置页「关于」使用；P9 补 tabs.onRemoved（标签页关闭兜底清理）；
- * P12 补 commands.getAll（读取整页命令快捷键）。
+ * 只实现有调用方的部分：runtime.id / onMessage / connect / onConnect 与 Port；
+ *  补 storage.onChanged、getManifest、getURL； 补 commands.onCommand、tabs.query / sendMessage、
+ * scripting.insertCSS / executeScript（记录调用顺序）； 补 tabs.create（打开测试页，记录创建参数）；
+ *  让 executeScript 返回可配置结果（读取选区）。
+ *  补 runtime.openOptionsPage（打开设置页，记录调用次数与可注入的失败）；
+ *  connect 支持传入 sender，模拟页面注入的 `sender.tab`；
+ *  补 permissions（contains / request / remove 与已授权集合）； 让 getManifest 返回
+ * 与清单一致的名字、版本与权限，供设置页「关于」使用； 补 tabs.onRemoved（标签页关闭兜底清理）；
+ *  补 commands.getAll（读取整页命令快捷键）。
  */
 
 let portSequence = 0;
@@ -225,7 +223,7 @@ export function createChrome() {
   };
 
   const tabs = {
-    /** 标签页关闭事件；P9 起用于兜底清理。 */
+    /** 标签页关闭事件；用于兜底清理。 */
     onRemoved: makeEvent(),
     /** 下一次 query 的结果；测试可整体替换。 */
     __queryResult: [{ id: 1, active: true }],
