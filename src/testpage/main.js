@@ -3,9 +3,10 @@
  *
  * 模块：插件独立页面（C）/ C6 翻译测试页
  * 职责：加载 D 入口以启动页面注入运行时；把页内「翻译整页 / 显示原文」按钮接到同一份 D5 页面任务；
- *       显示提交/清除结果与错误；不生成正文、不读写配置、不调用引擎。
- * 依赖：D 入口 `getTask()`、测试页 HTML 中的操作条元素。
- * 实现阶段：P6.5（结果来源改为后台真实帧，移除模拟开关）。
+ *       显示提交/清除结果与错误；维护 `#rerender` 重渲染夹具（按模式自动或手动重建目标段落）；
+ *       不生成正文、不读写配置、不调用引擎。
+ * 依赖：D 入口 `getTask()`、测试页 HTML 中的操作条与重渲染控件元素。
+ * 实现阶段：P6.5（结果来源改为后台真实帧，移除模拟开关）；重渲染夹具（docs/demand/20261121-01）。
  *
  * 约束：普通网页不受影响；本页只在扩展页面内使用，不经过清单注入。
  */
@@ -121,3 +122,113 @@ clearButton?.addEventListener('click', () => {
 form?.addEventListener('submit', (event) => {
   event.preventDefault();
 });
+
+/**
+ * 重渲染夹具：按模式重建 `#rerender-target`，用于确认页面重渲染后译文消失的现状，
+ * 并在译文自动恢复实现后手动验证。夹具只操作 DOM，不调用 D5、不参与翻译。
+ */
+const RERENDER_SOURCE =
+  'The translated sentence should come back after the page rebuilds it, because the source text did not change.';
+const RERENDER_INTERVAL_MS = 3000;
+const RERENDER_MODE_LABELS = {
+  children: 'replace children',
+  host: 'replace host',
+  text: 'changed text',
+};
+
+const rerenderModeSelect = document.getElementById('rerender-mode');
+const rerenderToggle = document.getElementById('rerender-toggle');
+const rerenderNow = document.getElementById('rerender-now');
+const rerenderStatus = document.getElementById('rerender-status');
+
+let rerenderTimer = null;
+let rerenderCount = 0;
+
+/**
+ * @returns {HTMLElement | null}
+ */
+function getRerenderTarget() {
+  return document.getElementById('rerender-target');
+}
+
+/**
+ * @returns {'children' | 'host' | 'text'}
+ */
+function getRerenderMode() {
+  const value = rerenderModeSelect?.value;
+  return value === 'host' || value === 'text' ? value : 'children';
+}
+
+/**
+ * 刷新状态徽标：次数 · 自动/手动 · 当前模式。
+ */
+function updateRerenderStatus() {
+  if (!rerenderStatus) return;
+  const state = rerenderTimer == null ? 'idle' : 'auto';
+  const label = RERENDER_MODE_LABELS[getRerenderMode()];
+  rerenderStatus.textContent = `Refreshes: ${rerenderCount} · ${state} · ${label}`;
+}
+
+/**
+ * 目标段落的重建文本：文本模式每次追加 Revision 序号，同文本模式恒为原文。
+ * @returns {string}
+ */
+function nextRerenderText() {
+  return getRerenderMode() === 'text'
+    ? `${RERENDER_SOURCE} Revision ${rerenderCount + 1}.`
+    : RERENDER_SOURCE;
+}
+
+/**
+ * 重建一次目标段落：同文本模式删除译文容器但不改原文；文本模式同时改变原文。
+ * 宿主替换模式把目标段落换成同文本的新元素，段落 id 由页面注入重新分配。
+ */
+function rerenderOnce() {
+  const target = getRerenderTarget();
+  if (!target) return;
+
+  const text = nextRerenderText();
+  rerenderCount += 1;
+
+  if (getRerenderMode() === 'host') {
+    const next = document.createElement('p');
+    next.id = 'rerender-target';
+    next.className = target.className;
+    next.textContent = text;
+    target.replaceWith(next);
+  } else {
+    target.replaceChildren(document.createTextNode(text));
+  }
+
+  updateRerenderStatus();
+}
+
+function startRerenderAuto() {
+  if (rerenderTimer != null) return;
+  rerenderTimer = setInterval(rerenderOnce, RERENDER_INTERVAL_MS);
+  rerenderToggle?.setAttribute('aria-pressed', 'true');
+  if (rerenderToggle) rerenderToggle.textContent = 'Stop auto refresh';
+  updateRerenderStatus();
+}
+
+function stopRerenderAuto() {
+  if (rerenderTimer == null) return;
+  clearInterval(rerenderTimer);
+  rerenderTimer = null;
+  rerenderToggle?.setAttribute('aria-pressed', 'false');
+  if (rerenderToggle) rerenderToggle.textContent = 'Start auto refresh';
+  updateRerenderStatus();
+}
+
+rerenderToggle?.addEventListener('click', () => {
+  if (rerenderTimer == null) startRerenderAuto();
+  else stopRerenderAuto();
+});
+
+rerenderNow?.addEventListener('click', rerenderOnce);
+rerenderModeSelect?.addEventListener('change', updateRerenderStatus);
+
+// 页面进入 bfcache 或被关闭时停掉计时器，避免在后台继续改 DOM。
+window.addEventListener('pagehide', stopRerenderAuto);
+
+updateRerenderStatus();

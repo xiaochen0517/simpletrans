@@ -4,11 +4,13 @@
  * 模块：页面注入（D）/ D5（任务调度属流程机制，见项目架构 6.2）
  * 职责：悬停单段与整页翻译共用同一提交函数，经 `ST_PAGE_SUBMIT` 把段落发到后台；整页提交当前视口
  *       附近的段落，并在页面会话期间按 200ms 防抖增量提交新出现的段落；按提交记录把逐段结果帧
- *       （含流式增量）显示到对应段落；P9 起支持失败段单段刷新、清除前取消后台提交与重连后续传一次。
- * 依赖：D1（视口附近段落与段落 id）、D3（渲染）、E1、公共数值、E4。
+ *       （含流式增量）显示到对应段落；P9 起支持失败段单段刷新、清除前取消后台提交与重连后续传一次；
+ *       P14 起把定稿译文写入 D6 镜像，并按 D6 的调用恢复丢失容器的译文。
+ * 依赖：D1（视口附近段落与段落 id）、D3（渲染）、D6（译文镜像，可选注入）、E1、公共数值、E4。
  * 实现阶段：P4（悬停单段任务）、P5（批次 `domain`）、P6.1（统一提交、页面会话与滚动增量）；
  *           P6.3 结果来源改为后台 D4 帧：提交前登记临时提交记录，命中帧可早到，提交失败时标错并清理；
- *           P9 增加 `retry()`、`clearAll()` 前取消、`resumeAfterReconnect()` 与 `applyBatchDone()`。
+ *           P9 增加 `retry()`、`clearAll()` 前取消、`resumeAfterReconnect()` 与 `applyBatchDone()`；
+ *           P14 增加 `restore()` / `forget()` 与镜像、隐藏集合的调用。
  *
  * 页面不做分批、不做同文本去重、不负责真实翻译：这些都属于后台（P6.3 / P6.4）。
  * 提交是一次性控制消息（`ST_PAGE_SUBMIT`），后台收到并回执即视为提交成功；
@@ -114,6 +116,12 @@ function ok(action) {
  *   },
  *   submit?: (payload: object) => Promise<{ ok: boolean, data?: object, error?: object }>,
  *   cancelRequest?: (requestId: string) => void,
+ *   heal?: {
+ *     remember?: (source: string, translated: string, host?: Element | null) => boolean,
+ *     hide?: (source: string) => void,
+ *     unhide?: (host: Element | null, source: string) => void,
+ *     reset?: () => void,
+ *   } | null,
  *   logger?: object,
  *   now?: () => number,
  *   schedule?: (fn: () => void, ms: number) => unknown,
@@ -126,6 +134,7 @@ export function createTask({
   renderer,
   submit,
   cancelRequest,
+  heal = null,
   logger = log,
   now = () => Date.now(),
   schedule = (fn, ms) => setTimeout(fn, ms),
@@ -180,6 +189,19 @@ export function createTask({
     return traceId && typeof logger.withTrace === 'function'
       ? logger.withTrace(traceId)
       : logger;
+  }
+
+  /**
+   * 自愈模块的安全调用：镜像、隐藏集合或重置失败都不影响提交与显示。
+   * @param {'remember'|'hide'|'unhide'|'reset'} method
+   * @param {...unknown} args
+   */
+  function callHeal(method, ...args) {
+    try {
+      heal?.[method]?.(...args);
+    } catch {
+      // 自愈失败只影响自动恢复，不影响页面任务。
+    }
   }
 
   /**
@@ -619,6 +641,7 @@ export function createTask({
         item.state = 'done';
         item.buffer = text;
         renderer.showDone(host, text);
+        callHeal('remember', item.text, text, host);
         break;
       }
       case MESSAGE_TYPES.ITEM_ERROR: {
@@ -661,6 +684,7 @@ export function createTask({
     page.resumeUsed = false;
     stopScroll();
     stopResultPipeline();
+    callHeal('reset');
     renderer.clearAll();
     resetSessionData();
     page.lastError = null;
@@ -751,10 +775,12 @@ export function createTask({
     const itemId = ensureHost(host);
     const traceLog = traceOf(traceId ?? page.traceId);
     const state = renderer.getState(host);
+    const text = normalizeText(extractText(host));
 
     if (state === 'done' || state === 'error' || state === 'submitted') {
       renderer.remove(host);
       page.registry.delete(itemId);
+      if (text) callHeal('hide', text);
       traceLog.info('task.toggle', '移除段落标记', { action: 'hidden' });
       return ok('hidden');
     }
@@ -764,7 +790,6 @@ export function createTask({
       return ok('submitting');
     }
 
-    const text = normalizeText(extractText(host));
     if (!text || !hasLetter(text)) {
       traceLog.debug('segment.skip', '段落没有可翻译文本', { action: 'no-target' });
       return ok('no-target');
@@ -773,6 +798,7 @@ export function createTask({
     const paragraph = { index: 0, hostId: itemId, text, host };
     const epoch = page.labelEpoch;
     page.resumeUsed = false;
+    callHeal('unhide', host, text);
     renderer.showSubmitting(host);
     const { requestId, submission, response } = await submitBatch(
       'single',
@@ -827,6 +853,7 @@ export function createTask({
     const traceLog = traceOf(traceId ?? page.traceId);
     const epoch = page.labelEpoch;
     page.resumeUsed = false;
+    callHeal('unhide', host, text);
     renderer.showSubmitting(host);
 
     const { requestId, submission, response } = await submitBatch(
@@ -863,6 +890,45 @@ export function createTask({
       code,
     });
     return { ok: false, error: makeError(code, message, response?.error?.reason) };
+  }
+
+  /**
+   * 自动恢复：把会话内镜像的定稿译文重新挂到已丢失译文容器的宿主。
+   * 只由 D6 在「原文未变化」时调用；不提交、不改变页面会话与已提交集合。
+   * @param {Element} host
+   * @param {string} source
+   * @param {string} translated
+   * @returns {boolean}
+   */
+  function restore(host, source, translated) {
+    if (!host || host.nodeType !== 1 || host.isConnected === false) return false;
+    if (typeof source !== 'string' || source === '') return false;
+    if (typeof translated !== 'string' || translated === '') return false;
+
+    const itemId = ensureHost(host);
+    if (!itemId) return false;
+    if (!renderer.showDone(host, translated)) return false;
+
+    page.registry.set(itemId, { host, text: source });
+    page.attemptedHosts.add(itemId);
+    traceOf(page.traceId).debug('page.restore', '自动恢复译文', {
+      itemId,
+      textLength: source.length,
+    });
+    return true;
+  }
+
+  /**
+   * 原文已经变化：注销该段注册表与最近提交索引，避免重连续传或迟到帧再落到它上面。
+   * @param {Element} host
+   * @returns {boolean}
+   */
+  function forget(host) {
+    const itemId = hostIdOf(host);
+    if (!itemId) return false;
+    page.registry.delete(itemId);
+    page.latestRequest.delete(itemId);
+    return true;
   }
 
   /**
@@ -968,6 +1034,7 @@ export function createTask({
     page.resumeUsed = false;
     stopScroll();
     stopResultPipeline();
+    callHeal('reset');
     resetSessionData();
     page.phase = 'idle';
     page.lastError = null;
@@ -1006,6 +1073,8 @@ export function createTask({
     start,
     toggle,
     retry,
+    restore,
+    forget,
     clearAll,
     dispose,
     resume,

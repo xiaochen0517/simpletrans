@@ -115,16 +115,17 @@ function acceptedSubmit() {
 
 /**
  * 用注入的扫描、提交重建任务。
- * @param {{ scan?: Function, submit?: Function, inViewport?: Function, logger?: object }} [deps]
+ * @param {{ scan?: Function, submit?: Function, inViewport?: Function, logger?: object, heal?: object }} [deps]
  * @returns {ReturnType<typeof createTask>}
  */
-function pageTask({ scan = async () => [], submit = acceptedSubmit(), inViewport, logger } = {}) {
+function pageTask({ scan = async () => [], submit = acceptedSubmit(), inViewport, logger, heal } = {}) {
   task = createTask({
     renderer,
     submit,
     scan,
     ...(inViewport ? { inViewport } : {}),
     ...(logger ? { logger } : {}),
+    ...(heal ? { heal } : {}),
   });
   return task;
 }
@@ -1465,5 +1466,99 @@ describe('D5 清除取消与重连续传（P9）', () => {
 
     expect(await task.resumeAfterReconnect()).toBeNull();
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 与 D6 的衔接：镜像、自动恢复与隐藏
+// ---------------------------------------------------------------------------
+
+describe('D5 与 D6：译文镜像、恢复与隐藏', () => {
+  /**
+   * 自愈模块的轻量替身：只记录 D5 的调用。
+   * @returns {{ remember: import('vitest').Mock, hide: import('vitest').Mock, unhide: import('vitest').Mock, reset: import('vitest').Mock }}
+   */
+  function healStub() {
+    return {
+      remember: vi.fn(() => true),
+      hide: vi.fn(),
+      unhide: vi.fn(),
+      reset: vi.fn(),
+    };
+  }
+
+  it('定稿帧写入镜像：原文、译文与宿主', async () => {
+    const heal = healStub();
+    const hosts = mountTexts(['Hello']);
+    const submit = acceptedSubmit();
+    pageTask({ scan: async () => paragraphsOf(hosts, ['Hello']), submit, heal });
+
+    await task.start({ targetLang: 'zh' });
+    const requestId = submit.mock.calls[0][0].requestId;
+    const itemId = hosts[0].getAttribute(HOST_ATTR);
+
+    task.applyResultFrame(
+      frameOf(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '你好' })
+    );
+
+    expect(heal.remember).toHaveBeenCalledWith('Hello', '你好', hosts[0]);
+  });
+
+  it('restore 把定稿译文挂回宿主并登记，不增加已提交计数', () => {
+    const heal = healStub();
+    pageTask({ heal });
+    const host = mountTexts(['Hello'])[0];
+
+    expect(task.restore(host, 'Hello', '你好')).toBe(true);
+    expect(renderer.getState(host)).toBe('done');
+    expect(textOf(host)).toBe('你好');
+    expect(task.getStatus()).toEqual({ phase: 'idle', total: 0 });
+  });
+
+  it('restore 拒绝脱离文档的宿主、空原文与空译文', () => {
+    pageTask({});
+    const host = mountTexts(['Hello'])[0];
+    const detached = document.createElement('p');
+    detached.textContent = 'Hello';
+
+    expect(task.restore(detached, 'Hello', '你好')).toBe(false);
+    expect(task.restore(host, '', '你好')).toBe(false);
+    expect(task.restore(host, 'Hello', '')).toBe(false);
+    expect(renderer.getState(host)).toBeNull();
+  });
+
+  it('悬停提交解除隐藏，隐藏时记录原文文本', async () => {
+    const heal = healStub();
+    pageTask({ heal });
+    const host = mountTexts(['Hello'])[0];
+
+    const submitted = await task.toggle(host);
+    expect(submitted).toEqual({ ok: true, data: { action: 'submitted' } });
+    expect(heal.unhide).toHaveBeenCalledWith(host, 'Hello');
+
+    const hidden = await task.toggle(host);
+    expect(hidden).toEqual({ ok: true, data: { action: 'hidden' } });
+    expect(heal.hide).toHaveBeenCalledWith('Hello');
+  });
+
+  it('start 与 clearAll 重置自愈会话', async () => {
+    const heal = healStub();
+    pageTask({ scan: async () => [], heal });
+
+    await task.start({});
+    expect(heal.reset).toHaveBeenCalledTimes(1);
+
+    task.clearAll();
+    expect(heal.reset).toHaveBeenCalledTimes(2);
+  });
+
+  it('forget 只注销注册表，不改变页面显示', () => {
+    pageTask({});
+    const host = mountTexts(['Hello'])[0];
+    task.restore(host, 'Hello', '你好');
+
+    expect(task.forget(host)).toBe(true);
+    expect(renderer.getState(host)).toBe('done');
+    expect(task.forget(document.createElement('p'))).toBe(false);
   });
 });

@@ -1067,3 +1067,56 @@ describe('页面注入失败刷新与清除取消（P9）', () => {
     expect(rendererTextOf(host)).toBe('已提交，等待翻译');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 重渲染自动恢复（P14）
+// ---------------------------------------------------------------------------
+
+describe('页面注入重渲染恢复（P14）', () => {
+  /**
+   * 走完一次「整页提交 → 定稿」，返回宿主与本次提交。
+   * @returns {Promise<{ host: Element, requestId: string, itemId: string }>}
+   */
+  async function translateOnce() {
+    await loadContent();
+    document.body.innerHTML = '<p id="a">Hello</p>';
+    await sendToContent({ type: MESSAGE_TYPES.START, payload: { targetLang: 'zh' } });
+
+    const host = document.getElementById('a');
+    const requestId = submissions[0].requestId;
+    const itemId = host.getAttribute(HOST_ATTR);
+    const task = contentMod.getTask();
+    task.applyResultFrame(frame(MESSAGE_TYPES.ITEM_START, requestId, itemId));
+    task.applyResultFrame(
+      frame(MESSAGE_TYPES.ITEM_DONE, requestId, itemId, { text: '你好', usage: null })
+    );
+    expect(rendererTextOf(host)).toBe('你好');
+    return { host, requestId, itemId };
+  }
+
+  it('同文本重建子节点后自动重挂译文，且不新增提交', async () => {
+    const { host } = await translateOnce();
+
+    host.replaceChildren(document.createTextNode('Hello'));
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+
+    expect(translationOf(host)).not.toBeNull();
+    expect(rendererTextOf(host)).toBe('你好');
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('原文变化时移除旧译文，不恢复也不新增提交', async () => {
+    const { host } = await translateOnce();
+
+    host.replaceChildren(document.createTextNode('Hello world'));
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+
+    expect(translationOf(host)).toBeNull();
+    expect(normalizeText(extractText(host))).toBe('Hello world');
+    expect(submissions).toHaveLength(1);
+  });
+});

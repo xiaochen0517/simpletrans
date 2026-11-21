@@ -2,17 +2,19 @@
  * 页面注入入口
  *
  * 模块：页面注入（D）
- * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5、处理后台命令与配置帧；
+ * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5/D6、处理后台命令与配置帧；
  *       提供可配置的修饰键手势作为悬停翻译快捷键（Chrome commands 不支持裸修饰键）；
  *       P9 起注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段；
- *       P12 起从 `ST_CONTENT_CONFIG` 读取悬停快捷键并支持整页会话状态查询。
- * 依赖：D1–D5、E1 消息协议、E4 日志、E6 快捷键、content.css（P2 起）。
+ *       P12 起从 `ST_CONTENT_CONFIG` 读取悬停快捷键并支持整页会话状态查询；
+ *       P14 起装配 D6 译文自愈，页面重渲染后按镜像恢复原文未变的译文。
+ * 依赖：D1–D6、E1 消息协议、E4 日志、E6 快捷键、content.css（P2 起）。
  * 实现阶段：P4（段落提取、悬停锚定与译文渲染）；P6.1 增加 `ST_START` 整页任务入口与统一提交；
  *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务；
  *           P6.3 把后台 `ST_ITEM_*` 结果帧转发给 D5，页面不再生成假数据；
  *           P9 注入 `onRetry` / `cancelBatch`，转发 `ST_BATCH_DONE` 并在重连后触发续传；
  *           P12 悬停手势改为按设置识别修饰键，新增 `ST_GET_STATUS` 查询与配置帧处理；
- *           P13 悬停手势改为经后台广播到同一标签页所有 frame，由持有指针的 frame 处理。
+ *           P13 悬停手势改为经后台广播到同一标签页所有 frame，由持有指针的 frame 处理；
+ *           P14 装配 D6 并接入页面生命周期。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -34,6 +36,7 @@ import {
   setLogLevel,
 } from '../shared/log/logger.js';
 import { createBridge } from './bridge.js';
+import { createHealer } from './heal.js';
 import { createRenderer } from './dom/renderer.js';
 import { createHoverTracker } from './hover.js';
 import { createTask } from './task.js';
@@ -71,6 +74,8 @@ let bridge = null;
 let task = null;
 /** @type {ReturnType<typeof createHoverTracker> | null} */
 let hover = null;
+/** @type {ReturnType<typeof createHealer> | null} */
+let healer = null;
 /** @type {ReturnType<typeof createLogger> | null} */
 let log = null;
 let readyLogged = false;
@@ -463,10 +468,18 @@ function main() {
     const renderer = createRenderer({
       onRetry: (host) => task?.retry(host),
     });
+    // D6 的恢复与注销回调延迟取 task；D5 通过注入的 heal 写镜像与隐藏集合。
+    healer = createHealer({
+      document,
+      renderer,
+      restore: (host, source, translated) => task?.restore(host, source, translated) === true,
+      forget: (host) => task?.forget(host),
+    });
     task = createTask({
       renderer,
       submit: submitPage,
       cancelRequest: cancelSubmission,
+      heal: healer,
     });
     hover = createHoverTracker();
     hover.start();
@@ -481,12 +494,14 @@ function main() {
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', () => {
       hover?.stop();
+      healer?.stop();
       task?.dispose();
       bridge?.close();
     });
     window.addEventListener('pageshow', (event) => {
       if (event.persisted) {
         bridge?.connect();
+        healer?.start();
         hover?.start();
         task?.resume();
       }

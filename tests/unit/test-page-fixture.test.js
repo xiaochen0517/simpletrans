@@ -3,10 +3,11 @@
  *
  * 直接读取并解析 `src/testpage/index.html`，验证它是一份稳定、离线、可翻译的固定夹具：
  * - 语言、`main` 与页内操作条（两个按钮、无模拟开关）的骨架；
- * - 十个区块的 id、`data-test-section`、`<h2>` 与顺序；
+ * - 区块的 id、`data-test-section`、`<h2>` 与顺序；
  * - 必需的前端 HTML 类型；正文英文、操作条中文且不参与翻译；
  * - 资源本地化与页内锚点；
  * - D1 应跳过的负例；
+ * - 重渲染夹具的目标段落、三种重建模式与控件；
  * - 长文段数与唯一的入口脚本（无内联脚本）。
  *
  * 只检查结构是否具备，不判断译文措辞；翻译效果由人工验收。
@@ -21,7 +22,7 @@ import { describe, expect, it } from 'vitest';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FIXTURE_PATH = join(ROOT, 'src', 'testpage', 'index.html');
 
-/** 需求 2.2 规定的十个区块，按页面从上到下的顺序。 */
+/** 夹具区块，按页面从上到下的顺序。 */
 const SECTION_IDS = [
   'overview',
   'typography',
@@ -31,6 +32,7 @@ const SECTION_IDS = [
   'controls',
   'numbers',
   'long-article',
+  'rerender',
   'non-translatable',
   'footer',
 ];
@@ -120,7 +122,7 @@ describe('C6 翻译测试页夹具（P6.5）', () => {
     expect(main.contains(toolbar)).toBe(false);
   });
 
-  it('十个区块齐全，id 唯一，每个都有 data-test-section 与 h2', () => {
+  it('区块齐全，id 唯一，每个都有 data-test-section 与 h2', () => {
     const selector = SECTION_IDS.map((id) => `#${id}`).join(', ');
     expect(document.querySelectorAll(selector)).toHaveLength(SECTION_IDS.length);
 
@@ -133,11 +135,44 @@ describe('C6 翻译测试页夹具（P6.5）', () => {
       expect(section.querySelector('h2'), `#${id} 缺少 <h2>`).not.toBeNull();
     }
 
-    // 文档顺序与需求 2.2 的表格一致：前九个在 main 内，页脚在 main 之后。
+    // 文档顺序与需求 2.2 的表格一致：除页脚外都在 main 内，页脚在 main 之后。
     const order = [...document.querySelectorAll('[data-test-section]')]
       .map((element) => element.id)
       .filter((id) => SECTION_IDS.includes(id));
     expect(order).toEqual(SECTION_IDS);
+  });
+
+  it('重渲染夹具包含目标段落、三种重建模式与独立控件', () => {
+    const section = document.getElementById('rerender');
+    const target = document.getElementById('rerender-target');
+    const mode = document.getElementById('rerender-mode');
+    const toggle = document.getElementById('rerender-toggle');
+    const now = document.getElementById('rerender-now');
+    const status = document.getElementById('rerender-status');
+
+    expect(section).not.toBeNull();
+    expect(target).not.toBeNull();
+    expect(target.tagName).toBe('P');
+    expect(target.textContent).toMatch(/source text did not change/);
+
+    expect(mode).not.toBeNull();
+    expect([...mode.options].map((option) => option.value)).toEqual([
+      'children',
+      'host',
+      'text',
+    ]);
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(now).not.toBeNull();
+    expect(status).not.toBeNull();
+
+    // 控件是测试工具，不参与翻译；不放回顶部操作条。
+    const panel = section.querySelector('[data-simpletrans-ignore][translate="no"]');
+    expect(panel).not.toBeNull();
+    for (const element of [mode, toggle, now, status]) {
+      expect(panel.contains(element)).toBe(true);
+    }
+    expect(document.querySelector('header').contains(toggle)).toBe(false);
   });
 
   it('操作条只有「翻译整页 / 显示原文」，不含模拟开关', () => {

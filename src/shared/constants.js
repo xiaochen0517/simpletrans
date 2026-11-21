@@ -6,7 +6,8 @@
  * 依赖：无（P1 起）。
  * 实现阶段：P1–P2；P6.1 增加整页段落上限、扫描分片、视口附近余量与滚动防抖；
  *           P8-2 增加实例数量/名称/字节上限与百度翻译超时、单段/单批 UTF-8 字节上限；
- *           P9 增加重试间隔/抖动与 QPS 滑动窗口。
+ *           P9 增加重试间隔/抖动与 QPS 滑动窗口；
+ *           P14 增加重渲染自动恢复的去抖、候选上限、镜像上限与抖动阈值。
  *
  * 翻译并发、单批段数与批次字符数的默认值属于实例配置，见 E3 registry.js；
  * 本文件可被页面注入引用，因此不得出现服务商地址、密钥字段或签名相关词。
@@ -67,6 +68,24 @@ export const VIEWPORT_MARGIN_RATIO = 0.5;
 
 /** 滚动停止后等待多久再扫描并提交新段落（毫秒，P6.1 起）。 */
 export const SCROLL_SUBMIT_DEBOUNCE_MS = 200;
+
+/** 页面重渲染后，合并 DOM 变更再检查译文是否丢失的去抖（毫秒，P14 起）。 */
+export const RESTORE_DEBOUNCE_MS = 150;
+
+/** 单次恢复检查最多处理的候选宿主数（P14 起）。 */
+export const RESTORE_MAX_CANDIDATES = 200;
+
+/** 页面内译文镜像的条目上限（P14 起），按写入顺序淘汰最旧条目。 */
+export const RESTORE_MIRROR_LIMIT = 2_000;
+
+/** 同一文本反复重建的统计窗口（毫秒，P14 起）。 */
+export const RESTORE_FLAP_WINDOW_MS = 10_000;
+
+/** 同一文本在统计窗口内允许的自动恢复次数，超过即暂停（P14 起）。 */
+export const RESTORE_FLAP_LIMIT = 5;
+
+/** 超过重建阈值后暂停该文本自动恢复的时长（毫秒，P14 起）。 */
+export const RESTORE_FLAP_PAUSE_MS = 10_000;
 
 /** 实例数量上限（P8-2 起）。 */
 export const MAX_INSTANCES = 20;
