@@ -141,7 +141,7 @@ await test('S1 清单声明的入口文件齐全', async () => {
 
 // --------------------------------------------------------------- S2 HTML 引用
 await test('S2 HTML 引用的资源齐全', async () => {
-  const pages = ['popup/index.html', 'options/index.html', 'testpage/index.html'];
+  const pages = ['popup/index.html', 'options/index.html', 'testpage/index.html', 'testpage/frame.html'];
   const missing = [];
   for (const page of pages) {
     const htmlPath = join(distDir, page);
@@ -244,6 +244,7 @@ await test('S8 入口注册：background 注册 onMessage/onConnect/commands，c
     'ST_TRANSLATE_BATCH',
     'ST_CONTENT_CONFIG',
     'ST_GET_STATUS',
+    'ST_HOVER_TRIGGER',
     'ST_START',
     'ST_PAGE_SUBMIT',
     'ST_LOG_CONFIG',

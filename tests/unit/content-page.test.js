@@ -385,6 +385,56 @@ describe('页面注入接线（P6.1）：悬停单段统一提交', () => {
     expect(submissions).toHaveLength(0);
     input.remove();
   });
+
+  it('悬停手势先请求后台广播 ST_HOVER_TRIGGER，再由广播处理提交', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello broadcast</p>');
+    const send = vi.spyOn(chrome.runtime, 'sendMessage');
+
+    hover(p);
+    tapModifier('Control');
+    await flush();
+
+    expect(send).toHaveBeenCalledWith({ type: MESSAGE_TYPES.HOVER_TRIGGER });
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].scope).toBe('single');
+    expect(submissions[0].paragraphs[0].text).toBe('Hello broadcast');
+  });
+
+  it('收到后台广播 ST_HOVER_TRIGGER 时对当前宿主提交（焦点在其它 frame）', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello remote</p>');
+    hover(p);
+
+    chrome.runtime.onMessage.emit(
+      { type: MESSAGE_TYPES.HOVER_TRIGGER },
+      { id: chrome.runtime.id },
+      () => {}
+    );
+    await flush();
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].paragraphs[0].text).toBe('Hello remote');
+    expect(translationOf(p)).not.toBe(null);
+  });
+
+  it('广播请求失败时回退本 frame 处理，不丢悬停能力', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello fallback</p>');
+    const original = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = (message) =>
+      message?.type === MESSAGE_TYPES.HOVER_TRIGGER
+        ? Promise.reject(new Error('background unavailable'))
+        : original.call(chrome.runtime, message);
+
+    hover(p);
+    tapModifier('Control');
+    await flush();
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].paragraphs[0].text).toBe('Hello fallback');
+    expect(translationOf(p)).not.toBe(null);
+  });
 });
 
 // ---------------------------------------------------------------------------

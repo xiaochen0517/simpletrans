@@ -244,8 +244,11 @@ export function createChrome() {
     async query() {
       return tabs.__queryResult.map((tab) => ({ ...tab }));
     },
-    async sendMessage(tabId, message) {
-      tabs.__sent.push({ tabId, message });
+    async sendMessage(tabId, message, options = {}) {
+      const record = { tabId, message };
+      // 只在实际传了 options 时记录，保持既有单 frame 断言的对象形状。
+      if (options && Object.keys(options).length > 0) record.options = options;
+      tabs.__sent.push(record);
       if (tabs.__sendQueue.length > 0) {
         const next = tabs.__sendQueue.shift();
         if (next?.error) throw next.error;

@@ -11,7 +11,8 @@
  *           P6.5 增加 `getTask()` 只读钩子，供扩展内翻译测试页驱动同一份页面任务；
  *           P6.3 把后台 `ST_ITEM_*` 结果帧转发给 D5，页面不再生成假数据；
  *           P9 注入 `onRetry` / `cancelBatch`，转发 `ST_BATCH_DONE` 并在重连后触发续传；
- *           P12 悬停手势改为按设置识别修饰键，新增 `ST_GET_STATUS` 查询与配置帧处理。
+ *           P12 悬停手势改为按设置识别修饰键，新增 `ST_GET_STATUS` 查询与配置帧处理；
+ *           P13 悬停手势改为经后台广播到同一标签页所有 frame，由持有指针的 frame 处理。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -47,6 +48,14 @@ const LOAD_FLAG = '__simpletransContentLoaded';
 
 /** 单键手势的最长按住时间；超过视为普通按住，不触发。 */
 const TAP_MAX_MS = 600;
+
+/**
+ * 当前文档是否是扩展页面（C6 测试页与其内嵌 frame）。
+ * 扩展页面不经过清单注入，`tabs.sendMessage` 也不会把广播送到这里，
+ * 因此悬停手势在扩展页面内直接本地处理。
+ */
+const IS_EXTENSION_PAGE =
+  typeof location !== 'undefined' && String(location.protocol ?? '') === 'chrome-extension:';
 
 /** 交给 D5 的逐段结果帧。 */
 const RESULT_FRAME_TYPES = new Set([
@@ -182,14 +191,36 @@ function applyHoverShortcut(value) {
   tapCleanup?.();
   activeHoverShortcut = normalized;
   const resolved = resolveHoverShortcut(normalized);
-  tapCleanup = installModifierTap(resolved.keys, triggerHover);
+  tapCleanup = installModifierTap(resolved.keys, requestHoverTrigger);
   log?.info('hotkey.config', '悬停快捷键已应用', { shortcut: resolved.shortcut });
 }
 
 /**
- * 悬停快捷键触发：提交/隐藏鼠标所在段落。
+ * 悬停快捷键触发：把「触发」交给后台广播给同一标签页的所有 frame。
+ * 键盘事件只会送到当前聚焦的文档；指针在 iframe 内而焦点在顶层时，只有广播才能让
+ * 实际持有指针的 frame 处理。发送失败（后台不可用、扩展上下文失效）时回退本 frame 处理。
  */
-function triggerHover() {
+function requestHoverTrigger() {
+  if (!task || !hover) return;
+  if (IS_EXTENSION_PAGE) {
+    runHoverToggle('fallback');
+    return;
+  }
+  try {
+    const sent = chrome.runtime.sendMessage({ type: MESSAGE_TYPES.HOVER_TRIGGER });
+    if (sent && typeof sent.catch === 'function') {
+      sent.catch(() => runHoverToggle('fallback'));
+    }
+  } catch {
+    runHoverToggle('fallback');
+  }
+}
+
+/**
+ * 对当前宿主动作：提交或隐藏。
+ * @param {'broadcast' | 'fallback'} source 触发来源，只用于日志
+ */
+function runHoverToggle(source) {
   if (!task || !hover) return;
   const traceId = newTraceId();
   Promise.resolve(task.toggle(hover.getCurrentHost(), traceId))
@@ -197,12 +228,14 @@ function triggerHover() {
       log?.debug('hotkey.trigger', '悬停快捷键触发提交', {
         action: result?.data?.action ?? null,
         traceId,
+        source,
       });
     })
     .catch((error) => {
       log?.warn('hotkey.trigger', '悬停快捷键处理失败', {
         reason: error?.message ?? null,
         traceId,
+        source,
       });
     });
 }
@@ -308,6 +341,12 @@ function handleMessage(message, sender, sendResponse) {
       const phase = task?.getStatus?.().phase ?? 'idle';
       const active = phase === 'scanning' || phase === 'submitting' || phase === 'submitted';
       sendResponse?.({ ok: true, data: { active } });
+      return false;
+    }
+
+    // 后台广播的悬停触发：只有实际持有指针的 frame 有宿主，其余 frame 的宿主为 null。
+    if (message.type === MESSAGE_TYPES.HOVER_TRIGGER) {
+      runHoverToggle('broadcast');
       return false;
     }
 

@@ -14,7 +14,9 @@
  *           P8-2 改为多实例：按当前实例分发 OpenAI/百度、每实例凭据、endpoint 权限、
  *           缓存 key v3、百度字节切批与 30 秒超时；
  *           P9 增加百度实例 QPS 门控、批量对齐二分拆批、重试交接与标签页关闭兜底清理；
- *           P12 连接建立后同时下发日志级别与悬停快捷键。
+ *           P12 连接建立后同时下发日志级别与悬停快捷键；
+ *           P13 连接键改为 `tabId + frameId`：同一标签页的不同 frame 连接并存，提交按来源 frame 路由，
+ *           标签页关闭清理全部 frame 连接。
  */
 
 import {
@@ -166,11 +168,21 @@ function utf8Bytes(text) {
   return new TextEncoder().encode(String(text ?? '')).length;
 }
 
-/** 已连接端口：Port → { port, tabId, batches, submissions, disconnected, configSent }。只在内存中存在。 */
+/** 已连接端口：Port → { port, tabId, frameId, batches, submissions, disconnected, configSent }。只在内存中存在。 */
 const connections = new Map();
 
-/** 标签页 id → 最新的 st-gateway 连接；一次性提交按它路由结果帧。 */
-const tabConnections = new Map();
+/** `"<tabId>:<frameId>"` → 该 frame 的 st-gateway 连接；一次性提交按它路由结果帧。 */
+const frameConnections = new Map();
+
+/**
+ * 连接键：同一标签页的不同 frame 各有独立连接，同一 frame 重连才替换。
+ * @param {number} tabId
+ * @param {number} frameId
+ * @returns {string}
+ */
+function frameKey(tabId, frameId) {
+  return `${tabId}:${frameId}`;
+}
 
 /** 在途共享执行：分组键 → shared。跨提交、跨连接复用，只在当前 Service Worker 内存中。 */
 const inFlightByKey = new Map();
@@ -346,6 +358,7 @@ export async function withUpstreamSlot(fn, limit, instance, signal) {
 
 /**
  * 注册一个 st-gateway 端口。端口名或发送方不合法时直接断开。
+ * 同一标签页的不同 frame（`sender.frameId`）各自保留连接；只有同一 frame 重连才关闭旧连接。
  * @param {chrome.runtime.Port} port
  * @returns {object | null}
  */
@@ -360,24 +373,27 @@ export function handleConnect(port) {
   }
 
   const tabId = Number.isInteger(port.sender?.tab?.id) ? port.sender.tab.id : null;
-  const previous = tabId == null ? null : tabConnections.get(tabId);
+  const frameId = Number.isInteger(port.sender?.frameId) ? port.sender.frameId : 0;
+  const key = tabId == null ? null : frameKey(tabId, frameId);
+  const previous = key == null ? null : frameConnections.get(key);
   const conn = {
     port,
     tabId,
+    frameId,
     batches: new Map(),
     submissions: new Map(),
     disconnected: false,
     configSent: false,
   };
   connections.set(port, conn);
-  if (tabId != null) {
-    tabConnections.set(tabId, conn);
+  if (key != null) {
+    frameConnections.set(key, conn);
     if (previous && previous !== conn && !previous.disconnected) {
-      log.info('gateway.replace', '同一标签页建立新连接，关闭旧连接', { tabId });
+      log.info('gateway.replace', '同一 frame 建立新连接，关闭旧连接', { tabId, frameId });
       cleanupConnection(previous);
     }
   }
-  log.info('gateway.connect', '网关已连接', { tabId });
+  log.info('gateway.connect', '网关已连接', { tabId, frameId });
 
   port.onMessage.addListener((message) => onMessage(conn, message));
   port.onDisconnect.addListener(() => cleanupConnection(conn));
@@ -385,14 +401,30 @@ export function handleConnect(port) {
 }
 
 /**
- * 按标签页查找当前可用的网关连接；一次性提交没有 port，只能按 `sender.tab.id` 路由。
+ * 按标签页与 frame 查找当前可用的网关连接；一次性提交没有 port，只能按 `sender.tab.id + sender.frameId` 路由。
  * @param {unknown} tabId
+ * @param {unknown} [frameId] 省略时按顶层 frame（0）查找
  * @returns {object | null}
  */
-export function findConnectionByTab(tabId) {
+export function findConnection(tabId, frameId = 0) {
   if (!Number.isInteger(tabId)) return null;
-  const conn = tabConnections.get(tabId);
+  const frame = Number.isInteger(frameId) ? frameId : 0;
+  const conn = frameConnections.get(frameKey(tabId, frame));
   return conn && !conn.disconnected ? conn : null;
+}
+
+/**
+ * 列出某标签页全部活动 frame 连接，按 frameId 升序。
+ * @param {unknown} tabId
+ * @returns {Array<object>}
+ */
+export function listFrames(tabId) {
+  if (!Number.isInteger(tabId)) return [];
+  const frames = [];
+  for (const conn of frameConnections.values()) {
+    if (conn.tabId === tabId && !conn.disconnected) frames.push(conn);
+  }
+  return frames.sort((a, b) => a.frameId - b.frameId);
 }
 
 /**
@@ -1125,10 +1157,13 @@ function cleanupConnection(conn) {
   const pendingSubmissions = conn.submissions.size;
   const pendingBatches = conn.batches.size;
   connections.delete(conn.port);
-  if (conn.tabId != null && tabConnections.get(conn.tabId) === conn) {
-    tabConnections.delete(conn.tabId);
+  if (conn.tabId != null) {
+    const key = frameKey(conn.tabId, conn.frameId ?? 0);
+    if (frameConnections.get(key) === conn) frameConnections.delete(key);
   }
   log.info('gateway.disconnect', '网关已断开', {
+    tabId: conn.tabId ?? null,
+    frameId: conn.frameId ?? 0,
     pendingBatches,
     pendingSubmissions,
   });
@@ -1162,31 +1197,37 @@ function cleanupConnection(conn) {
 }
 
 /**
- * 标签页关闭兜底清理：按 `tabId` 找到连接并清理；与端口断开的 `cleanupConnection` 幂等。
- * 关闭标签页不一定触发端口 `onDisconnect`（Service Worker 重启、连接异常），这里显式兜底。
+ * 标签页关闭兜底清理：按 `tabId` 找到该标签页所有 frame 连接并逐一清理；
+ * 与端口断开的 `cleanupConnection` 幂等。
  * @param {number} tabId
- * @returns {boolean} 是否清理了一个仍在活动的连接
+ * @returns {boolean} 是否清理了至少一个仍在活动的连接
  */
 export function cleanupTab(tabId) {
   if (!Number.isInteger(tabId)) return false;
 
-  const conn = tabConnections.get(tabId) ?? null;
-  if (!conn) {
-    tabConnections.delete(tabId);
+  const targets = [...frameConnections.values()].filter(
+    (conn) => conn.tabId === tabId && !conn.disconnected
+  );
+  if (targets.length === 0) {
     log.debug('tab.cleanup', '标签页已关闭，没有需要清理的连接', { tabId });
     return false;
   }
-  if (conn.disconnected) {
-    tabConnections.delete(tabId);
-    return false;
-  }
 
-  const counts = cleanupConnection(conn);
+  let pendingSubmissions = 0;
+  let pendingBatches = 0;
+  let sharedReleased = 0;
+  for (const conn of targets) {
+    const counts = cleanupConnection(conn);
+    pendingSubmissions += counts.pendingSubmissions;
+    pendingBatches += counts.pendingBatches;
+    sharedReleased += counts.sharedReleased;
+  }
   log.info('tab.cleanup', '标签页已关闭，已清理网关连接', {
     tabId,
-    pendingSubmissions: counts.pendingSubmissions,
-    pendingBatches: counts.pendingBatches,
-    sharedReleased: counts.sharedReleased,
+    frames: targets.length,
+    pendingSubmissions,
+    pendingBatches,
+    sharedReleased,
   });
   return true;
 }
@@ -1333,6 +1374,7 @@ function normalizeSubmitItems(paragraphs) {
  *   viewport?: { width?: number, height?: number },
  *   paragraphs?: Array<{ hostId?: string, text: string }>,
  *   tabId?: number,
+ *   frameId?: number,
  * }} input
  * @returns {Promise<{ accepted: true } | { accepted: false, error: object }>}
  */
@@ -1344,8 +1386,9 @@ export async function acceptPageSubmit({
   domain,
   paragraphs = [],
   tabId,
+  frameId = 0,
 } = {}) {
-  const conn = findConnectionByTab(tabId);
+  const conn = findConnection(tabId, frameId);
   if (!conn) {
     return {
       accepted: false,

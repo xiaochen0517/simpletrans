@@ -90,6 +90,7 @@ export default defineConfig(() => {
           popup: r('src/popup/index.html'),
           options: r('src/options/index.html'),
           testpage: r('src/testpage/index.html'),
+          testframe: r('src/testpage/frame.html'),
         },
         output: {
           entryFileNames: 'assets/[name]-[hash].js',

@@ -546,11 +546,11 @@ describe('A1 标签页转发与按需注入', () => {
       'executeScript',
     ]);
     expect(chrome.scripting.__calls[0].details).toEqual({
-      target: { tabId: 9 },
+      target: { tabId: 9, allFrames: true },
       files: ['content.css'],
     });
     expect(chrome.scripting.__calls[1].details).toEqual({
-      target: { tabId: 9 },
+      target: { tabId: 9, allFrames: true },
       files: ['content.js'],
     });
     expect(chrome.tabs.__sent).toHaveLength(2);
@@ -564,7 +564,10 @@ describe('A1 标签页转发与按需注入', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error.reason).toBe(FAILURE_REASONS.INJECTION_FAILED);
-    expect(chrome.scripting.__calls.map((call) => call.api)).toEqual(['insertCSS']);
+    // 先尝试全 frame，再回退顶层 frame；两次都在 insertCSS 失败。
+    expect(chrome.scripting.__calls.map((call) => call.api)).toEqual(['insertCSS', 'insertCSS']);
+    expect(chrome.scripting.__calls[0].details.target).toEqual({ tabId: 3, allFrames: true });
+    expect(chrome.scripting.__calls[1].details.target).toEqual({ tabId: 3 });
     expect(chrome.tabs.__sent).toHaveLength(1);
   });
 
@@ -1183,5 +1186,134 @@ describe('A1 控制面：快速翻译与读取选区（P11）', () => {
     const failed = await handleMessage({ type: MESSAGE_TYPES.GET_SELECTION }, sender);
     expect(failed).toEqual({ ok: true, data: { text: '', truncated: false } });
     chrome.scripting.__error = null;
+  });
+});
+describe('A1 跨 frame 广播与汇总（P13）', () => {
+  /**
+   * @param {object} payload
+   * @returns {Promise<object>}
+   */
+  function route(payload) {
+    return handleMessage({ type: MESSAGE_TYPES.ROUTE, payload }, sender);
+  }
+
+  /**
+   * 以页面注入的 sender 建立指定 frame 的连接。
+   * @param {number} tabId
+   * @param {number} frameId
+   */
+  function connectTabFrame(tabId, frameId) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: { id: chrome.runtime.id, tab: { id: tabId }, frameId },
+    });
+    clients.push(client);
+    return client;
+  }
+
+  it('start 并发发给各 frame 并汇总段数', async () => {
+    connectTabFrame(1, 0);
+    connectTabFrame(1, 1);
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { phase: 'submitted', total: 2 } } },
+      { response: { ok: true, data: { phase: 'submitted', total: 3 } } },
+    ];
+
+    const response = await route({ command: 'start' });
+
+    expect(response).toEqual({ ok: true, data: { phase: 'submitted', total: 5 } });
+    expect(chrome.tabs.__sent.map((entry) => entry.options?.frameId)).toEqual([0, 1]);
+  });
+
+  it('start 在部分 frame 失败时仍汇总成功段数', async () => {
+    connectTabFrame(1, 0);
+    connectTabFrame(1, 1);
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { phase: 'submitted', total: 4 } } },
+      { response: { ok: false, error: { code: ERROR_CODES.OTHER, message: 'frame 失败' } } },
+    ];
+
+    const response = await route({ command: 'start' });
+
+    expect(response).toEqual({ ok: true, data: { phase: 'submitted', total: 4 } });
+  });
+
+  it('start 全部 frame 失败时返回页面错误', async () => {
+    connectTabFrame(1, 0);
+    chrome.tabs.__sendQueue = [
+      { response: { ok: false, error: { code: ERROR_CODES.OTHER, message: '当前页面不可用' } } },
+    ];
+
+    const response = await route({ command: 'start' });
+
+    expect(response.ok).toBe(false);
+    expect(response.error.message).toBe('当前页面不可用');
+  });
+
+  it('clear 汇总各 frame 清除数', async () => {
+    connectTabFrame(1, 0);
+    connectTabFrame(1, 1);
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { removed: 2 } } },
+      { response: { ok: true, data: { removed: 5 } } },
+    ];
+
+    const response = await route({ command: 'clear' });
+
+    expect(response).toEqual({ ok: true, data: { removed: 7 } });
+  });
+
+  it('status 任一 frame 开启即为开启', async () => {
+    connectTabFrame(1, 0);
+    connectTabFrame(1, 1);
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { active: true } } },
+    ];
+
+    const response = await route({ command: 'status' });
+
+    expect(response).toEqual({ ok: true, data: { active: true } });
+  });
+
+  it('没有已连接 frame 时补注入并按返回的 frameId 重发', async () => {
+    chrome.tabs.__sendQueue = [
+      { error: new Error('Could not establish connection. Receiving end does not exist.') },
+      { response: { ok: true, data: { phase: 'submitted', total: 1 } } },
+      { response: { ok: true, data: { phase: 'idle', total: 0 } } },
+    ];
+    chrome.scripting.__executeResult = [{ frameId: 0 }, { frameId: 2 }];
+
+    const response = await route({ command: 'start' });
+
+    expect(response).toEqual({ ok: true, data: { phase: 'submitted', total: 1 } });
+    expect(chrome.tabs.__sent.map((entry) => entry.options?.frameId)).toEqual([undefined, 0, 2]);
+    expect(chrome.scripting.__calls[0].details.target).toEqual({ tabId: 1, allFrames: true });
+  });
+
+  it('ST_HOVER_TRIGGER 向来源标签页广播，不携带载荷', async () => {
+    chrome.tabs.__response = undefined;
+    chrome.tabs.__sendQueue = [{ response: { ok: true } }];
+
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.HOVER_TRIGGER },
+      { id: chrome.runtime.id, tab: { id: 1 }, frameId: 1 }
+    );
+
+    expect(response).toEqual({ ok: true, data: { forwarded: true } });
+    expect(chrome.tabs.__sent).toEqual([
+      { tabId: 1, message: { type: MESSAGE_TYPES.HOVER_TRIGGER } },
+    ]);
+  });
+
+  it('ST_HOVER_TRIGGER 没有来源标签页时返回 NO_ACTIVE_TAB', async () => {
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.HOVER_TRIGGER },
+      { id: chrome.runtime.id }
+    );
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_ACTIVE_TAB);
+    expect(chrome.tabs.__sent).toEqual([]);
   });
 });

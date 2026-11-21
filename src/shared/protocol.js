@@ -10,7 +10,8 @@
  *           `hostId` 兼作结果帧 `itemId`）；P9 删除 `ST_ENGINE_CHANGED` 与 `fallbackable`，
  *           失败段「刷新」复用 `ST_PAGE_SUBMIT(scope='single')`；
  *           P11 增加 `ST_QUICK_TRANSLATE` 与 `ST_GET_SELECTION`（弹窗快速翻译）；
- *           P12 增加 `ST_CONTENT_CONFIG` 与 `ST_GET_STATUS`，删除 `ST_TOGGLE`。
+ *           P12 增加 `ST_CONTENT_CONFIG` 与 `ST_GET_STATUS`，删除 `ST_TOGGLE`；
+ *           P13 增加 `ST_HOVER_TRIGGER`（悬停手势经后台广播到所有 frame）。
  */
 
 /** 统一错误码。分类依据见项目架构 6.8。 */
@@ -73,6 +74,7 @@ export const MESSAGE_TYPES = Object.freeze({
   PAGE_SUBMIT: 'ST_PAGE_SUBMIT', // 页面注入 → 后台：统一提交段落（P6.1，scope=page/single；每段 index/hostId/text，hostId 即结果帧 itemId；后台校验、计数、逐段日志并回执）
   CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部标记与译文（P4）；响应 removed（P6.1）
   GET_STATUS: 'ST_GET_STATUS', // 后台 → 页面注入：读取整页会话状态（P12），响应 { active }
+  HOVER_TRIGGER: 'ST_HOVER_TRIGGER', // 页面注入 → 后台 → 全部 frame：悬停手势广播（P13），不携带载荷
   LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表（P2）
   TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译（P2）
   QUICK_TRANSLATE: 'ST_QUICK_TRANSLATE', // 弹窗 → 后台：快速翻译（P11），返回纯文本译文

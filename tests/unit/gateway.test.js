@@ -130,7 +130,9 @@ import { buildLLMProfile } from '../../src/shared/translate/openai-profile.js';
 import {
   acceptPageSubmit,
   cleanupTab,
+  findConnection,
   handleConnect,
+  listFrames,
   normalizeConcurrency,
   splitBatches,
 } from '../../src/background/gateway.js';
@@ -2669,5 +2671,81 @@ describe('A2 网关：QPS、拆批与标签页清理（P9）', () => {
     client.disconnect();
     expect(() => cleanupTab(7)).not.toThrow();
     expect(cleanupTab(7)).toBe(false);
+  });
+});
+describe('A2 请求网关：跨 frame 连接（P13）', () => {
+  /**
+   * 以指定 frame 的 sender 建立连接。
+   * @param {number} tabId
+   * @param {number} frameId
+   */
+  function connectFrame(tabId, frameId) {
+    const client = chrome.runtime.connect({
+      name: PORT_NAME,
+      sender: { id: chrome.runtime.id, tab: { id: tabId }, frameId },
+    });
+    clients.push(client);
+    const frames = [];
+    client.onMessage.addListener((message) => frames.push(message));
+    return { client, frames };
+  }
+
+  it('同一标签页不同 frame 的连接并存，提交按 frame 路由', async () => {
+    const top = connectFrame(7, 0);
+    const child = connectFrame(7, 1);
+
+    expect(listFrames(7).map((conn) => conn.frameId)).toEqual([0, 1]);
+
+    await acceptPageSubmit({
+      requestId: 'frame-submit',
+      scope: 'single',
+      paragraphs: [{ hostId: 'h1', text: 'Hello from child frame' }],
+      tabId: 7,
+      frameId: 1,
+    });
+
+    const done = await waitForBatchDoneFor(child.frames, 'frame-submit');
+    expect(done.payload).toMatchObject({ ok: true, done: 1 });
+    expect(child.frames.some((frame) => frame.type === MESSAGE_TYPES.ITEM_DONE)).toBe(true);
+    expect(top.frames.filter((frame) => frame.type === MESSAGE_TYPES.BATCH_DONE)).toHaveLength(0);
+  });
+
+  it('同一 frame 重连只替换该 frame 的旧连接，其它 frame 不受影响', () => {
+    const firstTop = connectFrame(7, 0);
+    const child = connectFrame(7, 1);
+    const secondTop = connectFrame(7, 0);
+
+    expect(findConnection(7, 0)?.port.id).toBe(secondTop.client.id);
+    expect(findConnection(7, 1)?.port.id).toBe(child.client.id);
+    expect(findConnection(7, 0)?.port.id).not.toBe(firstTop.client.id);
+    expect(listFrames(7)).toHaveLength(2);
+  });
+
+  it('未连接的 frame 提交返回 NOT_CONNECTED', async () => {
+    connectFrame(7, 0);
+
+    const result = await acceptPageSubmit({
+      requestId: 'missing-frame',
+      scope: 'single',
+      paragraphs: [{ hostId: 'h1', text: 'Hi' }],
+      tabId: 7,
+      frameId: 2,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.error.reason).toBe(FAILURE_REASONS.NOT_CONNECTED);
+  });
+
+  it('标签页关闭清理该标签页全部 frame 连接', () => {
+    connectFrame(7, 0);
+    connectFrame(7, 1);
+    connectFrame(8, 0);
+
+    expect(cleanupTab(7)).toBe(true);
+    expect(findConnection(7, 0)).toBeNull();
+    expect(findConnection(7, 1)).toBeNull();
+    expect(listFrames(7)).toEqual([]);
+    // 其它标签页连接保留。
+    expect(findConnection(8, 0)).not.toBeNull();
   });
 });

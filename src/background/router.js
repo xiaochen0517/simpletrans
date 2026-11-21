@@ -11,10 +11,13 @@
  *           P6.3 `ST_PAGE_SUBMIT` 校验后按 `sender.tab.id` 转交 A2；
  *           P8-2 `ST_LIST_ENGINES` 返回多实例公开字段、不创建默认实例，
  *           `ST_TEST_ENGINE` 支持 `instanceId` 与每实例凭据/权限校验；
- *           P11 增加 `ST_QUICK_TRANSLATE`（交给 A5）与 `ST_GET_SELECTION`（只读页面选区）。
+ *           P11 增加 `ST_QUICK_TRANSLATE`（交给 A5）与 `ST_GET_SELECTION`（只读页面选区）；
+ *           P13 整页命令改为跨 frame 广播并汇总（段数、清除数、会话状态），
+ *           `ST_PAGE_SUBMIT` 按 `sender.frameId` 路由，新增 `ST_HOVER_TRIGGER` 转发。
  *
- * 标签页转发有三处入口：P12 的整页快捷键走 `startPageTranslation`（commands.js），
- * 弹窗走 `ST_ROUTE` 的 `start` / `clear` / `status`（本文件），三处共用 `sendToTab` 的补注入与错误归一。
+ * 标签页转发有四处入口：P12 的整页快捷键走 `startPageTranslation`（commands.js）、
+ * 弹窗走 `ST_ROUTE` 的 `start` / `clear` / `status`（本文件）、页面悬停手势走 `ST_HOVER_TRIGGER`；
+ * 前三处共用 `sendToFrames` 的补注入与错误归一，悬停手势由 `forwardHoverTrigger` 直接广播。
  */
 
 import {
@@ -41,7 +44,13 @@ import {
 import { getEngineType, getTypeLabel, validateInstance } from '../shared/config/registry.js';
 import { getCacheStore } from '../shared/cache/store.js';
 import { translate, TranslateError } from '../shared/translate/adapter.js';
-import { normalizeConcurrency, withUpstreamSlot, acceptPageSubmit, findConnectionByTab } from './gateway.js';
+import {
+  normalizeConcurrency,
+  withUpstreamSlot,
+  acceptPageSubmit,
+  findConnection,
+  listFrames,
+} from './gateway.js';
 import { quickTranslate } from './quick.js';
 
 /** A1 日志入口。 */
@@ -89,6 +98,8 @@ export async function handleMessage(message, sender) {
       response = await clearCache();
     } else if (message.type === MESSAGE_TYPES.ROUTE) {
       response = await routeCommand(message.payload, traceId);
+    } else if (message.type === MESSAGE_TYPES.HOVER_TRIGGER) {
+      response = await forwardHoverTrigger(sender);
     } else if (message.type === MESSAGE_TYPES.PAGE_SUBMIT) {
       response = await receivePageSubmit(message.payload, sender, traceId);
     } else {
@@ -235,13 +246,13 @@ export async function startPageTranslation(traceId) {
   }
 
   log.withTrace(traceId).info('route.command', '处理路由命令', { command: 'start', tabId: tab.id });
-  return sendToTab(tab.id, {
+  return sendToFramesAndAggregate(tab.id, {
     type: MESSAGE_TYPES.START,
     payload: {
       targetLang: settings.targetLang,
       ...(traceId ? { traceId } : {}),
     },
-  });
+  }, 'start');
 }
 
 /**
@@ -276,10 +287,10 @@ async function routeCommand(payload, traceId) {
 
   if (command === 'status') {
     log.withTrace(traceId).debug('route.command', '查询页面状态', { tabId: tab.id });
-    return sendToTab(tab.id, {
+    return sendToFramesAndAggregate(tab.id, {
       type: MESSAGE_TYPES.GET_STATUS,
       payload: { ...(traceId ? { traceId } : {}) },
-    });
+    }, 'status');
   }
 
   let settings;
@@ -291,18 +302,18 @@ async function routeCommand(payload, traceId) {
   if (settings.enabled === false) return failure(ERROR_CODES.CONFIG, '扩展已停用');
 
   log.withTrace(traceId).info('route.command', '处理路由命令', { command, tabId: tab.id });
-  return sendToTab(tab.id, {
+  return sendToFramesAndAggregate(tab.id, {
     type: MESSAGE_TYPES.CLEAR,
     payload: { ...(traceId ? { traceId } : {}) },
-  });
+  }, 'clear');
 }
 
 /**
- * 接收页面注入的统一段落提交：形状校验通过后按 `sender.tab.id` 把提交转交 A2。
+ * 接收页面注入的统一段落提交：形状校验通过后按 `sender.tab.id + sender.frameId` 把提交转交 A2。
  * A2 负责缓存预取、命中回显、分组切批与临时执行；A1 只等到「提交已创建」，
  * 不等待翻译完成，也不因缓存未命中而阻塞回执。
  * @param {unknown} payload
- * @param {{ tab?: { id?: number } }} [sender]
+ * @param {{ tab?: { id?: number }, frameId?: number }} [sender]
  * @param {string} [traceId]
  * @returns {Promise<{ ok: true, data: object } | { ok: false, error: object }>}
  */
@@ -356,10 +367,12 @@ export async function receivePageSubmit(payload, sender, traceId) {
   }
 
   const tabId = sender?.tab?.id;
-  if (findConnectionByTab(tabId) == null) {
+  const frameId = Number.isInteger(sender?.frameId) ? sender.frameId : 0;
+  if (findConnection(tabId, frameId) == null) {
     log.warn('message.rejected', '页面通道未连接', {
       requestId,
       tabId: tabId ?? null,
+      frameId,
       reason: FAILURE_REASONS.NOT_CONNECTED,
     });
     return failure(
@@ -376,6 +389,7 @@ export async function receivePageSubmit(payload, sender, traceId) {
     paragraphs: paragraphs.length,
     chars,
     tabId: tabId ?? null,
+    frameId,
   });
   paragraphs.forEach((raw, index) => {
     traceLog.debug('page.item', '后台接收段落', {
@@ -394,6 +408,7 @@ export async function receivePageSubmit(payload, sender, traceId) {
     viewport: payload.viewport,
     paragraphs,
     tabId,
+    frameId,
   });
 
   if (!result?.accepted) {
@@ -582,18 +597,65 @@ function failure(code, message, reason) {
 }
 
 /**
- * 把一次性命令送到标签页；页面注入未运行时先补样式再补脚本，然后重发一次。
+ * 把一次性命令送到标签页的顶层 frame；页面注入未运行时先补样式再补脚本，然后重发一次。
+ * 保留给只关心顶层 frame 的调用与测试；整页命令走 `sendToFramesAndAggregate`。
  * @param {number} tabId
  * @param {{ type: string, payload?: object }} message
  * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
  */
 export async function sendToTab(tabId, message) {
-  if (typeof tabId !== 'number') {
+  const sent = await sendFrames(tabId, message);
+  if (!sent.ok) return sent;
+  for (const entry of sent.results) {
+    if (entry.status === 'fulfilled') return entry.value;
+  }
+  return failure(
+    ERROR_CODES.OTHER,
+    '页面尚未准备好，请刷新后重试',
+    FAILURE_REASONS.NO_RECEIVER
+  );
+}
+
+/**
+ * 把命令发到标签页的所有 frame，并按命令类型汇总响应。
+ * 汇总后的数据形状与单 frame 页面一致，弹窗无需区分 frame 数量。
+ * @param {number} tabId
+ * @param {{ type: string, payload?: object }} message
+ * @param {'start' | 'clear' | 'status'} kind
+ * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
+ */
+async function sendToFramesAndAggregate(tabId, message, kind) {
+  const sent = await sendFrames(tabId, message);
+  if (!sent.ok) return sent;
+
+  if (kind === 'start') return aggregateStart(sent.results);
+  if (kind === 'clear') return aggregateClear(sent.results);
+  return aggregateStatus(sent.results);
+}
+
+/**
+ * 并发向标签页各 frame 发送命令。
+ *
+ * 有已建立 Port 的 frame 时逐 frame 发送（带 `frameId`）；一个都没有时退回广播，
+ * 失败再补注入并重发，保证扩展更新后未刷新的普通页面仍可触发一次。
+ *
+ * @param {number} tabId
+ * @param {{ type: string, payload?: object }} message
+ * @returns {Promise<{ ok: true, results: Array<PromiseSettledResult<object> & { frameId: number }> } | { ok: false, error: object }>}
+ */
+async function sendFrames(tabId, message) {
+  if (!Number.isInteger(tabId)) {
     return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
   }
 
+  const connected = listFrames(tabId).map((conn) => conn.frameId);
+  if (connected.length > 0) {
+    return { ok: true, results: await settleFrames(tabId, message, connected) };
+  }
+
   try {
-    return await chrome.tabs.sendMessage(tabId, message);
+    const value = await chrome.tabs.sendMessage(tabId, message);
+    return { ok: true, results: [{ status: 'fulfilled', value, frameId: 0 }] };
   } catch (error) {
     if (!NO_RECEIVER_PATTERN.test(String(error?.message ?? error))) {
       log.warn('message.rejected', '无法与页面通信', {
@@ -608,8 +670,9 @@ export async function sendToTab(tabId, message) {
     }
   }
 
+  let injected;
   try {
-    await ensureInjected(tabId);
+    injected = await ensureInjected(tabId);
   } catch {
     return failure(
       ERROR_CODES.OTHER,
@@ -618,9 +681,155 @@ export async function sendToTab(tabId, message) {
     );
   }
 
+  const frameIds = Array.isArray(injected) && injected.length > 0 ? injected : [0];
+  return { ok: true, results: await settleFrames(tabId, message, frameIds) };
+}
+
+/**
+ * @param {number} tabId
+ * @param {{ type: string, payload?: object }} message
+ * @param {number[]} frameIds
+ * @returns {Promise<Array<PromiseSettledResult<object> & { frameId: number }>>}
+ */
+async function settleFrames(tabId, message, frameIds) {
+  const settled = await Promise.allSettled(
+    frameIds.map((frameId) => chrome.tabs.sendMessage(tabId, message, { frameId }))
+  );
+  return settled.map((entry, index) => ({ ...entry, frameId: frameIds[index] }));
+}
+
+/**
+ * 汇总整页启动响应：段数相加，任一 frame 提交成功即视为已提交。
+ * @param {Array<PromiseSettledResult<object>>} results
+ * @returns {{ ok: true, data: { phase: string, total: number } } | { ok: false, error: object }}
+ */
+function aggregateStart(results) {
+  let total = 0;
+  let succeeded = 0;
+  let firstError = null;
+
+  for (const entry of results) {
+    const value = entry.status === 'fulfilled' ? entry.value : null;
+    if (!value || value.ok !== true) {
+      if (firstError == null) firstError = errorOf(entry);
+      continue;
+    }
+    succeeded += 1;
+    total += Number(value.data?.total) || 0;
+  }
+
+  if (succeeded === 0) return failureFrom(firstError);
+  return { ok: true, data: { phase: total > 0 ? 'submitted' : 'idle', total } };
+}
+
+/**
+ * 汇总清除响应：清除数相加。
+ * @param {Array<PromiseSettledResult<object>>} results
+ * @returns {{ ok: true, data: { removed: number } } | { ok: false, error: object }}
+ */
+function aggregateClear(results) {
+  let removed = 0;
+  let succeeded = 0;
+  let firstError = null;
+
+  for (const entry of results) {
+    const value = entry.status === 'fulfilled' ? entry.value : null;
+    if (!value || value.ok !== true) {
+      if (firstError == null) firstError = errorOf(entry);
+      continue;
+    }
+    succeeded += 1;
+    removed += Number(value.data?.removed) || 0;
+  }
+
+  if (succeeded === 0) return failureFrom(firstError);
+  return { ok: true, data: { removed } };
+}
+
+/**
+ * 汇总会话状态：任一 frame 开启即视为开启。
+ * @param {Array<PromiseSettledResult<object>>} results
+ * @returns {{ ok: true, data: { active: boolean } } | { ok: false, error: object }}
+ */
+function aggregateStatus(results) {
+  let active = false;
+  let succeeded = 0;
+  let firstError = null;
+
+  for (const entry of results) {
+    const value = entry.status === 'fulfilled' ? entry.value : null;
+    if (!value || value.ok !== true) {
+      if (firstError == null) firstError = errorOf(entry);
+      continue;
+    }
+    succeeded += 1;
+    if (value.data?.active === true) active = true;
+  }
+
+  if (succeeded === 0) return failureFrom(firstError);
+  return { ok: true, data: { active } };
+}
+
+/**
+ * 取一个失败 frame 的错误对象；内容侧返回的错误优先，通信异常归为网络错误。
+ * @param {PromiseSettledResult<object>} entry
+ * @returns {object | Error | null}
+ */
+function errorOf(entry) {
+  if (entry.status === 'rejected') return entry.reason ?? null;
+  const value = entry.value;
+  if (value && value.ok === false) return value.error ?? null;
+  return null;
+}
+
+/**
+ * 把汇总过程中收集到的第一个错误转成统一失败响应。
+ * @param {unknown} error
+ * @returns {{ ok: false, error: object }}
+ */
+function failureFrom(error) {
+  if (
+    error &&
+    typeof error === 'object' &&
+    typeof error.code === 'string' &&
+    typeof error.message === 'string'
+  ) {
+    return failure(error.code, error.message, error.reason);
+  }
+  if (error instanceof Error) {
+    return failure(
+      ERROR_CODES.NETWORK,
+      '无法与页面通信，请刷新后重试',
+      FAILURE_REASONS.NO_RECEIVER
+    );
+  }
+  return failure(
+    ERROR_CODES.OTHER,
+    '页面没有返回结果，请刷新后重试',
+    FAILURE_REASONS.NO_RECEIVER
+  );
+}
+
+/**
+ * 转发悬停手势：页面注入的任意 frame 收到修饰键手势后，后台向该标签页全部 frame 广播，
+ * 由实际持有指针的 frame 处理。页面与后台都不可用时由内容侧回退本地处理。
+ * @param {{ tab?: { id?: number } }} [sender]
+ * @returns {Promise<{ ok: true, data: { forwarded: boolean } } | { ok: false, error: object }>}
+ */
+async function forwardHoverTrigger(sender) {
+  const tabId = sender?.tab?.id;
+  if (!Number.isInteger(tabId)) {
+    return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
+  }
+
   try {
-    return await chrome.tabs.sendMessage(tabId, message);
-  } catch {
+    await chrome.tabs.sendMessage(tabId, { type: MESSAGE_TYPES.HOVER_TRIGGER });
+    return { ok: true, data: { forwarded: true } };
+  } catch (error) {
+    log.warn('message.rejected', '悬停触发转发失败', {
+      tabId,
+      reason: FAILURE_REASONS.NO_RECEIVER,
+    });
     return failure(
       ERROR_CODES.OTHER,
       '页面尚未准备好，请刷新后重试',
@@ -631,8 +840,26 @@ export async function sendToTab(tabId, message) {
 
 /**
  * 补注入页面脚本：先样式后脚本，与清单静态注入的顺序保持一致。
+ * 先尝试 `allFrames`；没有跨源 frame 权限等情况下回退为只注入顶层 frame。
  * @param {number} tabId
- * @returns {Promise<void>}
+ * @param {boolean} allFrames
+ * @returns {Promise<number[]>} 实际注入到的 frame id
+ */
+async function injectFrames(tabId, allFrames) {
+  const target = allFrames ? { tabId, allFrames: true } : { tabId };
+  await chrome.scripting.insertCSS({ target, files: ['content.css'] });
+  const results = await chrome.scripting.executeScript({ target, files: ['content.js'] });
+  const frames = new Set([0]);
+  for (const entry of Array.isArray(results) ? results : []) {
+    if (Number.isInteger(entry?.frameId)) frames.add(entry.frameId);
+  }
+  return [...frames].sort((a, b) => a - b);
+}
+
+/**
+ * 补注入页面脚本：优先覆盖全部 frame，失败时回退顶层 frame。
+ * @param {number} tabId
+ * @returns {Promise<number[]>}
  */
 async function ensureInjected(tabId) {
   const running = injecting.get(tabId);
@@ -641,8 +868,16 @@ async function ensureInjected(tabId) {
   const job = (async () => {
     log.info('tab.inject', '页面未注入，开始补注入', { tabId });
     try {
-      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+      return await injectFrames(tabId, true);
+    } catch {
+      log.warn('tab.inject', '全 frame 补注入失败，回退顶层 frame', {
+        tabId,
+        reason: FAILURE_REASONS.INJECTION_FAILED,
+      });
+    }
+
+    try {
+      return await injectFrames(tabId, false);
     } catch (error) {
       log.warn('tab.inject', '页面注入失败', {
         tabId,

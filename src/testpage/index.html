@@ -356,6 +356,22 @@
         </p>
       </section>
 
+      <section id="embedded-frame" data-test-section>
+        <h2>Embedded frame</h2>
+        <p>
+          The iframe below runs the same page-injection runtime inside its own
+          document. Translate it with the buttons inside the frame, then hover a
+          paragraph and press the hover shortcut. The announcement list mirrors the
+          <code>div</code> structure that exposed the original iframe defect, including
+          a collapsed "older" section.
+        </p>
+        <iframe
+          src="./frame.html"
+          title="Embedded frame translation fixture"
+          class="h-[440px] w-full rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
+        ></iframe>
+      </section>
+
       <section id="non-translatable" data-test-section>
         <h2>Non-translatable Cases</h2>
         <p>
