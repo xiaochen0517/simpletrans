@@ -20,6 +20,8 @@ import {
   extractText,
   normalizeText,
 } from '../../src/content/dom/scanner.js';
+import { RANGE_ATTR } from '../../src/content/range.js';
+import { HOVER_RANGE_WHEEL_STEP } from '../../src/shared/constants.js';
 
 /** @type {object | null} 页面注入持有的模块。 */
 let contentMod = null;
@@ -86,6 +88,14 @@ function sendToContent(message) {
 }
 
 /**
+ * 向页面注入广播一条后台消息（不等待响应）。
+ * @param {object} message
+ */
+function broadcastToContent(message) {
+  chrome.runtime.onMessage.emit(message, { id: chrome.runtime.id }, () => {});
+}
+
+/**
  * @param {string} html
  * @returns {Element}
  */
@@ -110,6 +120,24 @@ function hover(element) {
 function tapModifier(key = 'Control') {
   window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
   window.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+}
+
+/**
+ * 派发一次滚轮事件。
+ * @param {EventTarget} target
+ * @param {number} deltaY
+ * @param {object} [options]
+ * @returns {WheelEvent}
+ */
+function wheel(target, deltaY, options = {}) {
+  const event = new WheelEvent('wheel', {
+    deltaY,
+    bubbles: true,
+    cancelable: true,
+    ...options,
+  });
+  target.dispatchEvent(event);
+  return event;
 }
 
 /**
@@ -352,7 +380,7 @@ describe('页面注入接线：悬停单段统一提交', () => {
     expect(translationOf(p)).not.toBe(null);
   });
 
-  it('Ctrl+其它键、Ctrl+点击、输入焦点、长按都不触发', async () => {
+  it('Ctrl+其它键、Ctrl+点击、输入焦点都不触发', async () => {
     await loadContent();
     const p = mount('<p id="p">Hello</p>');
     hover(p);
@@ -370,12 +398,6 @@ describe('页面注入接线：悬停单段统一提交', () => {
     await flush();
     expect(submissions).toHaveLength(0);
 
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
-    vi.advanceTimersByTime(1000);
-    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
-    await flush();
-    expect(submissions).toHaveLength(0);
-
     const input = document.createElement('input');
     document.body.appendChild(input);
     input.focus();
@@ -384,6 +406,20 @@ describe('页面注入接线：悬停单段统一提交', () => {
     await flush();
     expect(submissions).toHaveLength(0);
     input.remove();
+  });
+
+  it('长按后释放仍然触发（预览与滚轮需要停留时间）', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello long hold</p>');
+    hover(p);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    vi.advanceTimersByTime(1500);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].paragraphs[0].text).toBe('Hello long hold');
   });
 
   it('悬停手势先请求后台广播 ST_HOVER_TRIGGER，再由广播处理提交', async () => {
@@ -434,6 +470,237 @@ describe('页面注入接线：悬停单段统一提交', () => {
     expect(submissions).toHaveLength(1);
     expect(submissions[0].paragraphs[0].text).toBe('Hello fallback');
     expect(translationOf(p)).not.toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 悬停范围预览与滚轮调整
+// ---------------------------------------------------------------------------
+
+describe('页面注入接线：悬停范围预览与滚轮调整', () => {
+  /**
+   * @returns {{ a: Element, b: Element, card: Element }}
+   */
+  function mountRangeSample() {
+    mount('<div id="card"><span id="a">a</span><span id="b">b</span></div>');
+    return {
+      a: document.getElementById('a'),
+      b: document.getElementById('b'),
+      card: document.getElementById('card'),
+    };
+  }
+
+  it('按下标记基宿主，滚轮向上扩大到祖先，释放提交最终范围', async () => {
+    await loadContent();
+    const { a, card } = mountRangeSample();
+    hover(a);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    const event = wheel(a, -HOVER_RANGE_WHEEL_STEP);
+    expect(event.defaultPrevented).toBe(true);
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(false);
+    expect(card.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+
+    expect(card.hasAttribute(RANGE_ATTR)).toBe(false);
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].scope).toBe('single');
+    expect(submissions[0].paragraphs[0].text).toBe('ab');
+  });
+
+  it('滚轮向下缩回基宿主，两端边界保持且不越级', async () => {
+    await loadContent();
+    const { a, card } = mountRangeSample();
+    hover(a);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    wheel(a, -HOVER_RANGE_WHEEL_STEP);
+    expect(card.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    wheel(a, -HOVER_RANGE_WHEEL_STEP);
+    expect(card.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    wheel(a, HOVER_RANGE_WHEEL_STEP);
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    wheel(a, HOVER_RANGE_WHEEL_STEP);
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+    expect(submissions[0].paragraphs[0].text).toBe('a');
+  });
+
+  it('触摸板小增量累计达到阈值才升降一级', async () => {
+    await loadContent();
+    const { a, card } = mountRangeSample();
+    hover(a);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    const half = HOVER_RANGE_WHEEL_STEP / 2;
+    wheel(a, -half);
+    wheel(a, -half);
+    expect(card.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    wheel(a, half);
+    wheel(a, half);
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+  });
+
+  it('范围调整时阻止默认行为与页面冒泡', async () => {
+    await loadContent();
+    const { a } = mountRangeSample();
+    hover(a);
+
+    const bodyWheel = vi.fn();
+    document.body.addEventListener('wheel', bodyWheel);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    const event = wheel(a, -HOVER_RANGE_WHEEL_STEP);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(bodyWheel).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+
+    const after = wheel(a, -HOVER_RANGE_WHEEL_STEP);
+    expect(after.defaultPrevented).toBe(false);
+    expect(bodyWheel).toHaveBeenCalledTimes(1);
+    document.body.removeEventListener('wheel', bodyWheel);
+  });
+
+  it('没有范围预览时滚轮不拦截，本次手势仍按旧语义取消', async () => {
+    await loadContent();
+    mount('<p id="num">12345</p>');
+    const num = document.getElementById('num');
+    hover(num);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    const event = wheel(num, -HOVER_RANGE_WHEEL_STEP);
+    expect(event.defaultPrevented).toBe(false);
+
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+    expect(submissions).toHaveLength(0);
+  });
+
+  it('其它键与点击取消手势并立即移除边框', async () => {
+    await loadContent();
+    const { a } = mountRangeSample();
+    hover(a);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(false);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+    expect(submissions).toHaveLength(0);
+
+    hover(a);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+    a.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(false);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+    await flush();
+    expect(submissions).toHaveLength(0);
+  });
+
+  it('收到远程 begin 后显示范围，滚轮调整并由触发广播提交最终范围', async () => {
+    await loadContent();
+    const { a, card } = mountRangeSample();
+    hover(a);
+
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } });
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    const event = wheel(a, -HOVER_RANGE_WHEEL_STEP);
+    expect(event.defaultPrevented).toBe(true);
+    expect(card.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_TRIGGER });
+    await flush();
+
+    expect(card.hasAttribute(RANGE_ATTR)).toBe(false);
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].paragraphs[0].text).toBe('ab');
+  });
+
+  it('收到远程 cancel 后移除范围，不再拦截滚轮', async () => {
+    await loadContent();
+    const { a } = mountRangeSample();
+    hover(a);
+
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } });
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'cancel' } });
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(false);
+
+    const event = wheel(a, -HOVER_RANGE_WHEEL_STEP);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('本 frame 没有宿主时先广播 begin，再发送触发', async () => {
+    await loadContent();
+    document.body.innerHTML = '<iframe id="frame"></iframe>';
+    const frame = document.getElementById('frame');
+    hover(frame);
+    const send = vi.spyOn(chrome.runtime, 'sendMessage');
+
+    tapModifier('Control');
+    await flush();
+
+    const types = send.mock.calls.map(([message]) => message?.type);
+    expect(types).toContain(MESSAGE_TYPES.HOVER_RANGE);
+    expect(types).toContain(MESSAGE_TYPES.HOVER_TRIGGER);
+    expect(types.indexOf(MESSAGE_TYPES.HOVER_RANGE)).toBeLessThan(
+      types.indexOf(MESSAGE_TYPES.HOVER_TRIGGER)
+    );
+    expect(send.mock.calls.find(([message]) => message?.type === MESSAGE_TYPES.HOVER_RANGE)?.[0])
+      .toMatchObject({ payload: { phase: 'begin' } });
+    expect(submissions).toHaveLength(0);
+  });
+
+  it('有本地宿主时不广播 begin，只在释放时广播触发', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello local</p>');
+    hover(p);
+    const send = vi.spyOn(chrome.runtime, 'sendMessage');
+
+    tapModifier('Control');
+    await flush();
+
+    const types = send.mock.calls.map(([message]) => message?.type);
+    expect(types).not.toContain(MESSAGE_TYPES.HOVER_RANGE);
+    expect(types).toContain(MESSAGE_TYPES.HOVER_TRIGGER);
+  });
+
+  it('远程会话中点击页面时取消并广播 cancel', async () => {
+    await loadContent();
+    const { a } = mountRangeSample();
+    hover(a);
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } });
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    const send = vi.spyOn(chrome.runtime, 'sendMessage');
+    a.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(false);
+    await flush();
+
+    expect(send).toHaveBeenCalledWith({
+      type: MESSAGE_TYPES.HOVER_RANGE,
+      payload: { phase: 'cancel' },
+    });
   });
 });
 

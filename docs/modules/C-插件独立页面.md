@@ -82,7 +82,7 @@
 
 **代码文件**：`src/testpage/index.html`、`src/testpage/main.js`、`src/testpage/frame.html`、`src/testpage/frame.js`、`src/testpage/testpage.css`。
 
-**模块描述**：提供稳定的英文翻译夹具与页内操作入口，用于人工验证整页提交、滚动增量、悬停单段、清除、frame 与重渲染；不自动翻译、不调用引擎、不读写配置。
+**模块描述**：提供稳定的英文翻译夹具与页内操作入口，用于人工验证整页提交、滚动增量、悬停单段与范围、清除、frame 与重渲染；不自动翻译、不调用引擎、不读写配置。
 
 **功能**
 
@@ -92,4 +92,5 @@
 | 页内操作条与页面任务加载 | `main.js` |
 | 内嵌 frame 夹具与独立操作条 | `frame.html`、`frame.js` |
 | 重渲染夹具 | `index.html`、`main.js` |
+| 悬停范围夹具 | `index.html` |
 | 测试页样式与主题 | `testpage.css` |

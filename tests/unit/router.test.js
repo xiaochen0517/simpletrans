@@ -1306,6 +1306,62 @@ describe('A1 跨 frame 广播与汇总', () => {
     ]);
   });
 
+  it('ST_HOVER_RANGE 向来源标签页广播 begin / cancel 阶段', async () => {
+    chrome.tabs.__sendQueue = [{ response: undefined }, { response: undefined }];
+
+    const begin = await handleMessage(
+      { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } },
+      { id: chrome.runtime.id, tab: { id: 1 }, frameId: 1 }
+    );
+    const cancel = await handleMessage(
+      { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'cancel' } },
+      { id: chrome.runtime.id, tab: { id: 1 }, frameId: 1 }
+    );
+
+    expect(begin).toEqual({ ok: true, data: { forwarded: true } });
+    expect(cancel).toEqual({ ok: true, data: { forwarded: true } });
+    expect(chrome.tabs.__sent.map((entry) => entry.message)).toEqual([
+      { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } },
+      { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'cancel' } },
+    ]);
+  });
+
+  it('ST_HOVER_RANGE 阶段非法时拒绝且不广播', async () => {
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'step' } },
+      { id: chrome.runtime.id, tab: { id: 1 }, frameId: 1 }
+    );
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('ST_HOVER_RANGE 没有来源标签页时返回 NO_ACTIVE_TAB', async () => {
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } },
+      { id: chrome.runtime.id }
+    );
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_ACTIVE_TAB);
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('ST_HOVER_RANGE 广播失败时返回 NO_RECEIVER', async () => {
+    chrome.tabs.__sendQueue = [
+      { error: new Error('Could not establish connection. Receiving end does not exist.') },
+    ];
+
+    const response = await handleMessage(
+      { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } },
+      { id: chrome.runtime.id, tab: { id: 1 }, frameId: 1 }
+    );
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_RECEIVER);
+  });
+
   it('ST_HOVER_TRIGGER 没有来源标签页时返回 NO_ACTIVE_TAB', async () => {
     const response = await handleMessage(
       { type: MESSAGE_TYPES.HOVER_TRIGGER },

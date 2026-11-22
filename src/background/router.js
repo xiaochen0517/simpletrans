@@ -92,6 +92,8 @@ export async function handleMessage(message, sender) {
       response = await routeCommand(message.payload, traceId);
     } else if (message.type === MESSAGE_TYPES.HOVER_TRIGGER) {
       response = await forwardHoverTrigger(sender);
+    } else if (message.type === MESSAGE_TYPES.HOVER_RANGE) {
+      response = await forwardHoverRange(sender, message.payload);
     } else if (message.type === MESSAGE_TYPES.PAGE_SUBMIT) {
       response = await receivePageSubmit(message.payload, sender, traceId);
     } else {
@@ -800,6 +802,44 @@ function failureFrom(error) {
     '页面没有返回结果，请刷新后重试',
     FAILURE_REASONS.NO_RECEIVER
   );
+}
+
+/**
+ * 转发悬停范围阶段：页面注入在按下 / 取消时广播，后台向来源标签页全部 frame 转发，
+ * 由实际持有指针的 frame 建立或取消远程范围会话。
+ * @param {{ tab?: { id?: number } }} [sender]
+ * @param {unknown} payload
+ * @returns {Promise<{ ok: true, data: { forwarded: boolean } } | { ok: false, error: object }>}
+ */
+async function forwardHoverRange(sender, payload) {
+  const tabId = sender?.tab?.id;
+  if (!Number.isInteger(tabId)) {
+    return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
+  }
+
+  const phase = payload && typeof payload === 'object' ? payload.phase : undefined;
+  if (phase !== 'begin' && phase !== 'cancel') {
+    return failure(ERROR_CODES.OTHER, '范围阶段无效', FAILURE_REASONS.INVALID_MESSAGE);
+  }
+
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: MESSAGE_TYPES.HOVER_RANGE,
+      payload: { phase },
+    });
+    return { ok: true, data: { forwarded: true } };
+  } catch (error) {
+    log.warn('message.rejected', '悬停范围转发失败', {
+      tabId,
+      phase,
+      reason: FAILURE_REASONS.NO_RECEIVER,
+    });
+    return failure(
+      ERROR_CODES.OTHER,
+      '页面尚未准备好，请刷新后重试',
+      FAILURE_REASONS.NO_RECEIVER
+    );
+  }
 }
 
 /**

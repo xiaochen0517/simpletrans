@@ -2,7 +2,8 @@
  * D2 悬停检测
  *
  * 模块：页面注入（D）/ D2
- * 职责：记录鼠标位置并解析当前宿主；指针落在译文上时归到该译文所属宿主。
+ * 职责：记录鼠标位置并解析当前宿主；指针落在译文上时归到该译文所属宿主；
+ *       指针进入子 frame 时清空本 frame 的宿主，避免父 frame 保留过期目标。
  * 依赖：D1 宿主提取、公共数值、E4 日志。
  *
  * 约束：只读指针与 DOM，不发请求、不写 storage；命令到达时按最新坐标重新解析。
@@ -104,17 +105,39 @@ export function createHoverTracker({
   }
 
   /**
-   * 指针离开文档时清空；relatedTarget 为空表示离开窗口。
+   * 指针进入子 frame 时父文档不再持有有效指针。
+   * @param {Element | null} element
+   * @returns {boolean}
+   */
+  function isFrameElement(element) {
+    return Boolean(
+      element &&
+        element.nodeType === 1 &&
+        (element.tagName === 'IFRAME' || element.tagName === 'FRAME')
+    );
+  }
+
+  /**
+   * 指针离开文档时清空；relatedTarget 为空或进入子 frame 表示离开本文档。
    * @param {PointerEvent} event
    */
   function onPointerOut(event) {
-    if (!event?.relatedTarget) onPointerLeave();
+    if (!event?.relatedTarget || isFrameElement(event.relatedTarget)) onPointerLeave();
+  }
+
+  /**
+   * 指针进入子 frame：父文档后续收不到移动事件，先清空避免残留目标。
+   * @param {PointerEvent} event
+   */
+  function onPointerOver(event) {
+    if (isFrameElement(event?.target)) onPointerLeave();
   }
 
   return {
     start() {
       if (started || typeof document === 'undefined') return;
       document.addEventListener('pointermove', onPointerMove, { passive: true });
+      document.addEventListener('pointerover', onPointerOver, { passive: true });
       document.addEventListener('pointerleave', onPointerLeave);
       document.addEventListener('pointerout', onPointerOut);
       started = true;
@@ -123,6 +146,7 @@ export function createHoverTracker({
     stop() {
       if (!started || typeof document === 'undefined') return;
       document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerover', onPointerOver);
       document.removeEventListener('pointerleave', onPointerLeave);
       document.removeEventListener('pointerout', onPointerOut);
       onPointerLeave();

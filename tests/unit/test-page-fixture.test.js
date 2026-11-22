@@ -33,6 +33,7 @@ const SECTION_IDS = [
   'numbers',
   'long-article',
   'rerender',
+  'hover-range',
   'non-translatable',
   'footer',
 ];

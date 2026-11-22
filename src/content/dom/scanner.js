@@ -11,7 +11,12 @@
  * 规则见 docs/modules/D-页面注入.md#d1-段落提取。
  */
 
-import { MAX_PAGE_PARAGRAPHS, SCAN_CHUNK_SIZE, VIEWPORT_MARGIN_RATIO } from '../../shared/constants.js';
+import {
+  MAX_PAGE_PARAGRAPHS,
+  MAX_SEGMENT_CHARS,
+  SCAN_CHUNK_SIZE,
+  VIEWPORT_MARGIN_RATIO,
+} from '../../shared/constants.js';
 
 /** 宿主标记：值为段落 id（`h<实例标记>-<序号>`），由 D1 分配，同时作为结果帧的 `itemId`。 */
 export const HOST_ATTR = 'data-st-host';
@@ -394,6 +399,34 @@ export function resolveAt(element) {
   if (registered) return registered;
 
   return findContainer(element);
+}
+
+/**
+ * 悬停范围候选：从指针基宿主开始，沿祖先收集可作为一个段落翻译的文字宿主。
+ * 只读 DOM 与计算样式，不打段落 id、不改文本。
+ * 祖先必须未跳过、未隐藏、没有块级子元素且自身文字可译；遇到第一个不满足的祖先即停止。
+ * @param {Element} element 指针所在元素
+ * @returns {Array<{ host: Element, text: string }>} 由小到大的候选；基宿主在索引 0
+ */
+export function collectHoverRange(element) {
+  if (!element || element.nodeType !== 1) return [];
+  const base = resolveAt(element);
+  if (!base) return [];
+  const doc = base.ownerDocument;
+  if (!doc) return [];
+
+  const ranges = [];
+  let node = base;
+  while (node && node !== doc.body && node !== doc.documentElement) {
+    const isBase = node === base;
+    if (!isBase && (isSkipped(node) || isHidden(node) || hasBlockChild(node))) break;
+    const text = normalizeText(extractText(node));
+    if (!text || !hasLetter(text)) break;
+    if (!isBase && text.length > MAX_SEGMENT_CHARS) break;
+    ranges.push({ host: node, text });
+    node = node.parentElement;
+  }
+  return ranges;
 }
 
 /**

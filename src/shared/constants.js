@@ -30,6 +30,9 @@ export const MAX_INFLIGHT_BATCHES_PER_PORT = 4;
 /** 译文显示更新节流：合并增量，按帧刷新。 */
 export const DISPLAY_UPDATE_THROTTLE_MS = 80;
 
+/** 悬停范围预览：滚轮累计多少像素升降一级。 */
+export const HOVER_RANGE_WHEEL_STEP = 40;
+
 /** 心跳间隔：页面注入发 ST_PING，后台回 ST_PONG。 */
 export const HEARTBEAT_INTERVAL_MS = 20_000;
 

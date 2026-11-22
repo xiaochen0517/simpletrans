@@ -6,7 +6,7 @@
 
 **代码文件**：`src/background/router.js`、`src/background/commands.js`、`src/background/context-menu.js`、`src/background/index.js`。
 
-**模块描述**：把弹窗、设置页的请求与快捷键、右键菜单事件送到目标标签页的各个 frame；接收页面提交并转交 A2；转发悬停手势、读取选区；不保存任务状态。
+**模块描述**：把弹窗、设置页的请求与快捷键、右键菜单事件送到目标标签页的各个 frame；接收页面提交并转交 A2；转发悬停手势与范围预览广播、读取选区；不保存任务状态。
 
 **功能**
 
@@ -19,6 +19,7 @@
 | 整页开始、清除与状态查询的跨 frame 汇总 | `router.js#routeCommand`、`router.js#startPageTranslation` |
 | 页面提交的形状校验、按来源 frame 转交与回执 | `router.js#receivePageSubmit` |
 | 悬停手势广播 | `router.js#forwardHoverTrigger` |
+| 悬停范围开始 / 取消广播 | `router.js#forwardHoverRange` |
 | 当前标签页选区读取 | `router.js#readSelection` |
 | 实例列表、测试翻译、快速翻译、缓存统计与清空的消息转发 | `router.js#handleMessage` 对应分支 |
 | 后台入口与监听器注册 | `index.js` |

@@ -4,10 +4,11 @@
  * 模块：页面注入（D）
  * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5/D6、处理后台命令与配置帧；
  *       提供可配置的修饰键手势作为悬停翻译快捷键（Chrome commands 不支持裸修饰键）；
+ *       按下时展示待翻译范围，按住期间用滚轮扩大到祖先宿主，松开后提交最终范围；
+ *       指针在其它 frame 时通过范围广播让持有指针的 frame 显示和调整；
  *       注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段；
- *       从 `ST_CONTENT_CONFIG` 读取悬停快捷键并支持整页会话状态查询；
  *       装配 D6 译文自愈，页面重渲染后按镜像恢复原文未变的译文。
- * 依赖：D1–D6、E1 消息协议、E4 日志、E6 快捷键、content.css。
+ * 依赖：D1–D6、E1 消息协议、E4 日志、E6 快捷键、公共数值、content.css。
  *
  * 约束：不得引用 shared/config、shared/translate、shared/cache；
  *       不得直接读写同步存储与本地存储。
@@ -32,18 +33,20 @@ import { createBridge } from './bridge.js';
 import { createHealer } from './heal.js';
 import { createRenderer } from './dom/renderer.js';
 import { createHoverTracker } from './hover.js';
+import { createHoverRange } from './range.js';
 import { createTask } from './task.js';
 import {
   DEFAULT_HOVER_SHORTCUT,
   normalizeHoverShortcut,
   resolveHoverShortcut,
 } from '../shared/shortcut.js';
+import { HOVER_RANGE_WHEEL_STEP } from '../shared/constants.js';
 
 /** 重复注入保护：同一页面只初始化一次桥、监听与 DOM 层。 */
 const LOAD_FLAG = '__simpletransContentLoaded';
 
-/** 单键手势的最长按住时间；超过视为普通按住，不触发。 */
-const TAP_MAX_MS = 600;
+/** 滚轮 deltaMode 为「行」时每行按多少像素估算。 */
+const WHEEL_LINE_PX = 16;
 
 /**
  * 当前文档是否是扩展页面（C6 测试页与其内嵌 frame）。
@@ -67,6 +70,8 @@ let bridge = null;
 let task = null;
 /** @type {ReturnType<typeof createHoverTracker> | null} */
 let hover = null;
+/** @type {ReturnType<typeof createHoverRange> | null} */
+let rangePreview = null;
 /** @type {ReturnType<typeof createHealer> | null} */
 let healer = null;
 /** @type {ReturnType<typeof createLogger> | null} */
@@ -80,6 +85,21 @@ let activeHoverShortcut = null;
 let hoverConfigApplied = false;
 /** 桥断开过就置真；恢复连接后通知 D5 续传一次（首次连接不续传）。 */
 let bridgeDisconnected = false;
+
+/** 当前手势；keys 为空表示没有按住快捷键。 */
+let gesture = null;
+/** 当前范围会话归属：本 frame 的 `local` 或其它 frame 的 `remote`。 */
+let rangeRole = null;
+/** 本地会话结束时暂存的最终宿主；`hasPendingRange` 区分「没有」与「无目标」。 */
+let hasPendingRange = false;
+/** @type {Element | null} */
+let pendingRangeHost = null;
+/** 范围消息发送链；保证 begin / cancel 的先后顺序。 */
+let rangeForwardChain = Promise.resolve();
+/** 范围滚轮监听是否已安装。 */
+let wheelBound = false;
+/** 滚轮累计量，跨过阈值后升降一级。 */
+let wheelAccum = 0;
 
 /**
  * 焦点是否在可编辑控件内；在输入框里按悬停快捷键不应触发翻译。
@@ -98,83 +118,308 @@ function isEditableFocus() {
 }
 
 /**
+ * 发送一条范围消息；begin / cancel 串行发送，避免往返延迟打乱顺序。
+ * 扩展页面不经过后台广播，直接跳过。
+ * @param {'begin'|'cancel'} phase
+ * @returns {Promise<void>}
+ */
+function forwardRange(phase) {
+  if (IS_EXTENSION_PAGE) return Promise.resolve();
+  const message = { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase } };
+  rangeForwardChain = rangeForwardChain
+    .catch(() => {})
+    .then(() => chrome.runtime.sendMessage(message))
+    .catch(() => {});
+  return rangeForwardChain;
+}
+
+/**
+ * 按当前状态安装或移除滚轮监听。
+ * 只在「本地手势进行中」或「存在范围会话」时安装，避免长期占用非 passive 监听。
+ */
+function syncWheelListener() {
+  if (typeof window === 'undefined') return;
+  const needed = Boolean(gesture) || rangeRole != null;
+  if (needed === wheelBound) return;
+  if (needed) {
+    window.addEventListener('wheel', onHoverWheel, { capture: true, passive: false });
+    wheelBound = true;
+    return;
+  }
+  window.removeEventListener('wheel', onHoverWheel, true);
+  wheelBound = false;
+  wheelAccum = 0;
+}
+
+/**
+ * 把滚轮增量归一为像素。
+ * @param {WheelEvent} event
+ * @returns {number}
+ */
+function wheelDeltaPixels(event) {
+  const delta = Number(event?.deltaY ?? 0);
+  if (!Number.isFinite(delta)) return 0;
+  if (event.deltaMode === 1) return delta * WHEEL_LINE_PX;
+  if (event.deltaMode === 2) return delta * (Number(window?.innerHeight) || 800);
+  return delta;
+}
+
+/**
+ * 滚轮调整范围：存在范围会话时扩大 / 缩小并阻止页面滚动与缩放；
+ * 没有范围会话时沿用旧语义，把本次手势记为「指针已使用」。
+ * @param {WheelEvent} event
+ */
+function onHoverWheel(event) {
+  if (rangeRole == null || !rangePreview) {
+    if (gesture) gesture.pointerUsed = true;
+    return;
+  }
+  if (event.cancelable) event.preventDefault();
+  event.stopPropagation();
+
+  wheelAccum += wheelDeltaPixels(event);
+  if (Math.abs(wheelAccum) < HOVER_RANGE_WHEEL_STEP) return;
+
+  const expanding = wheelAccum < 0;
+  const changed = expanding ? rangePreview.expand() : rangePreview.shrink();
+  wheelAccum = 0;
+  if (changed) {
+    log?.debug('hotkey.range.adjust', '悬停范围已调整', {
+      index: rangePreview.getIndex(),
+      levels: rangePreview.getLevels(),
+    });
+  }
+}
+
+/** 清空本地暂存的范围宿主。 */
+function clearPendingRange() {
+  hasPendingRange = false;
+  pendingRangeHost = null;
+}
+
+/**
+ * 暂存本地会话的最终宿主；null 表示有会话但没有可用目标。
+ * @param {Element | null} host
+ */
+function setPendingRange(host) {
+  hasPendingRange = true;
+  pendingRangeHost = host;
+}
+
+/**
+ * 取出本地暂存的最终宿主；没有时返回 undefined。
+ * @returns {Element | null | undefined}
+ */
+function takePendingRange() {
+  if (!hasPendingRange) return undefined;
+  const host = pendingRangeHost;
+  clearPendingRange();
+  return host;
+}
+
+/** 清除范围会话与标记。 */
+function clearRangeSession() {
+  rangePreview?.cancel();
+  rangeRole = null;
+  clearPendingRange();
+  syncWheelListener();
+}
+
+/**
+ * 以本 frame 的基宿主开始本地范围会话。
+ * @param {Element} baseHost
+ * @returns {boolean}
+ */
+function beginLocalRange(baseHost) {
+  rangePreview?.cancel();
+  rangeRole = null;
+  const levels = rangePreview && baseHost ? rangePreview.begin(baseHost) : 0;
+  if (!levels) {
+    syncWheelListener();
+    return false;
+  }
+  rangeRole = 'local';
+  log?.debug('hotkey.range.begin', '悬停范围预览开始', { role: 'local', levels });
+  syncWheelListener();
+  return true;
+}
+
+/**
+ * 中止本地手势并移除范围；仍在按住时不触发。
+ * @param {string} reason
+ */
+function cancelActiveGesture(reason) {
+  if (!gesture) return;
+  const first = !gesture.canceled;
+  gesture.otherKey = true;
+  gesture.canceled = true;
+  clearRangeSession();
+  if (first) void forwardRange('cancel');
+  log?.debug('hotkey.range.cancel', '悬停手势已取消', { reason });
+}
+
+/**
+ * 开始一次修饰键手势：有本地宿主时本地预览，否则广播开始让持有指针的 frame 预览。
+ */
+function startGesture() {
+  clearRangeSession();
+  gesture = { keys: new Set(), otherKey: false, pointerUsed: false, canceled: false };
+  wheelAccum = 0;
+  syncWheelListener();
+  if (isEditableFocus()) return;
+
+  const base = hover?.getCurrentHost() ?? null;
+  if (base) {
+    beginLocalRange(base);
+    return;
+  }
+  void forwardRange('begin');
+}
+
+/**
+ * 松开最后一个修饰键：结束预览并触发提交；取消过的手势不触发。
+ */
+function finishGesture() {
+  if (!gesture) return;
+  const canceled =
+    gesture.otherKey || gesture.pointerUsed || gesture.canceled || isEditableFocus();
+  const chain = rangeForwardChain;
+
+  if (canceled) {
+    gesture = null;
+    clearRangeSession();
+    syncWheelListener();
+    return;
+  }
+
+  if (rangeRole === 'local' && rangePreview) {
+    setPendingRange(rangePreview.end());
+    rangeRole = null;
+  }
+  gesture = null;
+  syncWheelListener();
+  void chain
+    .catch(() => {})
+    .then(() => requestHoverTrigger());
+}
+
+/**
+ * 处理其它 frame 广播的范围阶段。
+ * @param {{ payload?: { phase?: string } }} frame
+ */
+function applyRemoteRange(frame) {
+  const phase = frame?.payload?.phase;
+  if (phase === 'begin') {
+    if (!hover || !rangePreview) return;
+    if (gesture || rangeRole === 'local') return;
+    clearRangeSession();
+    const base = hover.getCurrentHost();
+    if (!base) return;
+    const levels = rangePreview.begin(base);
+    if (!levels) return;
+    rangeRole = 'remote';
+    log?.debug('hotkey.range.begin', '悬停范围预览开始', { role: 'remote', levels });
+    syncWheelListener();
+    return;
+  }
+
+  if (phase === 'cancel') {
+    const hadGesture = Boolean(gesture);
+    if (gesture) {
+      gesture.otherKey = true;
+      gesture.canceled = true;
+    }
+    clearRangeSession();
+    syncWheelListener();
+    if (hadGesture) {
+      log?.debug('hotkey.range.cancel', '收到范围取消，手势已中止', { reason: 'remote-cancel' });
+    }
+  }
+}
+
+/**
+ * 取本次悬停触发的最终目标：
+ * 本地结束的候选 > 远程范围会话的候选 > 当前指针宿主。
+ * @returns {Element | null}
+ */
+function consumeTriggerTarget() {
+  const pending = takePendingRange();
+  if (pending !== undefined) return pending;
+  if (rangeRole != null && rangePreview) {
+    const host = rangePreview.end();
+    rangeRole = null;
+    syncWheelListener();
+    return host;
+  }
+  return hover?.getCurrentHost() ?? null;
+}
+
+/**
  * 安装修饰键单键手势。
  *
  * Chrome 的 commands API 只支持「修饰键 + 普通键」，不支持裸修饰键，因此页面侧用
- * keydown/keyup 识别：按下并松开所选修饰键（同一次手势只按一个可用键，中间没有其它键、
- * 没有点击/滚轮、未超过 600ms）才触发。不调用 preventDefault，不影响页面与浏览器原有快捷键。
+ * keydown/keyup 识别：按下所选修饰键后进入范围预览，按住期间可用滚轮调整；
+ * 中间没有其它键、没有点击、焦点不在可编辑控件时，松开才触发。
+ * 不调用 preventDefault，不影响页面与浏览器原有快捷键；只有范围调整时的滚轮被接管。
  *
  * @param {string[]} keys 可接受的 `KeyboardEvent.key`，例如 `['Control']`
- * @param {() => void} onTrigger
  * @returns {() => void} 清理函数
  */
-function installModifierTap(keys, onTrigger) {
+function installModifierTap(keys) {
   if (typeof window === 'undefined') return () => {};
 
   const accepted = new Set(Array.isArray(keys) ? keys : []);
-  const held = new Set();
-  let otherKey = false;
-  let pointerUsed = false;
-  let startedAt = 0;
-
-  const reset = () => {
-    held.clear();
-    otherKey = false;
-    pointerUsed = false;
-    startedAt = 0;
-  };
 
   const onKeyDown = (event) => {
     if (accepted.has(event.key)) {
       if (event.repeat) return;
-      if (held.size === 0) {
-        startedAt = Date.now();
-        otherKey = false;
-        pointerUsed = false;
-      } else {
-        // 同一手势里按下第二个可接受键：不再算作单键手势。
-        otherKey = true;
-      }
-      held.add(event.key);
+      if (!gesture) startGesture();
+      else cancelActiveGesture('second-key');
+      gesture?.keys.add(event.key);
       return;
     }
-    if (held.size > 0) otherKey = true;
+    if (gesture) cancelActiveGesture('other-key');
   };
 
   const onKeyUp = (event) => {
-    if (!accepted.has(event.key) || held.size === 0) return;
-    held.delete(event.key);
-    if (held.size > 0) return;
-
-    const elapsed = Date.now() - startedAt;
-    const shouldTrigger = !otherKey && !pointerUsed && elapsed <= TAP_MAX_MS && !isEditableFocus();
-    reset();
-    if (shouldTrigger) onTrigger();
+    if (!accepted.has(event.key) || !gesture) return;
+    gesture.keys.delete(event.key);
+    if (gesture.keys.size > 0) return;
+    finishGesture();
   };
 
   const onPointerDown = () => {
-    if (held.size > 0) pointerUsed = true;
+    if (gesture) {
+      cancelActiveGesture('pointerdown');
+      return;
+    }
+    if (rangeRole === 'remote') {
+      clearRangeSession();
+      void forwardRange('cancel');
+      log?.debug('hotkey.range.cancel', '远程范围会话已取消', { reason: 'pointerdown' });
+    }
   };
 
-  const onWheel = () => {
-    if (held.size > 0) pointerUsed = true;
+  const onBlur = () => {
+    if (!gesture) return;
+    cancelActiveGesture('blur');
+    gesture = null;
+    syncWheelListener();
   };
-
-  const onBlur = () => reset();
 
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('pointerdown', onPointerDown, true);
-  window.addEventListener('wheel', onWheel, { capture: true, passive: true });
   window.addEventListener('blur', onBlur);
 
   return () => {
     window.removeEventListener('keydown', onKeyDown, true);
     window.removeEventListener('keyup', onKeyUp, true);
     window.removeEventListener('pointerdown', onPointerDown, true);
-    window.removeEventListener('wheel', onWheel, true);
     window.removeEventListener('blur', onBlur);
-    reset();
+    gesture = null;
+    clearRangeSession();
+    syncWheelListener();
   };
 }
 
@@ -189,7 +434,7 @@ function applyHoverShortcut(value) {
   tapCleanup?.();
   activeHoverShortcut = normalized;
   const resolved = resolveHoverShortcut(normalized);
-  tapCleanup = installModifierTap(resolved.keys, requestHoverTrigger);
+  tapCleanup = installModifierTap(resolved.keys);
   log?.info('hotkey.config', '悬停快捷键已应用', { shortcut: resolved.shortcut });
 }
 
@@ -201,27 +446,35 @@ function applyHoverShortcut(value) {
 function requestHoverTrigger() {
   if (!task || !hover) return;
   if (IS_EXTENSION_PAGE) {
-    runHoverToggle('fallback');
+    runHoverToggle('fallback', consumeTriggerTarget());
     return;
   }
   try {
     const sent = chrome.runtime.sendMessage({ type: MESSAGE_TYPES.HOVER_TRIGGER });
     if (sent && typeof sent.catch === 'function') {
-      sent.catch(() => runHoverToggle('fallback'));
+      sent
+        .then((response) => {
+          // 后台明确失败（例如页面没有接收方）时回退本 frame，避免预览消失后没有动作。
+          if (response && response.ok === false) {
+            runHoverToggle('fallback', consumeTriggerTarget());
+          }
+        })
+        .catch(() => runHoverToggle('fallback', consumeTriggerTarget()));
     }
   } catch {
-    runHoverToggle('fallback');
+    runHoverToggle('fallback', consumeTriggerTarget());
   }
 }
 
 /**
- * 对当前宿主动作：提交或隐藏。
+ * 对最终宿主动作：提交或隐藏。
  * @param {'broadcast' | 'fallback'} source 触发来源，只用于日志
+ * @param {Element | null} host 本次手势的最终宿主
  */
-function runHoverToggle(source) {
+function runHoverToggle(source, host) {
   if (!task || !hover) return;
   const traceId = newTraceId();
-  Promise.resolve(task.toggle(hover.getCurrentHost(), traceId))
+  Promise.resolve(task.toggle(host, traceId))
     .then((result) => {
       log?.debug('hotkey.trigger', '悬停快捷键触发提交', {
         action: result?.data?.action ?? null,
@@ -342,9 +595,15 @@ function handleMessage(message, sender, sendResponse) {
       return false;
     }
 
-    // 后台广播的悬停触发：只有实际持有指针的 frame 有宿主，其余 frame 的宿主为 null。
+    // 后台广播的范围预览阶段：由持有指针的 frame 建立或取消远程会话。
+    if (message.type === MESSAGE_TYPES.HOVER_RANGE) {
+      applyRemoteRange(message);
+      return false;
+    }
+
+    // 后台广播的悬停触发：优先使用本次范围候选，没有范围时按当前指针宿主处理。
     if (message.type === MESSAGE_TYPES.HOVER_TRIGGER) {
-      runHoverToggle('broadcast');
+      runHoverToggle('broadcast', consumeTriggerTarget());
       return false;
     }
 
@@ -474,6 +733,7 @@ function main() {
       cancelRequest: cancelSubmission,
       heal: healer,
     });
+    rangePreview = createHoverRange();
     hover = createHoverTracker();
     hover.start();
     applyHoverShortcut(DEFAULT_HOVER_SHORTCUT);
@@ -486,6 +746,9 @@ function main() {
   // Node 单元测试没有 window；真实页面才接生命周期。
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', () => {
+      gesture = null;
+      clearRangeSession();
+      syncWheelListener();
       hover?.stop();
       healer?.stop();
       task?.dispose();

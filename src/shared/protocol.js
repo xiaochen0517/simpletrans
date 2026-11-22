@@ -67,6 +67,7 @@ export const MESSAGE_TYPES = Object.freeze({
   CLEAR: 'ST_CLEAR', // 后台 → 页面注入：清除全部标记与译文；响应 removed
   GET_STATUS: 'ST_GET_STATUS', // 后台 → 页面注入：读取整页会话状态，响应 { active }
   HOVER_TRIGGER: 'ST_HOVER_TRIGGER', // 页面注入 → 后台 → 全部 frame：悬停手势广播，不携带载荷
+  HOVER_RANGE: 'ST_HOVER_RANGE', // 页面注入 → 后台 → 全部 frame：悬停范围预览的开始 / 取消
   LIST_ENGINES: 'ST_LIST_ENGINES', // 设置页 → 后台：引擎列表
   TEST_ENGINE: 'ST_TEST_ENGINE', // 设置页 → 后台：测试翻译
   QUICK_TRANSLATE: 'ST_QUICK_TRANSLATE', // 弹窗 → 后台：快速翻译，返回纯文本译文

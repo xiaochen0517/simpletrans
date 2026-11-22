@@ -20,7 +20,7 @@
       </button>
       <button id="test-clear" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800 dark:focus-visible:ring-offset-gray-950">显示原文</button>
       <span id="test-status" class="inline-flex w-fit items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300" role="status">就绪</span>
-      <span class="basis-full text-sm text-gray-500 dark:text-gray-400">悬停英文段落按设置中的悬停快捷键（默认 Ctrl）提交/隐藏；滚动后自动提交新段落；译文来自后台缓存或真实翻译。</span>
+      <span class="basis-full text-sm text-gray-500 dark:text-gray-400">悬停英文段落按设置中的悬停快捷键（默认 Ctrl）提交/隐藏；按住时滚轮向上扩大、向下缩小翻译范围，松开后按最终范围翻译；滚动后自动提交新段落；译文来自后台缓存或真实翻译。</span>
     </header>
 
     <main id="test-page">
@@ -412,6 +412,15 @@
           The translated sentence should come back after the page rebuilds it, because
           the source text did not change.
         </p>
+      </section>
+
+      <section id="hover-range" data-test-section>
+        <h2>Hover Range</h2>
+        <p>
+          Hold the hover shortcut over one fragment and scroll the wheel to grow or
+          shrink the dashed range. Releasing translates exactly the outlined element.
+        </p>
+        <div><span>Alpha fragment</span> <span>Beta fragment</span></div>
       </section>
 
       <section id="embedded-frame" data-test-section>

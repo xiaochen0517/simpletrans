@@ -117,6 +117,26 @@ describe('D2 悬停锚定', () => {
     tracker.stop();
   });
 
+  it('指针进入 iframe 时清空当前宿主，回到父文档后可重新解析', () => {
+    document.body.innerHTML = '<p id="p">Hello</p><iframe id="frame"></iframe>';
+    const p = document.getElementById('p');
+    const frame = document.getElementById('frame');
+    const tracker = createHoverTracker();
+    tracker.start();
+    move(p);
+    expect(tracker.getCurrentHost()).toBe(p);
+
+    frame.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    expect(tracker.getCurrentHost()).toBe(null);
+
+    move(p);
+    expect(tracker.getCurrentHost()).toBe(p);
+    p.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget: frame }));
+    expect(tracker.getCurrentHost()).toBe(null);
+
+    tracker.stop();
+  });
+
   it('移动事件按 80 毫秒节流，只安排一次解析', () => {
     document.body.innerHTML = '<p id="p">Hello</p>';
     const pending = [];

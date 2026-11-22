@@ -13,6 +13,7 @@
 | 功能 | 代码位置 |
 | --- | --- |
 | 从指针位置解析宿主 | `scanner.js#resolveAt` |
+| 悬停范围候选（基宿主到合法祖先） | `scanner.js#collectHoverRange` |
 | 宿主标记与段落 id 分配 | `scanner.js#ensureHost` |
 | 跳过脚本、样式、表单控件、隐藏与已翻译内容 | `scanner.js#isSkipped`、`scanner.js#isHidden` |
 | 文本提取与归一 | `scanner.js#extractText`、`scanner.js#normalizeText` |
@@ -22,18 +23,22 @@
 
 ## D2 悬停检测
 
-**代码文件**：`src/content/hover.js`、`src/content/index.js`。
+**代码文件**：`src/content/hover.js`、`src/content/range.js`、`src/content/index.js`、`src/content/content.css`（范围边框规则）。
 
-**模块描述**：记录指针当前所在的文字宿主，并在悬停快捷键手势触发时交给页面任务；跨 frame 时由后台广播，只有持有指针的 frame 处理。
+**模块描述**：记录指针当前所在的文字宿主，在按住快捷键期间展示待翻译范围并支持滚轮扩大到祖先宿主；跨 frame 时广播范围开始与取消，只有持有指针的 frame 显示和调整范围。
 
 **功能**
 
 | 功能 | 代码位置 |
 | --- | --- |
 | 指针移动跟踪与宿主归位 | `hover.js#createHoverTracker` |
-| 修饰键手势识别 | `content/index.js#installModifierTap` |
+| 指针进入子 frame 时清空宿主 | `hover.js#createHoverTracker` |
+| 范围候选导航与虚线标记 | `range.js#createHoverRange` |
+| 修饰键两阶段手势与滚轮调整 | `content/index.js#installModifierTap` |
+| 跨 frame 范围广播与远程会话 | `content/index.js#handleMessage`、`content/index.js` |
 | 悬停触发与本地切换 | `content/index.js#runHoverToggle` |
 | 跨 frame 手势广播 | `content/index.js#requestHoverTrigger` |
+| 范围边框样式 | `content.css` |
 
 ## D3 译文渲染
 

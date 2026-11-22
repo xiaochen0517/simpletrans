@@ -4,6 +4,7 @@
  * 模块：页面注入（D）/ D3
  * 职责：提交与译文状态标记内嵌在原文宿主末尾，继承宿主字体与颜色；提交中、已提交、翻译中、流式、
  *       译文与失败只做轻量状态区分；失败态的「刷新」按钮使用 HyperUI 调色板的固定色（gray-600 / indigo-600）。
+ *       D2 悬停范围预览的虚线边框也在这里定义，只匹配 data-st-range。
  *
  * 只匹配 data-st-* 标记；容器保持行内，换行由容器内部的 br 完成。
  */
@@ -86,4 +87,13 @@
   [data-st-translation] {
     transition: opacity 120ms ease-out;
   }
+}
+
+/*
+ * D2 悬停范围预览：虚线画在元素内侧，outline 不参与布局，不改变元素尺寸；
+ * !important 用于覆盖页面自身的 outline 规则。
+ */
+[data-st-range] {
+  outline: 2px dashed #4f46e5 !important;
+  outline-offset: -2px !important;
 }

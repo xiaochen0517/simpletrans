@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HOST_ATTR,
   TRANSLATION_ATTR,
+  collectHoverRange,
   collectParagraphs,
   ensureHost,
   extractText,
@@ -25,7 +26,7 @@ import {
   normalizeText,
   resolveAt,
 } from '../../src/content/dom/scanner.js';
-import { MAX_PAGE_PARAGRAPHS } from '../../src/shared/constants.js';
+import { MAX_PAGE_PARAGRAPHS, MAX_SEGMENT_CHARS } from '../../src/shared/constants.js';
 
 /**
  * @param {string} html
@@ -109,6 +110,59 @@ describe('D1 容器判定', () => {
       '<p id="p">Use <code>npm</code> <button>Go</button><script>bad()</script><span>now</span></p>'
     );
     expect(normalizeText(extractText(document.getElementById('p')))).toBe('Use npm now');
+  });
+});
+
+describe('D1 悬停范围候选', () => {
+  it('从行内基宿主逐级收集到合法祖先，顺序由小到大', () => {
+    mount('<div id="card"><span id="a">a</span><span id="b">b</span></div>');
+    const ranges = collectHoverRange(document.getElementById('a'));
+    expect(ranges.map((range) => range.host.id)).toEqual(['a', 'card']);
+    expect(ranges.map((range) => range.text)).toEqual(['a', 'ab']);
+  });
+
+  it('嵌套行内祖先全部保留', () => {
+    mount('<div id="outer"><span id="mid"><strong id="s">Hi</strong></span></div>');
+    const ranges = collectHoverRange(document.getElementById('s'));
+    expect(ranges.map((range) => range.host.id)).toEqual(['s', 'mid', 'outer']);
+  });
+
+  it('祖先包含块级子元素时停止，不合并多段', () => {
+    mount('<div id="card"><span id="a">a</span><p id="p">b</p></div>');
+    const ranges = collectHoverRange(document.getElementById('a'));
+    expect(ranges.map((range) => range.host.id)).toEqual(['a']);
+  });
+
+  it('祖先文本超过单段上限时停止扩大，基宿主仍保留', () => {
+    mount(`<div id="big"><span id="a">Hello</span>${'A'.repeat(MAX_SEGMENT_CHARS)}</div>`);
+    const ranges = collectHoverRange(document.getElementById('a'));
+    expect(ranges.map((range) => range.host.id)).toEqual(['a']);
+  });
+
+  it('基宿主自身超长时仍作为候选', () => {
+    mount(`<div id="big"><span id="a">${'A'.repeat(MAX_SEGMENT_CHARS + 1)}</span></div>`);
+    const ranges = collectHoverRange(document.getElementById('a'));
+    expect(ranges.map((range) => range.host.id)).toEqual(['a']);
+  });
+
+  it('译文容器不参与候选文本', () => {
+    mount('<p id="p">Hello</p>');
+    const p = document.getElementById('p');
+    const id = ensureHost(p);
+    const translation = document.createElement('font');
+    translation.setAttribute(TRANSLATION_ATTR, '');
+    translation.setAttribute('data-st-for', id);
+    translation.textContent = '你好';
+    p.append(translation);
+
+    const ranges = collectHoverRange(p);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].text).toBe('Hello');
+  });
+
+  it('没有可译宿主时返回空数组', () => {
+    mount('<p id="num">12345</p>');
+    expect(collectHoverRange(document.getElementById('num'))).toEqual([]);
   });
 });
 
