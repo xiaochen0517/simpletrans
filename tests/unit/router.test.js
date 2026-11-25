@@ -608,50 +608,61 @@ describe('A1 控制面：ST_ROUTE', () => {
     return handleMessage({ type: MESSAGE_TYPES.ROUTE, payload }, sender);
   }
 
-  it('start 读取设置与活动标签页，向页面发 ST_START 并原样返回页面响应', async () => {
-    const pageResponse = { ok: true, data: { phase: 'submitted', total: 3 } };
-    chrome.tabs.__response = pageResponse;
+  it('toggle 未开启时先查状态再发 ST_START，合并 targetLang 与 traceId', async () => {
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { phase: 'submitted', total: 3 } } },
+    ];
 
-    const response = await route({ command: 'start', traceId: 't-route-1' });
+    const response = await route({ command: 'toggle', traceId: 't-route-1' });
 
-    expect(response).toEqual(pageResponse);
-    expect(chrome.tabs.__sent).toHaveLength(1);
-    expect(chrome.tabs.__sent[0]).toEqual({
-      tabId: 1,
-      message: {
-        type: MESSAGE_TYPES.START,
-        payload: {
-          targetLang: 'zh',
-          traceId: 't-route-1',
-        },
-      },
+    expect(response).toEqual({
+      ok: true,
+      data: { action: 'started', phase: 'submitted', total: 3 },
     });
-    //  页面侧不建批，ST_START 不再携带 batch。
-    expect(chrome.tabs.__sent[0].message.payload).not.toHaveProperty('batch');
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.START,
+    ]);
+    expect(chrome.tabs.__sent[0].message.payload).toEqual({ traceId: 't-route-1' });
+    expect(chrome.tabs.__sent[1].message.payload).toEqual({
+      targetLang: 'zh',
+      traceId: 't-route-1',
+    });
+    // 页面侧不建批，ST_START 不携带 batch。
+    expect(chrome.tabs.__sent[1].message.payload).not.toHaveProperty('batch');
     expect(chrome.scripting.__calls).toEqual([]);
   });
 
-  it('start 没有 traceId 时载荷只有 targetLang', async () => {
-    chrome.tabs.__response = { ok: true, data: { phase: 'idle', total: 0 } };
+  it('toggle 未开启且没有 traceId 时开始载荷只有 targetLang', async () => {
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { phase: 'idle', total: 0 } } },
+    ];
 
-    await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
-    expect(chrome.tabs.__sent[0].message.payload).toEqual({ targetLang: 'zh' });
-    expect(chrome.tabs.__sent[0].message.payload).not.toHaveProperty('batch');
+    expect(response).toEqual({
+      ok: true,
+      data: { action: 'started', phase: 'idle', total: 0 },
+    });
+    expect(chrome.tabs.__sent[1].message.payload).toEqual({ targetLang: 'zh' });
   });
 
-  it('clear 向页面发 ST_CLEAR 并返回清除结果', async () => {
-    const pageResponse = { ok: true, data: { removed: 3 } };
-    chrome.tabs.__response = pageResponse;
+  it('toggle 已开启时发 ST_CLEAR 并返回清除数，不发送 ST_START', async () => {
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: true } } },
+      { response: { ok: true, data: { removed: 3 } } },
+    ];
 
-    const response = await route({ command: 'clear', traceId: 't-route-clear' });
+    const response = await route({ command: 'toggle', traceId: 't-route-clear' });
 
-    expect(response).toEqual(pageResponse);
-    expect(chrome.tabs.__sent).toHaveLength(1);
-    expect(chrome.tabs.__sent[0]).toEqual({
-      tabId: 1,
-      message: { type: MESSAGE_TYPES.CLEAR, payload: { traceId: 't-route-clear' } },
-    });
+    expect(response).toEqual({ ok: true, data: { action: 'cleared', removed: 3 } });
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.CLEAR,
+    ]);
+    expect(chrome.tabs.__sent[1].message.payload).toEqual({ traceId: 't-route-clear' });
   });
 
   it('status 不读设置、不检查实例，转发 ST_GET_STATUS 并透传 active', async () => {
@@ -679,14 +690,15 @@ describe('A1 控制面：ST_ROUTE', () => {
     expect(chrome.tabs.__sent).toEqual([]);
   });
 
-  it('未知命令返回 OTHER / INVALID_MESSAGE，不查询标签页也不发送', async () => {
+  it('未知命令与已移除的 start / clear 一律拒绝，不查询标签页也不发送', async () => {
     const query = vi.spyOn(chrome.tabs, 'query');
 
-    const response = await route({ command: 'pause' });
-
-    expect(response.ok).toBe(false);
-    expect(response.error.code).toBe(ERROR_CODES.OTHER);
-    expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+    for (const command of ['pause', 'start', 'clear']) {
+      const response = await route({ command });
+      expect(response.ok).toBe(false);
+      expect(response.error.code).toBe(ERROR_CODES.OTHER);
+      expect(response.error.reason).toBe(FAILURE_REASONS.INVALID_MESSAGE);
+    }
     expect(query).not.toHaveBeenCalled();
     expect(chrome.tabs.__sent).toEqual([]);
   });
@@ -694,7 +706,7 @@ describe('A1 控制面：ST_ROUTE', () => {
   it('扩展停用时返回 CONFIG「扩展已停用」，不发送命令', async () => {
     await saveSettings({ enabled: false });
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
     expect(response).toEqual({
       ok: false,
@@ -706,7 +718,7 @@ describe('A1 控制面：ST_ROUTE', () => {
   it('没有活动标签页时返回 OTHER / NO_ACTIVE_TAB', async () => {
     chrome.tabs.__queryResult = [];
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
     expect(response.ok).toBe(false);
     expect(response.error.code).toBe(ERROR_CODES.OTHER);
@@ -714,38 +726,52 @@ describe('A1 控制面：ST_ROUTE', () => {
     expect(chrome.tabs.__sent).toEqual([]);
   });
 
-  it('页面的 ok:false 错误码原样返回', async () => {
-    chrome.tabs.__response = {
-      ok: false,
-      error: { code: ERROR_CODES.CONFIG, message: '缺少密钥，请先在设置页保存密钥' },
-    };
+  it('状态查询返回页面错误时原样返回，不继续开始或清除', async () => {
+    chrome.tabs.__sendQueue = [
+      {
+        response: {
+          ok: false,
+          error: { code: ERROR_CODES.CONFIG, message: '缺少密钥，请先在设置页保存密钥' },
+        },
+      },
+    ];
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
     expect(response).toEqual({
       ok: false,
       error: { code: ERROR_CODES.CONFIG, message: '缺少密钥，请先在设置页保存密钥' },
     });
+    expect(chrome.tabs.__sent).toHaveLength(1);
+    expect(chrome.tabs.__sent[0].message.type).toBe(MESSAGE_TYPES.GET_STATUS);
   });
 
-  it('页面未注入时先 insertCSS 再 executeScript 后重发一次', async () => {
+  it('页面未注入时先 insertCSS 再 executeScript 后重发状态与开始', async () => {
     const noReceiver = new Error(
       'Could not establish connection. Receiving end does not exist.'
     );
     chrome.tabs.__sendQueue = [
       { error: noReceiver },
+      { response: { ok: true, data: { active: false } } },
       { response: { ok: true, data: { phase: 'submitted', total: 1 } } },
     ];
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
-    expect(response.ok).toBe(true);
+    expect(response).toEqual({
+      ok: true,
+      data: { action: 'started', phase: 'submitted', total: 1 },
+    });
     expect(chrome.scripting.__calls.map((call) => call.api)).toEqual([
       'insertCSS',
       'executeScript',
     ]);
-    expect(chrome.tabs.__sent).toHaveLength(2);
-    expect(chrome.tabs.__sent[1].message.type).toBe(MESSAGE_TYPES.START);
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.START,
+    ]);
+    expect(chrome.tabs.__sent[1].options).toEqual({ frameId: 0 });
   });
 
   it('注入失败时返回 INJECTION_FAILED', async () => {
@@ -756,29 +782,33 @@ describe('A1 控制面：ST_ROUTE', () => {
     ];
     chrome.scripting.__error = new Error('Cannot access a chrome:// URL');
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
     expect(response.ok).toBe(false);
     expect(response.error.reason).toBe(FAILURE_REASONS.INJECTION_FAILED);
     expect(chrome.tabs.__sent).toHaveLength(1);
   });
 
-  it('注入后仍无接收方时返回 NO_RECEIVER', async () => {
+  it('注入后仍无接收方时返回 NO_RECEIVER，不继续开始', async () => {
     const noReceiver = new Error(
       'Could not establish connection. Receiving end does not exist.'
     );
     chrome.tabs.__sendQueue = [{ error: noReceiver }, { error: noReceiver }];
 
-    const response = await route({ command: 'clear' });
+    const response = await route({ command: 'toggle' });
 
     expect(response.ok).toBe(false);
     expect(response.error.reason).toBe(FAILURE_REASONS.NO_RECEIVER);
     expect(chrome.scripting.__calls).toHaveLength(2);
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.GET_STATUS,
+    ]);
   });
 
   it('扩展外部发送方的 ST_ROUTE 被拒绝且不访问标签页', async () => {
     const response = await handleMessage(
-      { type: MESSAGE_TYPES.ROUTE, payload: { command: 'start' } },
+      { type: MESSAGE_TYPES.ROUTE, payload: { command: 'toggle' } },
       { id: 'other' }
     );
 
@@ -794,13 +824,38 @@ describe('A1 控制面：ST_ROUTE', () => {
       return originalGet(keys);
     };
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
     expect(response).toEqual({
       ok: false,
       error: { code: ERROR_CODES.CONFIG, message: '读取设置失败' },
     });
     expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('连续两次 toggle 按顺序执行，第二次基于第一次完成后的状态', async () => {
+    chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { phase: 'submitted', total: 1 } } },
+      { response: { ok: true, data: { active: true } } },
+      { response: { ok: true, data: { removed: 1 } } },
+    ];
+
+    const first = route({ command: 'toggle', traceId: 't-first' });
+    const second = route({ command: 'toggle', traceId: 't-second' });
+    const [started, cleared] = await Promise.all([first, second]);
+
+    expect(started).toEqual({
+      ok: true,
+      data: { action: 'started', phase: 'submitted', total: 1 },
+    });
+    expect(cleared).toEqual({ ok: true, data: { action: 'cleared', removed: 1 } });
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.START,
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.CLEAR,
+    ]);
   });
 });
 
@@ -1211,56 +1266,84 @@ describe('A1 跨 frame 广播与汇总', () => {
     return client;
   }
 
-  it('start 并发发给各 frame 并汇总段数', async () => {
+  it('toggle 未开启时并发发给各 frame 并汇总段数', async () => {
     connectTabFrame(1, 0);
     connectTabFrame(1, 1);
     chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { active: false } } },
       { response: { ok: true, data: { phase: 'submitted', total: 2 } } },
       { response: { ok: true, data: { phase: 'submitted', total: 3 } } },
     ];
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
-    expect(response).toEqual({ ok: true, data: { phase: 'submitted', total: 5 } });
-    expect(chrome.tabs.__sent.map((entry) => entry.options?.frameId)).toEqual([0, 1]);
+    expect(response).toEqual({
+      ok: true,
+      data: { action: 'started', phase: 'submitted', total: 5 },
+    });
+    expect(chrome.tabs.__sent.map((entry) => entry.options?.frameId)).toEqual([0, 1, 0, 1]);
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.START,
+      MESSAGE_TYPES.START,
+    ]);
   });
 
-  it('start 在部分 frame 失败时仍汇总成功段数', async () => {
+  it('toggle 开始阶段部分 frame 失败时仍汇总成功段数', async () => {
     connectTabFrame(1, 0);
     connectTabFrame(1, 1);
     chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { active: false } } },
       { response: { ok: true, data: { phase: 'submitted', total: 4 } } },
       { response: { ok: false, error: { code: ERROR_CODES.OTHER, message: 'frame 失败' } } },
     ];
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
-    expect(response).toEqual({ ok: true, data: { phase: 'submitted', total: 4 } });
+    expect(response).toEqual({
+      ok: true,
+      data: { action: 'started', phase: 'submitted', total: 4 },
+    });
   });
 
-  it('start 全部 frame 失败时返回页面错误', async () => {
+  it('toggle 开始阶段全部 frame 失败时返回页面错误', async () => {
     connectTabFrame(1, 0);
+    connectTabFrame(1, 1);
     chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: false, error: { code: ERROR_CODES.OTHER, message: '当前页面不可用' } } },
       { response: { ok: false, error: { code: ERROR_CODES.OTHER, message: '当前页面不可用' } } },
     ];
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
     expect(response.ok).toBe(false);
     expect(response.error.message).toBe('当前页面不可用');
   });
 
-  it('clear 汇总各 frame 清除数', async () => {
+  it('toggle 已开启时汇总各 frame 清除数', async () => {
     connectTabFrame(1, 0);
     connectTabFrame(1, 1);
     chrome.tabs.__sendQueue = [
+      { response: { ok: true, data: { active: true } } },
+      { response: { ok: true, data: { active: false } } },
       { response: { ok: true, data: { removed: 2 } } },
       { response: { ok: true, data: { removed: 5 } } },
     ];
 
-    const response = await route({ command: 'clear' });
+    const response = await route({ command: 'toggle' });
 
-    expect(response).toEqual({ ok: true, data: { removed: 7 } });
+    expect(response).toEqual({ ok: true, data: { action: 'cleared', removed: 7 } });
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.CLEAR,
+      MESSAGE_TYPES.CLEAR,
+    ]);
   });
 
   it('status 任一 frame 开启即为开启', async () => {
@@ -1276,18 +1359,33 @@ describe('A1 跨 frame 广播与汇总', () => {
     expect(response).toEqual({ ok: true, data: { active: true } });
   });
 
-  it('没有已连接 frame 时补注入并按返回的 frameId 重发', async () => {
+  it('没有已连接 frame 时补注入，按返回的 frameId 查状态后广播开始', async () => {
     chrome.tabs.__sendQueue = [
       { error: new Error('Could not establish connection. Receiving end does not exist.') },
+      { response: { ok: true, data: { active: false } } },
+      { response: { ok: true, data: { active: false } } },
       { response: { ok: true, data: { phase: 'submitted', total: 1 } } },
-      { response: { ok: true, data: { phase: 'idle', total: 0 } } },
     ];
     chrome.scripting.__executeResult = [{ frameId: 0 }, { frameId: 2 }];
 
-    const response = await route({ command: 'start' });
+    const response = await route({ command: 'toggle' });
 
-    expect(response).toEqual({ ok: true, data: { phase: 'submitted', total: 1 } });
-    expect(chrome.tabs.__sent.map((entry) => entry.options?.frameId)).toEqual([undefined, 0, 2]);
+    expect(response).toEqual({
+      ok: true,
+      data: { action: 'started', phase: 'submitted', total: 1 },
+    });
+    expect(chrome.tabs.__sent.map((entry) => entry.options?.frameId)).toEqual([
+      undefined,
+      0,
+      2,
+      undefined,
+    ]);
+    expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.GET_STATUS,
+      MESSAGE_TYPES.START,
+    ]);
     expect(chrome.scripting.__calls[0].details.target).toEqual({ tabId: 1, allFrames: true });
   });
 

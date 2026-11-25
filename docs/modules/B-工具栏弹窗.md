@@ -24,15 +24,15 @@
 
 **代码文件**：`src/popup/Popup.jsx`、`src/popup/open-test-page.js`。
 
-**模块描述**：把弹窗中的整页操作转成后台命令，并按页面会话状态切换按钮与提示；不持有任务。
+**模块描述**：把弹窗整页主按钮转成统一整页切换命令，并按页面会话状态切换按钮文字与提示；按钮与整页快捷键共用同一后台入口；不持有任务。
 
 **功能**
 
 | 功能 | 代码位置 |
 | --- | --- |
-| 整页操作主按钮与状态切换 | `Popup.jsx` |
-| 开始、清除与状态查询命令 | `Popup.jsx`、`router.js#routeCommand` |
-| 快捷键显示 | `Popup.jsx` |
+| 整页主按钮统一切换、文字与执行中提示 | `Popup.jsx#runPage` |
+| 整页切换与状态查询命令 | `Popup.jsx`、`router.js#routeCommand` |
+| 整页快捷键徽标（两种状态） | `Popup.jsx` |
 | 打开翻译测试页 | `Popup.jsx`、`open-test-page.js` |
 | 打开设置页 | `Popup.jsx#openSettingsPage` |
 

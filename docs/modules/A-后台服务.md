@@ -6,17 +6,18 @@
 
 **代码文件**：`src/background/router.js`、`src/background/commands.js`、`src/background/context-menu.js`、`src/background/index.js`。
 
-**模块描述**：把弹窗、设置页的请求与快捷键、右键菜单事件送到目标标签页的各个 frame；接收页面提交并转交 A2；转发悬停手势与范围预览广播、读取选区；不保存任务状态。
+**模块描述**：把弹窗、设置页的请求与快捷键、右键菜单事件送到目标标签页的各个 frame；整页按钮与快捷键共用切换入口，查询页面会话后开始翻译或显示原文；接收页面提交并转交 A2；转发悬停手势与范围预览广播、读取选区；不保存任务状态。
 
 **功能**
 
 | 功能 | 代码位置 |
 | --- | --- |
 | 弹窗与设置页消息分发 | `router.js#handleMessage` |
-| 整页快捷键入口 | `commands.js` |
+| 整页快捷键入口 | `commands.js#handleCommand` |
+| 整页按钮与快捷键统一切换、按标签页串行 | `router.js#togglePageTranslation`、`router.js#serializeToggle` |
+| 整页开始、清除与状态查询的跨 frame 发送与汇总 | `router.js#startOnTab`、`router.js#clearOnTab`、`router.js#statusOnTab` |
 | 右键菜单入口 | `context-menu.js` |
 | 按 frame 发送命令，无连接时补注入 | `router.js#sendToTab`、`router.js#injectFrames` |
-| 整页开始、清除与状态查询的跨 frame 汇总 | `router.js#routeCommand`、`router.js#startPageTranslation` |
 | 页面提交的形状校验、按来源 frame 转交与回执 | `router.js#receivePageSubmit` |
 | 悬停手势广播 | `router.js#forwardHoverTrigger` |
 | 悬停范围开始 / 取消广播 | `router.js#forwardHoverRange` |

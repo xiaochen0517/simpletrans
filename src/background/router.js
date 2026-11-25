@@ -7,9 +7,9 @@
  * 依赖：E1（protocol）、E2（settings）、E3（instances/registry）、E3 语言目录、A3（adapter）、
  *       A4（cache）、A2（gateway 的并发名额）、公共数值。
  *
- * 标签页转发有四处入口：整页快捷键走 `startPageTranslation`（commands.js）、
- * 弹窗走 `ST_ROUTE` 的 `start` / `clear` / `status`（本文件）、页面悬停手势走 `ST_HOVER_TRIGGER`；
- * 前三处共用 `sendToFrames` 的补注入与错误归一，悬停手势由 `forwardHoverTrigger` 直接广播。
+ * 标签页转发入口：整页按钮与快捷键统一走 `togglePageTranslation`（`ST_ROUTE` 的 `toggle` 与
+ * commands.js 共用），页面状态查询走 `ST_ROUTE` 的 `status`，页面悬停手势走 `ST_HOVER_TRIGGER`；
+ * 前两处共用 `sendToFrames` 的补注入与错误归一，悬停手势由 `forwardHoverTrigger` 直接广播。
  */
 
 import {
@@ -213,12 +213,10 @@ async function readSelection(payload, traceId) {
 }
 
 /**
- * 整页翻译启动：读设置 → 校验启用 → 取活动标签页 → `ST_START`。
- * 弹窗 `start` 与浏览器快捷键共用，保证两条入口行为一致。
- * @param {string} [traceId]
- * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
+ * 读取设置并校验扩展启用；整页切换使用，失败文案与测试翻译一致。
+ * @returns {Promise<{ ok: true, settings: object } | { ok: false, error: object }>}
  */
-export async function startPageTranslation(traceId) {
+async function readEnabledSettings() {
   let settings;
   try {
     settings = await getSettings();
@@ -226,7 +224,14 @@ export async function startPageTranslation(traceId) {
     return failure(ERROR_CODES.CONFIG, '读取设置失败');
   }
   if (settings.enabled === false) return failure(ERROR_CODES.CONFIG, '扩展已停用');
+  return { ok: true, settings };
+}
 
+/**
+ * 取当前窗口的活动标签页。
+ * @returns {Promise<{ ok: true, tab: object } | { ok: false, error: object }>}
+ */
+async function readActiveTab() {
   let tabs = [];
   try {
     tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -238,9 +243,19 @@ export async function startPageTranslation(traceId) {
     log.warn('message.rejected', '没有活动标签页', { reason: FAILURE_REASONS.NO_ACTIVE_TAB });
     return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
   }
+  return { ok: true, tab };
+}
 
-  log.withTrace(traceId).info('route.command', '处理路由命令', { command: 'start', tabId: tab.id });
-  return sendToFramesAndAggregate(tab.id, {
+/**
+ * 向标签页各 frame 发开始命令。
+ * @param {number} tabId
+ * @param {object} settings
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
+ */
+async function startOnTab(tabId, settings, traceId) {
+  log.withTrace(traceId).info('route.command', '处理路由命令', { command: 'start', tabId });
+  return sendToFramesAndAggregate(tabId, {
     type: MESSAGE_TYPES.START,
     payload: {
       targetLang: settings.targetLang,
@@ -250,56 +265,123 @@ export async function startPageTranslation(traceId) {
 }
 
 /**
- * 弹窗命令转发：`start` 复用整页启动函数；`clear` 校验启用后发 `ST_CLEAR`；
- * `status` 只读整页会话状态，不读设置、不检查实例。
+ * 向标签页各 frame 发清除命令。
+ * @param {number} tabId
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data: { removed: number } } | { ok: false, error: object }>}
+ */
+async function clearOnTab(tabId, traceId) {
+  log.withTrace(traceId).info('route.command', '处理路由命令', { command: 'clear', tabId });
+  return sendToFramesAndAggregate(tabId, {
+    type: MESSAGE_TYPES.CLEAR,
+    payload: { ...(traceId ? { traceId } : {}) },
+  }, 'clear');
+}
+
+/**
+ * 查询标签页各 frame 的整页会话状态。
+ * @param {number} tabId
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data: { active: boolean } } | { ok: false, error: object }>}
+ */
+async function statusOnTab(tabId, traceId) {
+  log.withTrace(traceId).debug('route.command', '查询页面状态', { tabId });
+  return sendToFramesAndAggregate(tabId, {
+    type: MESSAGE_TYPES.GET_STATUS,
+    payload: { ...(traceId ? { traceId } : {}) },
+  }, 'status');
+}
+
+/** 同一标签页的整页切换串行执行；只保存进行中的 Promise，不保存页面会话状态。 */
+const toggles = new Map();
+
+/**
+ * 把一次切换排入标签页队列，保证后一次看到前一次完成后的会话状态。
+ * @param {number} tabId
+ * @param {() => Promise<object>} job
+ * @returns {Promise<object>}
+ */
+function serializeToggle(tabId, job) {
+  const previous = toggles.get(tabId) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(job);
+  toggles.set(tabId, next);
+  const cleanup = () => {
+    if (toggles.get(tabId) === next) toggles.delete(tabId);
+  };
+  void next.then(cleanup, cleanup);
+  return next;
+}
+
+/**
+ * 整页切换：查询活动标签页会话状态，已开启则显示原文，未开启则开始翻译。
+ * 弹窗主按钮与整页快捷键共用本入口；返回的 `action` 供弹窗更新文字。
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data: { action: 'started', phase: string, total: number } | { action: 'cleared', removed: number } } | { ok: false, error: object }>}
+ */
+export async function togglePageTranslation(traceId) {
+  const settingsResult = await readEnabledSettings();
+  if (!settingsResult.ok) return settingsResult;
+
+  const tabResult = await readActiveTab();
+  if (!tabResult.ok) return tabResult;
+
+  const { tab } = tabResult;
+  const { settings } = settingsResult;
+
+  return serializeToggle(tab.id, async () => {
+    const traceLog = log.withTrace(traceId);
+    const status = await statusOnTab(tab.id, traceId);
+    if (!status.ok) {
+      traceLog.warn('command.rejected', '切换前查询页面状态失败', {
+        tabId: tab.id,
+        code: status.error?.code ?? ERROR_CODES.OTHER,
+        reason: status.error?.reason ?? null,
+      });
+      return status;
+    }
+
+    if (status.data?.active === true) {
+      const cleared = await clearOnTab(tab.id, traceId);
+      if (!cleared.ok) return cleared;
+      return {
+        ok: true,
+        data: { action: 'cleared', removed: Number(cleared.data?.removed) || 0 },
+      };
+    }
+
+    const started = await startOnTab(tab.id, settings, traceId);
+    if (!started.ok) return started;
+    return {
+      ok: true,
+      data: {
+        action: 'started',
+        phase: started.data?.phase ?? 'idle',
+        total: Number(started.data?.total) || 0,
+      },
+    };
+  });
+}
+
+/**
+ * 弹窗命令：`toggle` 走统一整页切换；`status` 只读整页会话状态，不读设置、不检查实例。
  * @param {unknown} payload
  * @param {string} [traceId]
  * @returns {Promise<{ ok: true, data?: object } | { ok: false, error: object }>}
  */
 async function routeCommand(payload, traceId) {
   const command = payload?.command;
-  if (command !== 'start' && command !== 'clear' && command !== 'status') {
+  if (command !== 'toggle' && command !== 'status') {
     log.warn('message.rejected', '未知的路由命令', {
       command: typeof command === 'string' ? command : null,
     });
     return failure(ERROR_CODES.OTHER, '未知命令', FAILURE_REASONS.INVALID_MESSAGE);
   }
 
-  if (command === 'start') return startPageTranslation(traceId);
+  if (command === 'toggle') return togglePageTranslation(traceId);
 
-  let tabs = [];
-  try {
-    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  } catch {
-    tabs = [];
-  }
-  const tab = Array.isArray(tabs) ? tabs.find((entry) => entry?.active) ?? tabs[0] : null;
-  if (!tab?.id) {
-    log.warn('message.rejected', '没有活动标签页', { reason: FAILURE_REASONS.NO_ACTIVE_TAB });
-    return failure(ERROR_CODES.OTHER, '没有可用的标签页', FAILURE_REASONS.NO_ACTIVE_TAB);
-  }
-
-  if (command === 'status') {
-    log.withTrace(traceId).debug('route.command', '查询页面状态', { tabId: tab.id });
-    return sendToFramesAndAggregate(tab.id, {
-      type: MESSAGE_TYPES.GET_STATUS,
-      payload: { ...(traceId ? { traceId } : {}) },
-    }, 'status');
-  }
-
-  let settings;
-  try {
-    settings = await getSettings();
-  } catch {
-    return failure(ERROR_CODES.CONFIG, '读取设置失败');
-  }
-  if (settings.enabled === false) return failure(ERROR_CODES.CONFIG, '扩展已停用');
-
-  log.withTrace(traceId).info('route.command', '处理路由命令', { command, tabId: tab.id });
-  return sendToFramesAndAggregate(tab.id, {
-    type: MESSAGE_TYPES.CLEAR,
-    payload: { ...(traceId ? { traceId } : {}) },
-  }, 'clear');
+  const tabResult = await readActiveTab();
+  if (!tabResult.ok) return tabResult;
+  return statusOnTab(tabResult.tab.id, traceId);
 }
 
 /**

@@ -3,8 +3,8 @@
  *
  * 模块：工具栏弹窗（B）
  * 职责：弹窗壳与默认页：按设置显示「默认 / 快速翻译」两个页面，查看当前翻译方式与基础信息、
- *       快捷切换翻译方式，并用一个按钮按当前页面整页会话状态执行「翻译整页 / 显示原文」；
- *       提供设置页与测试页两个图标导航入口。
+ *       快捷切换翻译方式，并用一个按钮执行整页切换（翻译整页 / 显示原文）；按钮文字随页面会话状态
+ *       变化，两种状态都显示整页快捷键；提供设置页与测试页两个图标导航入口。
  * 依赖：E1 消息协议、E2 公开设置（读设置、写 activeInstanceId）、E4 日志、E5 共享展示组件、
  *       E6 快捷键、B2 测试页打开助手、B3 快速翻译面板与 B 实例选项助手。
  *
@@ -13,13 +13,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Eraser,
   FlaskConical,
   Globe,
   Keyboard,
   KeyRound,
   Languages,
-  Play,
   Settings as SettingsIcon,
   Sparkles,
 } from 'lucide-react';
@@ -44,8 +42,11 @@ import QuickTranslate from './quick-translate.jsx';
 
 const log = createLogger('B2');
 
-/** 两个命令的取值，与 `ST_ROUTE.payload.command` 一致；`status` 只查询页面会话状态。 */
-const COMMAND = Object.freeze({ start: 'start', clear: 'clear', status: 'status' });
+/** `ST_ROUTE.payload.command` 的取值：`toggle` 与整页快捷键共用，`status` 只查询页面会话状态。 */
+const COMMAND = Object.freeze({ toggle: 'toggle', status: 'status' });
+
+/** 按钮进度文案的本次意图，只用于显示，不决定后台命令。 */
+const INTENT = Object.freeze({ start: 'start', clear: 'clear' });
 
 /** 页面会话处于这些阶段时，按钮显示「显示原文」。 */
 const ACTIVE_PHASES = new Set(['scanning', 'submitting', 'submitted']);
@@ -253,34 +254,42 @@ export default function Popup() {
   const runPage = useCallback(
     async () => {
       if (busy !== null) return;
-      const command = pageActive ? COMMAND.clear : COMMAND.start;
-      setBusy(command);
+      const intent = pageActive ? INTENT.clear : INTENT.start;
+      setBusy(intent);
       setNotice('');
       setError('');
 
-      const response = await sendRoute(command);
+      // 无论当前文字是什么，按钮始终发同一个切换命令；文字只由后台返回的动作校正。
+      const response = await sendRoute(COMMAND.toggle);
       setBusy(null);
 
       if (!response?.ok) {
         const message = response?.error?.message ?? '命令执行失败，请稍后重试';
         setError(String(message));
         log.warn('popup.command', '命令失败', {
-          command,
+          command: COMMAND.toggle,
           code: response?.error?.code ?? null,
         });
         return;
       }
 
       const data = response.data ?? {};
-      if (command === COMMAND.start) {
+      const action = data.action;
+      if (action === 'cleared') {
+        setPageActive(false);
+        setNotice(clearMessage(data));
+      } else if (action === 'started') {
         setPageActive(ACTIVE_PHASES.has(data.phase));
         setNotice(startMessage(data));
       } else {
-        setPageActive(false);
-        setNotice(clearMessage(data));
+        // 兼容没有 action 的响应：只影响文字，不影响命令本身。
+        const started = intent === INTENT.start;
+        setPageActive(started ? ACTIVE_PHASES.has(data.phase) : false);
+        setNotice(started ? startMessage(data) : clearMessage(data));
       }
       log.info('popup.command', '命令完成', {
-        command,
+        command: COMMAND.toggle,
+        action: action ?? null,
         ok: true,
         phase: data.phase ?? null,
       });
@@ -507,31 +516,23 @@ export default function Popup() {
                       : '翻译整页（未设置浏览器快捷键）'
                 }
               >
-                {busy === null ? (
-                  pageActive ? (
-                    <Eraser size={15} aria-hidden="true" />
-                  ) : (
-                    <Play size={15} aria-hidden="true" />
-                  )
-                ) : null}
+                {busy === null ? <Languages size={15} aria-hidden="true" /> : null}
                 <span>
-                  {busy === COMMAND.clear
+                  {busy === INTENT.clear
                     ? '正在清除…'
-                    : busy === COMMAND.start
+                    : busy === INTENT.start
                       ? '正在提交…'
                       : pageActive
                         ? '显示原文'
                         : '翻译整页'}
                 </span>
-                {!pageActive && busy === null ? (
-                  <kbd
-                    className={`max-w-[9rem] truncate rounded border border-white/40 bg-white/15 px-1.5 py-0.5 font-mono text-[10px] leading-none ${
-                      pageShortcut ? 'text-white' : 'text-white/75'
-                    }`}
-                  >
-                    {pageShortcut || '未设置'}
-                  </kbd>
-                ) : null}
+                <kbd
+                  className={`max-w-[9rem] truncate rounded border border-white/40 bg-white/15 px-1.5 py-0.5 font-mono text-[10px] leading-none ${
+                    pageShortcut ? 'text-white' : 'text-white/75'
+                  }`}
+                >
+                  {pageShortcut || '未设置'}
+                </kbd>
               </Button>
 
               {notice ? <Notice tone="success">{notice}</Notice> : null}

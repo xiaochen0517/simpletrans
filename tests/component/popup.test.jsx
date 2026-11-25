@@ -26,8 +26,14 @@ let engineResponse;
 /** @type {{ ok: boolean, data?: object, error?: object }} ROUTE status 的响应。 */
 let statusResponse;
 
+/** @type {{ ok: boolean, data?: object, error?: object }} ROUTE toggle 的响应。 */
+let toggleResponse;
+
 /** @type {Array<{ command?: string }>} 收到的 ST_ROUTE 命令。 */
 let routeCalls;
+
+/** 非空时挂起 toggle 响应，用于观察执行中的按钮状态。 */
+let pendingToggle;
 
 /** @type {object} */
 let chromeStub;
@@ -122,7 +128,9 @@ beforeEach(async () => {
   chromeStub = installChrome();
   engineResponse = { ok: true, data: { instances: [defaultInstance()] } };
   statusResponse = { ok: true, data: { active: false } };
+  toggleResponse = { ok: true, data: { action: 'started', phase: 'submitted', total: 2 } };
   routeCalls = [];
+  pendingToggle = null;
 
   chromeStub.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === MESSAGE_TYPES.LIST_ENGINES) {
@@ -136,11 +144,15 @@ beforeEach(async () => {
         sendResponse(statusResponse);
         return false;
       }
-      if (command === 'start') {
-        sendResponse({ ok: true, data: { phase: 'submitted', total: 2 } });
+      if (command === 'toggle') {
+        if (pendingToggle) {
+          pendingToggle.push(sendResponse);
+          return true;
+        }
+        sendResponse(toggleResponse);
         return false;
       }
-      sendResponse({ ok: true, data: { removed: 2 } });
+      sendResponse({ ok: false, error: { code: 'OTHER', message: '未知命令' } });
       return false;
     }
     return false;
@@ -247,56 +259,95 @@ describe('弹窗基础信息', () => {
 });
 
 describe('整页单按钮与快捷键', () => {
-  it('未开启整页翻译时只显示一个按钮，一行展示快捷键', async () => {
+  it('未开启整页翻译时只显示一个按钮，展示快捷键与统一图标', async () => {
     await renderPopup();
 
     const startButton = findButton('翻译整页');
     expect(startButton).toBeTruthy();
     expect(findButton('显示原文')).toBeUndefined();
     expect(startButton.textContent).toContain('Ctrl+Shift+Y');
-    expect(startButton.textContent).not.toContain('显示原文');
+    expect(startButton.querySelector('.lucide-languages')).toBeTruthy();
   });
 
-  it('页面整页会话开启时按钮显示「显示原文」，点击后清除并切回', async () => {
+  it('页面整页会话开启时显示「显示原文」与快捷键，点击只发 toggle 并切回', async () => {
     statusResponse = { ok: true, data: { active: true } };
+    toggleResponse = { ok: true, data: { action: 'cleared', removed: 2 } };
     await renderPopup();
 
     const clearButton = findButton('显示原文');
     expect(clearButton).toBeTruthy();
     expect(findButton('翻译整页')).toBeUndefined();
-    expect(clearButton.textContent).not.toContain('Ctrl+Shift+Y');
+    expect(clearButton.textContent).toContain('Ctrl+Shift+Y');
+    expect(clearButton.querySelector('.lucide-languages')).toBeTruthy();
 
     await click(clearButton);
 
-    expect(routeCalls.map((call) => call.command)).toContain('clear');
+    const commands = routeCalls.map((call) => call.command);
+    expect(commands).toContain('toggle');
+    expect(commands).not.toContain('start');
+    expect(commands).not.toContain('clear');
     expect(findButton('翻译整页')).toBeTruthy();
-    expect(findButton('显示原文')).toBeUndefined();
+    expect(findButton('翻译整页').textContent).toContain('Ctrl+Shift+Y');
   });
 
-  it('点击「翻译整页」成功后切换为「显示原文」', async () => {
+  it('点击「翻译整页」成功切换为「显示原文」，快捷键保持显示', async () => {
     await renderPopup();
     await click(findButton('翻译整页'));
 
-    expect(routeCalls.map((call) => call.command)).toContain('start');
+    const commands = routeCalls.map((call) => call.command);
+    expect(commands).toContain('toggle');
+    expect(commands).not.toContain('start');
     expect(findButton('显示原文')).toBeTruthy();
+    expect(findButton('显示原文').textContent).toContain('Ctrl+Shift+Y');
     expect(container.textContent).toContain('已提交：2 段');
   });
 
-  it('状态查询失败时回退「翻译整页」', async () => {
+  it('状态查询失败时回退「翻译整页」，按钮仍可点击', async () => {
     statusResponse = { ok: false, error: { code: 'OTHER', message: '页面不可用' } };
     await renderPopup();
 
-    expect(findButton('翻译整页')).toBeTruthy();
+    const startButton = findButton('翻译整页');
+    expect(startButton).toBeTruthy();
     expect(findButton('显示原文')).toBeUndefined();
+    expect(startButton.disabled).toBe(false);
   });
 
-  it('未绑定浏览器快捷键时显示「未设置」', async () => {
+  it('未绑定浏览器快捷键时未翻译状态显示「未设置」', async () => {
     chromeStub.commands.__shortcuts = [
       { name: 'translate-page', shortcut: '', description: '翻译整页' },
     ];
     await renderPopup();
 
     expect(findButton('翻译整页').textContent).toContain('未设置');
+  });
+
+  it('未绑定浏览器快捷键时已翻译状态也显示「未设置」', async () => {
+    chromeStub.commands.__shortcuts = [
+      { name: 'translate-page', shortcut: '', description: '翻译整页' },
+    ];
+    statusResponse = { ok: true, data: { active: true } };
+    await renderPopup();
+
+    expect(findButton('显示原文').textContent).toContain('未设置');
+  });
+
+  it('执行中显示进度文案并禁用，快捷键徽标仍在', async () => {
+    pendingToggle = [];
+    await renderPopup();
+
+    await click(findButton('翻译整页'));
+
+    const busyButton = findButton('正在提交…');
+    expect(busyButton).toBeTruthy();
+    expect(busyButton.disabled).toBe(true);
+    expect(busyButton.textContent).toContain('Ctrl+Shift+Y');
+
+    await act(async () => {
+      pendingToggle[0](toggleResponse);
+    });
+    await flush();
+
+    expect(findButton('显示原文')).toBeTruthy();
   });
 
   it('底部悬停提示读取设置中的快捷键', async () => {
