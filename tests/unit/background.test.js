@@ -91,22 +91,25 @@ describe('后台入口', () => {
     expect(response.error.message).toContain('无法识别');
   });
 
-  it('顶层注册快捷键监听，触发命令后先查状态再向活动标签页发 ST_START', async () => {
+  it('顶层注册快捷键监听，触发命令后先取消悬停，再查状态并向活动标签页发 ST_START', async () => {
     await importFresh('../../src/background/index.js');
     expect(chrome.commands.onCommand.listeners).toHaveLength(1);
 
     chrome.tabs.__sendQueue = [
+      { response: undefined },
       { response: { ok: true, data: { active: false } } },
       { response: { ok: true, data: { phase: 'submitted', total: 1 } } },
     ];
     chrome.commands.onCommand.emit('translate-page');
 
-    await vi.waitFor(() => expect(chrome.tabs.__sent).toHaveLength(2));
+    await vi.waitFor(() => expect(chrome.tabs.__sent).toHaveLength(3));
     expect(chrome.tabs.__sent.map((entry) => entry.message.type)).toEqual([
+      MESSAGE_TYPES.HOVER_RANGE,
       MESSAGE_TYPES.GET_STATUS,
       MESSAGE_TYPES.START,
     ]);
-    const sent = chrome.tabs.__sent[1];
+    expect(chrome.tabs.__sent[0].message.payload).toEqual({ phase: 'cancel' });
+    const sent = chrome.tabs.__sent[2];
     expect(sent.tabId).toBe(1);
     expect(sent.message.payload.traceId).toEqual(expect.any(String));
     expect(sent.message.payload.targetLang).toBe('zh');

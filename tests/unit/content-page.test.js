@@ -705,6 +705,280 @@ describe('页面注入接线：悬停范围预览与滚轮调整', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 悬停手势取消来源
+// ---------------------------------------------------------------------------
+
+describe('页面注入接线：悬停手势取消来源', () => {
+  /**
+   * @returns {{ a: Element, card: Element }}
+   */
+  function mountCancelSample() {
+    mount('<div id="card"><span id="a">Alpha</span><span id="b">Beta</span></div>');
+    return {
+      a: document.getElementById('a'),
+      card: document.getElementById('card'),
+    };
+  }
+
+  /**
+   * 按下悬停修饰键并确认范围边框出现。
+   * @param {Element} a
+   */
+  function holdModifier(a) {
+    hover(a);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+  }
+
+  /**
+   * 松开悬停修饰键。
+   */
+  function releaseModifier() {
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
+  }
+
+  it('其它键、右键、触摸、输入、剪贴板与拖拽都会立即取消且不提交', async () => {
+    await loadContent();
+    const { a } = mountCancelSample();
+
+    const cases = [
+      ['其它键 keydown', () => new KeyboardEvent('keydown', { key: 'x', bubbles: true, cancelable: true })],
+      ['其它键 keyup', () => new KeyboardEvent('keyup', { key: 'x', bubbles: true, cancelable: true })],
+      [
+        '右键指针',
+        () => new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 2 }),
+      ],
+      [
+        '中键指针',
+        () => new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 1 }),
+      ],
+      [
+        '右键菜单',
+        () => new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+      ],
+      ['触摸开始', () => new Event('touchstart', { bubbles: true, cancelable: true })],
+      ['输入前', () => new Event('beforeinput', { bubbles: true, cancelable: true })],
+      ['输入', () => new Event('input', { bubbles: true, cancelable: true })],
+      ['输入法组合', () => new Event('compositionstart', { bubbles: true, cancelable: true })],
+      ['复制', () => new Event('copy', { bubbles: true, cancelable: true })],
+      ['剪切', () => new Event('cut', { bubbles: true, cancelable: true })],
+      ['粘贴', () => new Event('paste', { bubbles: true, cancelable: true })],
+      ['拖拽开始', () => new Event('dragstart', { bubbles: true, cancelable: true })],
+      ['拖放', () => new Event('drop', { bubbles: true, cancelable: true })],
+    ];
+
+    for (const [name, createEvent] of cases) {
+      holdModifier(a);
+      const event = createEvent();
+      a.dispatchEvent(event);
+      expect(a.hasAttribute(RANGE_ATTR), name).toBe(false);
+      expect(event.defaultPrevented, name).toBe(false);
+      releaseModifier();
+      await flush();
+      expect(submissions, name).toHaveLength(0);
+    }
+  });
+
+  it('指针移动与页面滚动不取消，释放仍按原范围提交', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello allowed</p>');
+    holdModifier(p);
+
+    p.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 20, clientY: 20 }));
+    p.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    p.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+    document.dispatchEvent(new Event('scroll'));
+
+    expect(p.hasAttribute(RANGE_ATTR)).toBe(true);
+    releaseModifier();
+    await flush();
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].paragraphs[0].text).toBe('Hello allowed');
+  });
+
+  it('取消监听不阻止事件默认行为，也不阻断页面自身监听', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello pass through</p>');
+    holdModifier(p);
+
+    const pageKey = vi.fn();
+    const pagePointer = vi.fn();
+    p.addEventListener('keydown', pageKey);
+    p.addEventListener('pointerdown', pagePointer);
+
+    const keyEvent = new KeyboardEvent('keydown', {
+      key: 'x',
+      bubbles: true,
+      cancelable: true,
+    });
+    p.dispatchEvent(keyEvent);
+    expect(keyEvent.defaultPrevented).toBe(false);
+    expect(pageKey).toHaveBeenCalledTimes(1);
+    releaseModifier();
+    await flush();
+
+    holdModifier(p);
+    const pointerEvent = new MouseEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    });
+    p.dispatchEvent(pointerEvent);
+    expect(pointerEvent.defaultPrevented).toBe(false);
+    expect(pagePointer).toHaveBeenCalledTimes(1);
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(0);
+  });
+
+  it('手势开始前已按住的键释放时也取消', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello preheld</p>');
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    holdModifier(p);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+    expect(p.hasAttribute(RANGE_ATTR)).toBe(false);
+
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(0);
+  });
+
+  it('释放时页面失焦或隐藏按取消处理', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello focus</p>');
+
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    holdModifier(p);
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(0);
+    hasFocus.mockRestore();
+
+    const visibility = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('hidden');
+    holdModifier(p);
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(0);
+    visibility.mockRestore();
+  });
+
+  it('页面隐藏事件立即取消当前手势', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello hidden</p>');
+    const visibility = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('hidden');
+
+    holdModifier(p);
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(p.hasAttribute(RANGE_ATTR)).toBe(false);
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(0);
+    visibility.mockRestore();
+  });
+
+  it('窗口失焦立即取消当前手势', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello blur</p>');
+    holdModifier(p);
+
+    window.dispatchEvent(new Event('blur'));
+    expect(p.hasAttribute(RANGE_ATTR)).toBe(false);
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(0);
+  });
+
+  it('一次手势连续取消只广播一次，取消后忽略迟到触发', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello late</p>');
+    const send = vi.spyOn(chrome.runtime, 'sendMessage');
+    holdModifier(p);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true }));
+    p.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    p.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    await flush();
+
+    const cancels = send.mock.calls.filter(
+      ([message]) =>
+        message?.type === MESSAGE_TYPES.HOVER_RANGE && message?.payload?.phase === 'cancel'
+    );
+    expect(cancels).toHaveLength(1);
+
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_TRIGGER });
+    await flush();
+    expect(submissions).toHaveLength(0);
+
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(0);
+
+    holdModifier(p);
+    releaseModifier();
+    await flush();
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].paragraphs[0].text).toBe('Hello late');
+  });
+
+  it('取消后即使没有收到 keyup，下一次按下也能重新开始手势', async () => {
+    await loadContent();
+    const p = mount('<p id="p">Hello restart</p>');
+    holdModifier(p);
+
+    p.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    expect(p.hasAttribute(RANGE_ATTR)).toBe(false);
+    await flush();
+
+    // 焦点切换或窗口失焦可能让 keyup 丢失；下一次按下应当重新开始，而不是继续等待旧手势。
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
+    expect(p.hasAttribute(RANGE_ATTR)).toBe(true);
+    releaseModifier();
+    await flush();
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0].paragraphs[0].text).toBe('Hello restart');
+  });
+
+  it('远程范围会话收到右键或失焦时清除两边状态并广播取消', async () => {
+    await loadContent();
+    const { a } = mountCancelSample();
+    hover(a);
+
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } });
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+
+    const send = vi.spyOn(chrome.runtime, 'sendMessage');
+    a.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(false);
+    await flush();
+    expect(
+      send.mock.calls.some(
+        ([message]) =>
+          message?.type === MESSAGE_TYPES.HOVER_RANGE && message?.payload?.phase === 'cancel'
+      )
+    ).toBe(true);
+
+    hover(a);
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'begin' } });
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(true);
+    window.dispatchEvent(new Event('blur'));
+    expect(a.hasAttribute(RANGE_ATTR)).toBe(false);
+    await flush();
+
+    broadcastToContent({ type: MESSAGE_TYPES.HOVER_TRIGGER });
+    await flush();
+    expect(submissions).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 整页统一提交
 // ---------------------------------------------------------------------------
 

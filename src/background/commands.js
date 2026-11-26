@@ -2,8 +2,8 @@
  * A1 快捷键入口
  *
  * 模块：后台服务（A）/ A1
- * 职责：把 `commands` 事件转成整页切换命令：生成 traceId，交给 A1 的切换函数
- *       （查询活动标签页会话状态，已开启则显示原文，未开启则开始翻译）。
+ * 职责：把 `commands` 事件转成整页切换命令：生成 traceId，先取消页面悬停手势，
+ *       再交给 A1 的切换函数（查询活动标签页会话状态，已开启则显示原文，未开启则开始翻译）。
  * 依赖：A1 消息路由、E1 消息协议、E4 日志。
  *
  * 与弹窗主按钮共用 `router.js#togglePageTranslation`，两个入口行为一致；
@@ -12,7 +12,7 @@
 
 import { ERROR_CODES, FAILURE_REASONS, makeError } from '../shared/protocol.js';
 import { createLogger, newTraceId } from '../shared/log/logger.js';
-import { togglePageTranslation } from './router.js';
+import { cancelHoverGesture, togglePageTranslation } from './router.js';
 
 /** 清单 commands 中声明的整页翻译命令名。 */
 export const COMMAND_TRANSLATE_PAGE = 'translate-page';
@@ -46,6 +46,13 @@ export async function handleCommand(command) {
   const startedAt = Date.now();
 
   traceLog.info('command.received', '收到整页切换命令');
+
+  // 先取消页面内可能存在的悬停手势；只清理悬停状态，不拦截或改写后续切换命令。
+  try {
+    await cancelHoverGesture(traceId);
+  } catch {
+    traceLog.debug('hotkey.cancel.command', '悬停取消广播异常，继续执行命令');
+  }
 
   let result;
   try {

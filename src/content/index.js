@@ -4,7 +4,8 @@
  * 模块：页面注入（D）
  * 职责：初始化 E4 日志、建立并持有 D4 桥单例、装配 D2/D3/D5/D6、处理后台命令与配置帧；
  *       提供可配置的修饰键手势作为悬停翻译快捷键（Chrome commands 不支持裸修饰键）；
- *       按下时展示待翻译范围，按住期间用滚轮扩大到祖先宿主，松开后提交最终范围；
+ *       按下时展示待翻译范围，按住期间用滚轮扩大到祖先宿主；
+ *       除滚轮与指针移动外的操作取消手势，松开未取消时才提交最终范围；
  *       指针在其它 frame 时通过范围广播让持有指针的 frame 显示和调整；
  *       注入单段刷新与提交取消，桥恢复后通知 D5 续传未完成段；
  *       装配 D6 译文自愈，页面重渲染后按镜像恢复原文未变的译文。
@@ -88,6 +89,8 @@ let bridgeDisconnected = false;
 
 /** 当前手势；keys 为空表示没有按住快捷键。 */
 let gesture = null;
+/** 本次手势或远程范围是否已被取消；用于忽略迟到的悬停触发广播。 */
+let hoverAborted = false;
 /** 当前范围会话归属：本 frame 的 `local` 或其它 frame 的 `remote`。 */
 let rangeRole = null;
 /** 本地会话结束时暂存的最终宿主；`hasPendingRange` 区分「没有」与「无目标」。 */
@@ -118,6 +121,16 @@ function isEditableFocus() {
 }
 
 /**
+ * 页面是否已失焦或隐藏；释放悬停快捷键时按取消处理。
+ * @returns {boolean}
+ */
+function pageFocusLost() {
+  if (typeof document === 'undefined') return false;
+  if (document.hasFocus?.() === false) return true;
+  return document.visibilityState === 'hidden';
+}
+
+/**
  * 发送一条范围消息；begin / cancel 串行发送，避免往返延迟打乱顺序。
  * 扩展页面不经过后台广播，直接跳过。
  * @param {'begin'|'cancel'} phase
@@ -139,7 +152,7 @@ function forwardRange(phase) {
  */
 function syncWheelListener() {
   if (typeof window === 'undefined') return;
-  const needed = Boolean(gesture) || rangeRole != null;
+  const needed = Boolean(gesture && !gesture.canceled) || rangeRole != null;
   if (needed === wheelBound) return;
   if (needed) {
     window.addEventListener('wheel', onHoverWheel, { capture: true, passive: false });
@@ -250,12 +263,33 @@ function beginLocalRange(baseHost) {
  */
 function cancelActiveGesture(reason) {
   if (!gesture) return;
-  const first = !gesture.canceled;
-  gesture.otherKey = true;
-  gesture.canceled = true;
+  const current = gesture;
+  const first = !current.canceled;
+  current.otherKey = true;
+  current.canceled = true;
+  gesture = null;
+  hoverAborted = true;
   clearRangeSession();
   if (first) void forwardRange('cancel');
   log?.debug('hotkey.range.cancel', '悬停手势已取消', { reason });
+}
+
+/**
+ * 用户交互取消：本地手势优先，否则清除远程范围会话；只结束悬停状态，不拦截原操作。
+ * @param {string} reason
+ */
+function cancelFromInteraction(reason) {
+  if (gesture) {
+    cancelActiveGesture(reason);
+    return;
+  }
+  if (rangeRole == null) return;
+
+  const role = rangeRole;
+  hoverAborted = true;
+  clearRangeSession();
+  void forwardRange('cancel');
+  log?.debug('hotkey.range.cancel', '悬停范围已取消', { reason, role });
 }
 
 /**
@@ -263,6 +297,7 @@ function cancelActiveGesture(reason) {
  */
 function startGesture() {
   clearRangeSession();
+  hoverAborted = false;
   gesture = { keys: new Set(), otherKey: false, pointerUsed: false, canceled: false };
   wheelAccum = 0;
   syncWheelListener();
@@ -282,7 +317,12 @@ function startGesture() {
 function finishGesture() {
   if (!gesture) return;
   const canceled =
-    gesture.otherKey || gesture.pointerUsed || gesture.canceled || isEditableFocus();
+    gesture.otherKey ||
+    gesture.pointerUsed ||
+    gesture.canceled ||
+    hoverAborted ||
+    isEditableFocus() ||
+    pageFocusLost();
   const chain = rangeForwardChain;
 
   if (canceled) {
@@ -318,6 +358,7 @@ function applyRemoteRange(frame) {
     const levels = rangePreview.begin(base);
     if (!levels) return;
     rangeRole = 'remote';
+    hoverAborted = false;
     log?.debug('hotkey.range.begin', '悬停范围预览开始', { role: 'remote', levels });
     syncWheelListener();
     return;
@@ -328,7 +369,9 @@ function applyRemoteRange(frame) {
     if (gesture) {
       gesture.otherKey = true;
       gesture.canceled = true;
+      gesture = null;
     }
+    hoverAborted = true;
     clearRangeSession();
     syncWheelListener();
     if (hadGesture) {
@@ -359,8 +402,8 @@ function consumeTriggerTarget() {
  *
  * Chrome 的 commands API 只支持「修饰键 + 普通键」，不支持裸修饰键，因此页面侧用
  * keydown/keyup 识别：按下所选修饰键后进入范围预览，按住期间可用滚轮调整；
- * 中间没有其它键、没有点击、焦点不在可编辑控件时，松开才触发。
- * 不调用 preventDefault，不影响页面与浏览器原有快捷键；只有范围调整时的滚轮被接管。
+ * 中间出现其它键、指针、输入、剪贴板、拖拽、失焦或页面隐藏时取消，松开未取消才触发。
+ * 取消监听只读事件，不调用 preventDefault；只有范围调整时的滚轮被接管。
  *
  * @param {string[]} keys 可接受的 `KeyboardEvent.key`，例如 `['Control']`
  * @returns {() => void} 清理函数
@@ -374,35 +417,37 @@ function installModifierTap(keys) {
     if (accepted.has(event.key)) {
       if (event.repeat) return;
       if (!gesture) startGesture();
-      else cancelActiveGesture('second-key');
+      else cancelFromInteraction('second-key');
       gesture?.keys.add(event.key);
       return;
     }
-    if (gesture) cancelActiveGesture('other-key');
+    cancelFromInteraction('other-key');
   };
 
   const onKeyUp = (event) => {
-    if (!accepted.has(event.key) || !gesture) return;
+    if (!accepted.has(event.key)) {
+      cancelFromInteraction('other-keyup');
+      return;
+    }
+    if (!gesture) return;
     gesture.keys.delete(event.key);
     if (gesture.keys.size > 0) return;
     finishGesture();
   };
 
-  const onPointerDown = () => {
-    if (gesture) {
-      cancelActiveGesture('pointerdown');
-      return;
-    }
-    if (rangeRole === 'remote') {
-      clearRangeSession();
-      void forwardRange('cancel');
-      log?.debug('hotkey.range.cancel', '远程范围会话已取消', { reason: 'pointerdown' });
-    }
+  const onPointerDown = () => cancelFromInteraction('pointerdown');
+  const onContextMenu = () => cancelFromInteraction('contextmenu');
+  const onTouchStart = () => cancelFromInteraction('touchstart');
+  const onTextInput = () => cancelFromInteraction('input');
+  const onCompositionStart = () => cancelFromInteraction('composition');
+  const onClipboard = () => cancelFromInteraction('clipboard');
+  const onDrag = () => cancelFromInteraction('drag');
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') cancelFromInteraction('visibility');
   };
 
   const onBlur = () => {
-    if (!gesture) return;
-    cancelActiveGesture('blur');
+    cancelFromInteraction('blur');
     gesture = null;
     syncWheelListener();
   };
@@ -410,14 +455,37 @@ function installModifierTap(keys) {
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('pointerdown', onPointerDown, true);
+  window.addEventListener('contextmenu', onContextMenu, true);
+  window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+  window.addEventListener('beforeinput', onTextInput, true);
+  window.addEventListener('input', onTextInput, true);
+  window.addEventListener('compositionstart', onCompositionStart, true);
+  window.addEventListener('copy', onClipboard, true);
+  window.addEventListener('cut', onClipboard, true);
+  window.addEventListener('paste', onClipboard, true);
+  window.addEventListener('dragstart', onDrag, true);
+  window.addEventListener('drop', onDrag, true);
   window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 
   return () => {
     window.removeEventListener('keydown', onKeyDown, true);
     window.removeEventListener('keyup', onKeyUp, true);
     window.removeEventListener('pointerdown', onPointerDown, true);
+    window.removeEventListener('contextmenu', onContextMenu, true);
+    window.removeEventListener('touchstart', onTouchStart, true);
+    window.removeEventListener('beforeinput', onTextInput, true);
+    window.removeEventListener('input', onTextInput, true);
+    window.removeEventListener('compositionstart', onCompositionStart, true);
+    window.removeEventListener('copy', onClipboard, true);
+    window.removeEventListener('cut', onClipboard, true);
+    window.removeEventListener('paste', onClipboard, true);
+    window.removeEventListener('dragstart', onDrag, true);
+    window.removeEventListener('drop', onDrag, true);
     window.removeEventListener('blur', onBlur);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
     gesture = null;
+    hoverAborted = true;
     clearRangeSession();
     syncWheelListener();
   };
@@ -473,6 +541,11 @@ function requestHoverTrigger() {
  */
 function runHoverToggle(source, host) {
   if (!task || !hover) return;
+  if (hoverAborted) {
+    clearPendingRange();
+    log?.debug('hotkey.trigger.ignored', '悬停触发已取消，忽略', { reason: 'aborted', source });
+    return;
+  }
   const traceId = newTraceId();
   Promise.resolve(task.toggle(host, traceId))
     .then((result) => {
@@ -603,6 +676,11 @@ function handleMessage(message, sender, sendResponse) {
 
     // 后台广播的悬停触发：优先使用本次范围候选，没有范围时按当前指针宿主处理。
     if (message.type === MESSAGE_TYPES.HOVER_TRIGGER) {
+      if (hoverAborted) {
+        clearPendingRange();
+        log?.debug('hotkey.trigger.ignored', '悬停触发已取消，忽略', { reason: 'aborted' });
+        return false;
+      }
       runHoverToggle('broadcast', consumeTriggerTarget());
       return false;
     }

@@ -9,7 +9,8 @@
  *
  * 标签页转发入口：整页按钮与快捷键统一走 `togglePageTranslation`（`ST_ROUTE` 的 `toggle` 与
  * commands.js 共用），页面状态查询走 `ST_ROUTE` 的 `status`，页面悬停手势走 `ST_HOVER_TRIGGER`；
- * 前两处共用 `sendToFrames` 的补注入与错误归一，悬停手势由 `forwardHoverTrigger` 直接广播。
+ * 快捷键命令入口先用 `cancelHoverGesture` 广播范围取消，再执行切换。前两处共用 `sendToFrames`
+ * 的补注入与错误归一，悬停手势由 `forwardHoverTrigger` 直接广播。
  */
 
 import {
@@ -914,6 +915,38 @@ async function forwardHoverRange(sender, payload) {
     log.warn('message.rejected', '悬停范围转发失败', {
       tabId,
       phase,
+      reason: FAILURE_REASONS.NO_RECEIVER,
+    });
+    return failure(
+      ERROR_CODES.OTHER,
+      '页面尚未准备好，请刷新后重试',
+      FAILURE_REASONS.NO_RECEIVER
+    );
+  }
+}
+
+/**
+ * 取消当前活动标签页的悬停手势：向全部 frame 广播范围取消。
+ * 只清理页面内的悬停状态，不拦截、不阻断、不改写调用方的命令；失败不抛错。
+ * @param {string} [traceId]
+ * @returns {Promise<{ ok: true, data: { forwarded: boolean } } | { ok: false, error: object }>}
+ */
+export async function cancelHoverGesture(traceId) {
+  const active = await readActiveTab();
+  if (!active.ok) return active;
+
+  const tabId = active.tab.id;
+  const traceLog = log.withTrace(traceId);
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: MESSAGE_TYPES.HOVER_RANGE,
+      payload: { phase: 'cancel' },
+    });
+    traceLog.debug('hotkey.cancel.command', '已广播悬停取消', { tabId });
+    return { ok: true, data: { forwarded: true } };
+  } catch {
+    traceLog.debug('hotkey.cancel.command', '悬停取消广播失败', {
+      tabId,
       reason: FAILURE_REASONS.NO_RECEIVER,
     });
     return failure(

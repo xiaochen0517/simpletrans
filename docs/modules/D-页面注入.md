@@ -25,7 +25,7 @@
 
 **代码文件**：`src/content/hover.js`、`src/content/range.js`、`src/content/index.js`、`src/content/content.css`（范围边框规则）。
 
-**模块描述**：记录指针当前所在的文字宿主，在按住快捷键期间展示待翻译范围并支持滚轮扩大到祖先宿主；跨 frame 时广播范围开始与取消，只有持有指针的 frame 显示和调整范围。
+**模块描述**：记录指针当前所在的文字宿主，在按住快捷键期间展示待翻译范围并支持滚轮扩大到祖先宿主；除滚轮与指针移动外的操作会取消手势，取消后释放不提交；跨 frame 时广播范围开始与取消，只有持有指针的 frame 显示和调整范围。
 
 **功能**
 
@@ -35,6 +35,9 @@
 | 指针进入子 frame 时清空宿主 | `hover.js#createHoverTracker` |
 | 范围候选导航与虚线标记 | `range.js#createHoverRange` |
 | 修饰键两阶段手势与滚轮调整 | `content/index.js#installModifierTap` |
+| 按住期间的操作取消（滚轮与指针移动除外） | `content/index.js#cancelFromInteraction`、`content/index.js#installModifierTap` |
+| 释放时失焦、页面隐藏与取消标记判断 | `content/index.js#finishGesture`、`content/index.js#pageFocusLost` |
+| 取消后拦截迟到触发 | `content/index.js#handleMessage`、`content/index.js#runHoverToggle` |
 | 跨 frame 范围广播与远程会话 | `content/index.js#handleMessage`、`content/index.js` |
 | 悬停触发与本地切换 | `content/index.js#runHoverToggle` |
 | 跨 frame 手势广播 | `content/index.js#requestHoverTrigger` |

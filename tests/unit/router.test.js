@@ -74,7 +74,12 @@ import {
   writeKey,
 } from '../../src/shared/config/instances.js';
 import { saveSettings } from '../../src/shared/settings.js';
-import { handleMessage, receivePageSubmit, sendToTab } from '../../src/background/router.js';
+import {
+  cancelHoverGesture,
+  handleMessage,
+  receivePageSubmit,
+  sendToTab,
+} from '../../src/background/router.js';
 import { handleConnect } from '../../src/background/gateway.js';
 import { translate, translateBatch, TranslateError } from '../../src/shared/translate/adapter.js';
 import { __cache } from '../../src/shared/cache/store.js';
@@ -1387,6 +1392,41 @@ describe('A1 跨 frame 广播与汇总', () => {
       MESSAGE_TYPES.START,
     ]);
     expect(chrome.scripting.__calls[0].details.target).toEqual({ tabId: 1, allFrames: true });
+  });
+
+  it('cancelHoverGesture 向活动标签页广播范围取消', async () => {
+    chrome.tabs.__sendQueue = [{ response: undefined }];
+
+    const response = await cancelHoverGesture('t-cancel');
+
+    expect(response).toEqual({ ok: true, data: { forwarded: true } });
+    expect(chrome.tabs.__sent).toEqual([
+      {
+        tabId: 1,
+        message: { type: MESSAGE_TYPES.HOVER_RANGE, payload: { phase: 'cancel' } },
+      },
+    ]);
+  });
+
+  it('cancelHoverGesture 没有活动标签页时返回 NO_ACTIVE_TAB', async () => {
+    chrome.tabs.__queryResult = [];
+
+    const response = await cancelHoverGesture('t-cancel');
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_ACTIVE_TAB);
+    expect(chrome.tabs.__sent).toEqual([]);
+  });
+
+  it('cancelHoverGesture 广播失败时返回 NO_RECEIVER 且不抛错', async () => {
+    chrome.tabs.__sendQueue = [
+      { error: new Error('Could not establish connection. Receiving end does not exist.') },
+    ];
+
+    const response = await cancelHoverGesture('t-cancel');
+
+    expect(response.ok).toBe(false);
+    expect(response.error.reason).toBe(FAILURE_REASONS.NO_RECEIVER);
   });
 
   it('ST_HOVER_TRIGGER 向来源标签页广播，不携带载荷', async () => {
